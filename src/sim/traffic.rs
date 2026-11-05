@@ -2,6 +2,7 @@
 
 use super::aircraft::{Aircraft, Flow, Lateral, Phase};
 use super::performance::{AircraftType, DEFAULT_FLEET_SIZE, TYPES, WakeCategory, aircraft_type};
+use super::registration;
 use super::tower::queued_departure;
 use super::units::vec_heading;
 use super::World;
@@ -20,6 +21,11 @@ const SPAWN_CLEAR_NM: f32 = 8.0;
 const SPAWN_CLEAR_FT: f32 = 1500.0;
 const SPAWN_RETRY_S: f32 = 15.0;
 const AIRLINES: [&str; 6] = ["NVA", "BRZ", "TRL", "ORN", "MRD", "CWN"];
+/// Callsign prefix in airport data meaning "use the aircraft's registration".
+const GENERAL_AVIATION: &str = "N";
+/// Share of registration callsigns that are foreign. Only jets fly in from abroad.
+const INTERNATIONAL_SHARE: f32 = 0.04;
+const INTERNATIONAL_MIN_KT: f32 = 250.0;
 
 /// How busy the airspace is, as a multiple of the airport's normal rate.
 /// The middle level is the airport's own rate: the real-world estimate for
@@ -143,13 +149,22 @@ impl World {
         matching[self.rng.usize(0..matching.len())]
     }
 
-    fn new_callsign(&mut self) -> String {
+    fn new_callsign(&mut self, ty: &AircraftType) -> String {
         loop {
             let airline = match &self.airport.traffic {
                 Some(t) => t.callsign_prefixes[self.rng.usize(0..t.callsign_prefixes.len())].clone(),
                 None => AIRLINES[self.rng.usize(0..AIRLINES.len())].to_string(),
             };
-            let callsign = format!("{airline}{}", self.rng.u32(100..1000));
+            // "N" in the data means a privately registered aircraft, not an airline.
+            let callsign = if airline == GENERAL_AVIATION {
+                if ty.max_speed >= INTERNATIONAL_MIN_KT && self.rng.f32() < INTERNATIONAL_SHARE {
+                    registration::foreign(&mut self.rng)
+                } else {
+                    registration::n_number(&mut self.rng)
+                }
+            } else {
+                format!("{airline}{}", self.rng.u32(100..1000))
+            };
             let taken = self.aircraft.iter().any(|a| a.callsign == callsign)
                 || self.departure_queue.iter().any(|a| a.callsign == callsign);
             if !taken {
@@ -190,7 +205,7 @@ impl World {
             return false;
         }
 
-        let callsign = self.new_callsign();
+        let callsign = self.new_callsign(ty);
         let speed = ty.max_speed.min(280.0);
         let heading = vec_heading(gate - pos);
         let id = self.next_id();
@@ -228,7 +243,7 @@ impl World {
         route: Vec<usize>,
         exit_altitude: f32,
     ) {
-        let callsign = self.new_callsign();
+        let callsign = self.new_callsign(ty);
         let id = self.next_id();
         let mut ac =
             Aircraft::new(id, callsign, Flow::Departure, ty, Vec2::ZERO, 0.0, 0.0, 0.0);
@@ -247,6 +262,37 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registration_callsigns_are_mostly_n_numbers_with_a_few_foreign_jets() {
+        let airport = crate::sim::airspace::Airport::from_toml(crate::sim::airspace::KSUS_AIRPORT)
+            .expect("valid");
+        let mut world = World::new(airport, crate::sim::WorldConfig::default());
+        let jet = aircraft_type("C56X").unwrap();
+        let piston = aircraft_type("C172").unwrap();
+        let (mut registered, mut foreign) = (0, 0);
+        for _ in 0..4000 {
+            let callsign = world.new_callsign(jet);
+            if callsign.starts_with("SPT") || callsign.starts_with("GTW") {
+                continue;
+            }
+            registered += 1;
+            if !callsign.starts_with('N') {
+                foreign += 1;
+            } else {
+                assert!(registration::is_valid_n_number(&callsign), "{callsign}");
+            }
+        }
+        let share = foreign as f32 / registered as f32;
+        assert!((0.02..0.07).contains(&share), "{foreign} of {registered}");
+        for _ in 0..2000 {
+            let callsign = world.new_callsign(piston);
+            assert!(
+                ["N", "SPT", "GTW"].iter().any(|p| callsign.starts_with(p)),
+                "a C172 shouldn't arrive from abroad: {callsign}"
+            );
+        }
+    }
 
     #[test]
     fn traffic_ramps_from_start_to_end_rate() {

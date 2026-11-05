@@ -44,6 +44,7 @@ pub struct Sounds {
     conflict: Option<Sound>,
     separation: Option<Sound>,
     done: Option<Sound>,
+    pub muted: bool,
 }
 
 impl Sounds {
@@ -55,10 +56,14 @@ impl Sounds {
             conflict: make(&[(880.0, 0.12), (0.0, 0.06), (880.0, 0.12)]).await,
             separation: make(&[(1200.0, 0.18), (700.0, 0.18), (1200.0, 0.18), (700.0, 0.18)]).await,
             done: make(&[(660.0, 0.08), (990.0, 0.12)]).await,
+            muted: false,
         }
     }
 
     pub fn play_for(&self, events: &[SimEvent]) {
+        if self.muted {
+            return;
+        }
         let sound = |s: &Option<Sound>| {
             if let Some(s) = s {
                 play_sound_once(s);

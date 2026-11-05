@@ -1,4 +1,6 @@
-//! The radar scope: map, targets, data blocks. Targets come from radar returns only.
+//! The radar scope, styled after an FAA STARS display: video map, position
+//! symbols, history trails, timeshared data blocks and a system status area.
+//! Targets come from radar returns only.
 
 use super::camera::scope_width;
 use super::input::{Drag, UiState};
@@ -8,60 +10,104 @@ use crate::sim::units::{format_heading, heading_vec};
 use crate::sim::{RadarTrack, World};
 use macroquad::prelude::*;
 
-pub const BLOCK_SIZE: Vec2 = vec2(128.0, 46.0);
-const DEFAULT_BLOCK_OFFSET: Vec2 = vec2(16.0, -52.0);
+pub const BLOCK_SIZE: Vec2 = vec2(112.0, 46.0);
+const DEFAULT_BLOCK_OFFSET: Vec2 = vec2(18.0, -50.0);
 const BLOCK_FONT: f32 = 18.0;
-const LEADER_SECONDS: f32 = 60.0;
+const BLOCK_LINE: f32 = 15.0;
+/// Predicted track line length.
+const PTL_SECONDS: f32 = 60.0;
+/// Each half of a timeshared data block field shows for this long.
+const TIMESHARE_SECONDS: f64 = 1.5;
 const RING_SPACING_NM: f32 = 10.0;
 const RINGS: usize = 7;
 const CENTERLINE_NM: f32 = 25.0;
 const GHOST_NM: f32 = 10.0;
+const SSA_FONT: f32 = 18.0;
+const SYMBOL_FONT: f32 = 24.0;
+/// Radius around the position symbol that lines don't cross, pixels.
+const SYMBOL_CLEAR_PX: f32 = 9.0;
 
-const BACKGROUND: Color = Color::new(0.02, 0.05, 0.05, 1.0);
-const RING: Color = Color::new(0.08, 0.17, 0.16, 1.0);
-const MAP: Color = Color::new(0.20, 0.36, 0.34, 1.0);
-const ROUTE: Color = Color::new(0.13, 0.25, 0.24, 1.0);
-const FIX: Color = Color::new(0.38, 0.55, 0.52, 1.0);
-const RUNWAY: Color = Color::new(0.85, 0.90, 0.88, 1.0);
-const CENTERLINE: Color = Color::new(0.30, 0.50, 0.55, 1.0);
-const MVA: Color = Color::new(0.34, 0.22, 0.10, 1.0);
-const CONTROLLED: Color = Color::new(0.35, 0.95, 0.45, 1.0);
-const DEPARTURE: Color = Color::new(0.45, 0.80, 1.00, 1.0);
-const APPROACH: Color = Color::new(0.30, 0.95, 0.90, 1.0);
-const OFFERED: Color = Color::new(1.00, 1.00, 1.00, 1.0);
-const OTHER_FREQ: Color = Color::new(0.45, 0.52, 0.52, 1.0);
-const WARNING: Color = Color::new(1.00, 0.60, 0.10, 1.0);
-const CRITICAL: Color = Color::new(1.00, 0.20, 0.20, 1.0);
-const REFERENCE: Color = Color::new(0.55, 0.55, 0.70, 1.0);
+const BACKGROUND: Color = Color::new(0.0, 0.0, 0.0, 1.0);
+const RING: Color = Color::new(0.16, 0.16, 0.16, 1.0);
+const MAP: Color = Color::new(0.42, 0.42, 0.42, 1.0);
+const ROUTE: Color = Color::new(0.20, 0.20, 0.22, 1.0);
+const FIX: Color = Color::new(0.36, 0.36, 0.38, 1.0);
+const RUNWAY: Color = Color::new(0.75, 0.75, 0.75, 1.0);
+const CENTERLINE: Color = Color::new(0.32, 0.32, 0.32, 1.0);
+const MVA: Color = Color::new(0.33, 0.24, 0.12, 1.0);
+/// STARS draws tracks you own in white and everyone else's in green.
+const OWNED: Color = Color::new(0.94, 0.94, 0.94, 1.0);
+const UNOWNED: Color = Color::new(0.10, 0.85, 0.10, 1.0);
+const HISTORY: Color = Color::new(0.25, 0.40, 1.00, 1.0);
+const SSA: Color = Color::new(0.10, 0.85, 0.10, 1.0);
+const WARNING: Color = Color::new(1.00, 0.85, 0.10, 1.0);
+const CRITICAL: Color = Color::new(1.00, 0.15, 0.15, 1.0);
+const REFERENCE: Color = Color::new(0.45, 0.45, 0.55, 1.0);
 const GHOST: Color = Color::new(1.00, 0.95, 0.40, 1.0);
 
-/// Base colour for an aircraft's phase, before any alert overrides it.
+// Strip colours in the side panel, kept distinct by flow and phase.
+const STRIP_CONTROLLED: Color = Color::new(0.35, 0.95, 0.45, 1.0);
+const STRIP_DEPARTURE: Color = Color::new(0.45, 0.80, 1.00, 1.0);
+const STRIP_APPROACH: Color = Color::new(0.30, 0.95, 0.90, 1.0);
+const STRIP_OFFERED: Color = Color::new(1.00, 1.00, 1.00, 1.0);
+const STRIP_OTHER: Color = Color::new(0.45, 0.52, 0.52, 1.0);
+
+/// Strip colour for an aircraft's phase.
 pub fn phase_color(ac: &Aircraft) -> Color {
     match ac.phase {
-        Phase::Offered => OFFERED,
-        Phase::ClearedApproach | Phase::Localizer | Phase::Glideslope => APPROACH,
+        Phase::Offered => STRIP_OFFERED,
+        Phase::ClearedApproach | Phase::Localizer | Phase::Glideslope => STRIP_APPROACH,
         Phase::TowerHandedOff | Phase::TowerRelease | Phase::Rollout | Phase::OfferedToCenter => {
-            OTHER_FREQ
+            STRIP_OTHER
         }
         Phase::Controlled | Phase::GoAround => {
-            if ac.flow == Flow::Departure { DEPARTURE } else { CONTROLLED }
+            if ac.flow == Flow::Departure { STRIP_DEPARTURE } else { STRIP_CONTROLLED }
         }
     }
 }
 
-fn aircraft_color(world: &World, ac: &Aircraft) -> Color {
-    // Flash on the half-second so alerts and new offers catch the eye.
-    let flash = (get_time() * 2.0) as i64 % 2 == 0;
+fn flash() -> bool {
+    (get_time() * 2.0) as i64 % 2 == 0
+}
+
+/// Which half of a timeshared field to show.
+fn timeshare() -> bool {
+    (get_time() / TIMESHARE_SECONDS) as i64 % 2 == 0
+}
+
+/// Who owns the track, as the letter STARS puts on the target.
+fn position_symbol(ac: &Aircraft) -> char {
+    match ac.phase {
+        _ if ac.on_player_frequency() => 'A',
+        Phase::TowerHandedOff | Phase::Rollout | Phase::TowerRelease => 'T',
+        _ => 'C',
+    }
+}
+
+/// Alert shown above the data block, STARS style.
+fn alert_tag(world: &World, id: u32) -> Option<(&'static str, Color)> {
+    let has = |pairs: &std::collections::BTreeSet<(u32, u32)>| {
+        pairs.iter().any(|&(a, b)| a == id || b == id)
+    };
+    if world.alerts.terrain.contains(&id) {
+        Some(("LA", CRITICAL))
+    } else if has(&world.alerts.separation) || has(&world.alerts.conflict) {
+        Some(("CA", CRITICAL))
+    } else if has(&world.alerts.wake) {
+        Some(("WK", WARNING))
+    } else {
+        None
+    }
+}
+
+fn track_color(world: &World, ac: &Aircraft) -> Color {
     if world.alerts.critical(ac.id) {
-        return if flash { CRITICAL } else { WHITE };
+        return if flash() { CRITICAL } else { OWNED };
     }
     if world.alerts.warning(ac.id) {
         return WARNING;
     }
-    if ac.phase == Phase::Offered && !flash {
-        return OTHER_FREQ;
-    }
-    phase_color(ac)
+    if ac.on_player_frequency() { OWNED } else { UNOWNED }
 }
 
 pub fn block_origin(ui: &UiState, id: u32, pos: glam::Vec2) -> Vec2 {
@@ -78,7 +124,7 @@ pub fn draw(world: &World, ui: &UiState) {
         }
     }
     draw_pending(world, ui);
-    draw_alert_banner(world);
+    draw_status_area(world, ui);
 }
 
 fn draw_polygon_outline(ui: &UiState, points: &[[f32; 2]], thickness: f32, color: Color) {
@@ -115,11 +161,12 @@ fn draw_map(airport: &Airport, world: &World, ui: &UiState) {
             let (sx, sy) =
                 area.polygon.iter().fold((0.0, 0.0), |(x, y), p| (x + p[0], y + p[1]));
             let label = ui.camera.to_screen(glam::Vec2::new(sx / n, sy / n));
-            draw_text(format!("MVA {:.0}", area.altitude / 100.0), label.x, label.y, 18.0, MVA);
+            // Charted in hundreds of feet, as on the MVA video map.
+            draw_text(format!("{:.0}", area.altitude / 100.0), label.x, label.y, 18.0, MVA);
         }
     }
 
-    draw_polygon_outline(ui, &airport.sector, 2.0, MAP);
+    draw_polygon_outline(ui, &airport.sector, 1.5, MAP);
 
     let config = world.config().name.clone();
     for star in airport.stars.iter().filter(|s| s.config == config) {
@@ -132,9 +179,9 @@ fn draw_map(airport: &Airport, world: &World, ui: &UiState) {
     for fix in &airport.fixes {
         let p = ui.camera.to_screen(fix.pos());
         draw_triangle_lines(
-            vec2(p.x, p.y - 4.0),
-            vec2(p.x - 4.0, p.y + 3.0),
-            vec2(p.x + 4.0, p.y + 3.0),
+            vec2(p.x, p.y - 3.5),
+            vec2(p.x - 3.5, p.y + 2.5),
+            vec2(p.x + 3.5, p.y + 2.5),
             1.0,
             FIX,
         );
@@ -145,7 +192,7 @@ fn draw_map(airport: &Airport, world: &World, ui: &UiState) {
         let p = ui.camera.to_screen(glam::Vec2::new(reference.x, reference.y));
         draw_line(p.x - 5.0, p.y, p.x + 5.0, p.y, 1.5, REFERENCE);
         draw_line(p.x, p.y - 5.0, p.x, p.y + 5.0, 1.5, REFERENCE);
-        draw_text(&reference.name, p.x + 8.0, p.y - 6.0, 18.0, REFERENCE);
+        draw_text(&reference.name, p.x + 8.0, p.y - 6.0, 16.0, REFERENCE);
     }
 
     if let Some(source) = &airport.data_source {
@@ -155,23 +202,25 @@ fn draw_map(airport: &Airport, world: &World, ui: &UiState) {
     for runway in &airport.runways {
         let a = ui.camera.to_screen(runway.takeoff_point());
         let b = ui.camera.to_screen(runway.far_end());
-        draw_line(a.x, a.y, b.x, b.y, 3.0, RUNWAY);
+        draw_line(a.x, a.y, b.x, b.y, 2.5, RUNWAY);
     }
 
-    // Extended centerline with a tick every five miles, on the landing runway.
+    // Extended centerline with a tick every mile and a longer one every five.
     let runway = &airport.runways[world.arrival_runway()];
     let outbound = -heading_vec(runway.heading);
+    let across = glam::Vec2::new(outbound.y, -outbound.x);
     let a = ui.camera.to_screen(runway.threshold());
     let b = ui.camera.to_screen(runway.threshold() + outbound * CENTERLINE_NM);
     draw_dashed(a, b, CENTERLINE);
-    let mut miles = 5.0;
-    while miles <= CENTERLINE_NM {
-        let p = ui.camera.to_screen(runway.threshold() + outbound * miles);
-        draw_circle(p.x, p.y, 2.0, CENTERLINE);
-        miles += 5.0;
+    for mile in 1..=CENTERLINE_NM as i32 {
+        let half = if mile % 5 == 0 { 0.6 } else { 0.25 };
+        let at = runway.threshold() + outbound * mile as f32;
+        let p = ui.camera.to_screen(at - across * half);
+        let q = ui.camera.to_screen(at + across * half);
+        draw_line(p.x, p.y, q.x, q.y, 1.0, CENTERLINE);
     }
     let label = ui.camera.to_screen(runway.threshold() + outbound * (CENTERLINE_NM + 1.0));
-    draw_text(&runway.id, label.x, label.y, 18.0, CENTERLINE);
+    draw_text(&runway.id, label.x, label.y, 16.0, CENTERLINE);
 }
 
 fn draw_dashed(a: Vec2, b: Vec2, color: Color) {
@@ -189,81 +238,96 @@ fn draw_dashed(a: Vec2, b: Vec2, color: Color) {
     }
 }
 
-fn trend(track: &RadarTrack) -> char {
-    if track.vertical_speed > 100.0 {
-        '^'
-    } else if track.vertical_speed < -100.0 {
-        'v'
-    } else {
-        '='
-    }
-}
-
-/// Short state shown on the third data block line.
-fn status(ac: &Aircraft, airport: &Airport) -> String {
-    match ac.phase {
-        Phase::Offered => "OFFER".into(),
-        Phase::ClearedApproach => "ILS".into(),
-        Phase::Localizer => "LOC".into(),
-        Phase::Glideslope => "GS".into(),
-        Phase::TowerHandedOff | Phase::Rollout => "TWR".into(),
+/// Controller's working data on the third line: assigned altitude and intent.
+fn scratchpad(world: &World, ac: &Aircraft) -> String {
+    let airport = &world.airport;
+    let intent = match ac.phase {
+        Phase::ClearedApproach | Phase::Localizer | Phase::Glideslope => {
+            format!("I{}", airport.runways[world.arrival_runway()].id)
+        }
         Phase::GoAround => "GA".into(),
-        Phase::TowerRelease => "TWR".into(),
-        Phase::OfferedToCenter => "CTR".into(),
         Phase::Controlled => match ac.lateral {
             Lateral::Heading(h) => format!("H{}", format_heading(airport.to_magnetic(h))),
-            _ => ac
-                .active_fix()
-                .map(|f| airport.fixes[f].name.clone())
-                .unwrap_or_default(),
+            _ => active_fix_name(airport, ac),
         },
-    }
+        _ => active_fix_name(airport, ac),
+    };
+    format!("{:03.0} {intent}", ac.target_altitude / 100.0)
+}
+
+fn active_fix_name(airport: &Airport, ac: &Aircraft) -> String {
+    ac.active_fix()
+        .or(ac.exit_fix)
+        .map(|f| airport.fixes[f].name.chars().take(5).collect())
+        .unwrap_or_default()
 }
 
 fn draw_target(world: &World, ui: &UiState, ac: &Aircraft, track: &RadarTrack) {
-    let color = aircraft_color(world, ac);
+    let color = track_color(world, ac);
     let p = ui.camera.to_screen(track.pos);
 
+    // History trail: older returns in fading blue.
     for (age, old) in track.history.iter().enumerate() {
         let dot = ui.camera.to_screen(*old);
-        let fade = 0.6 * (1.0 - age as f32 / track.history.len() as f32);
-        draw_circle(dot.x, dot.y, 1.5, Color::new(color.r, color.g, color.b, fade));
+        let fade = 0.85 * (1.0 - age as f32 / (track.history.len() as f32 + 1.0));
+        draw_circle(dot.x, dot.y, 2.0, Color::new(HISTORY.r, HISTORY.g, HISTORY.b, fade));
     }
 
-    let leader = ui.camera.to_screen(
-        track.pos + track.velocity / crate::sim::units::SECONDS_PER_HOUR * LEADER_SECONDS,
+    // Lines start clear of the position symbol so it stays readable.
+    let ptl = ui.camera.to_screen(
+        track.pos + track.velocity / crate::sim::units::SECONDS_PER_HOUR * PTL_SECONDS,
     );
-    draw_line(p.x, p.y, leader.x, leader.y, 1.0, color);
-    draw_rectangle(p.x - 3.0, p.y - 3.0, 6.0, 6.0, color);
+    let ptl_start = p + (ptl - p).normalize_or_zero() * SYMBOL_CLEAR_PX;
+    if ptl.distance(p) > SYMBOL_CLEAR_PX {
+        let c = Color::new(color.r, color.g, color.b, 0.7);
+        draw_line(ptl_start.x, ptl_start.y, ptl.x, ptl.y, 1.0, c);
+    }
+
+    let symbol = position_symbol(ac).to_string();
+    let size = measure_text(&symbol, None, SYMBOL_FONT as u16, 1.0);
+    draw_text(&symbol, p.x - size.width / 2.0, p.y + size.offset_y / 2.0, SYMBOL_FONT, color);
 
     let selected = ui.selected == Some(ac.id);
-    if selected {
-        draw_circle_lines(p.x, p.y, 11.0, 1.5, GHOST);
+    let origin = block_origin(ui, ac.id, track.pos);
+    let altitude = format!("{:03.0}", track.altitude / 100.0);
+    let speed = format!("{:02.0}", (track.ground_speed / 10.0).round());
+
+    // Tower's traffic drops to a limited data block: altitude and speed only.
+    if matches!(ac.phase, Phase::TowerHandedOff | Phase::Rollout) && !selected {
+        draw_text(format!("{altitude} {speed}"), p.x + 10.0, p.y - 6.0, BLOCK_FONT, color);
+        return;
     }
 
-    let origin = block_origin(ui, ac.id, track.pos);
-    // The tether stops at the block's nearest edge so it never runs through the text.
+    // Leader line to the first line of the block, stopping at its edge.
     let anchor = vec2(
         p.x.clamp(origin.x, origin.x + BLOCK_SIZE.x),
-        p.y.clamp(origin.y, origin.y + BLOCK_SIZE.y),
+        p.y.clamp(origin.y, origin.y + BLOCK_LINE),
     );
-    draw_line(p.x, p.y, anchor.x, anchor.y, 1.0, Color::new(color.r, color.g, color.b, 0.5));
+    let gap = (anchor - p).normalize_or_zero() * SYMBOL_CLEAR_PX;
+    draw_line(p.x + gap.x, p.y + gap.y, anchor.x, anchor.y, 1.0, color);
     if selected {
-        draw_rectangle_lines(origin.x, origin.y, BLOCK_SIZE.x, BLOCK_SIZE.y, 1.0, GHOST);
+        draw_rectangle_lines(origin.x - 2.0, origin.y - 2.0, BLOCK_SIZE.x, BLOCK_SIZE.y, 1.0, GHOST);
     }
 
-    let line1 = format!("{} {}", ac.callsign, ac.ty.wake.letter());
-    let line2 = format!(
-        "{:03.0}{}{:03.0} {:03.0}",
-        track.altitude / 100.0,
-        trend(track),
-        ac.target_altitude / 100.0,
-        track.ground_speed,
-    );
-    let line3 = format!("{} {}", ac.ty.designator, status(ac, &world.airport));
-    draw_text(&line1, origin.x + 3.0, origin.y + 13.0, BLOCK_FONT, color);
-    draw_text(&line2, origin.x + 3.0, origin.y + 28.0, BLOCK_FONT, color);
-    draw_text(&line3, origin.x + 3.0, origin.y + 43.0, BLOCK_FONT, color);
+    // An inbound handoff blinks until accepted.
+    if ac.phase == Phase::Offered && !flash() {
+        return;
+    }
+
+    let text = |line: &str, row: f32, c: Color| {
+        draw_text(line, origin.x, origin.y + BLOCK_LINE * (row + 1.0) - 3.0, BLOCK_FONT, c);
+    };
+    if let Some((tag, tag_color)) = alert_tag(world, ac.id) {
+        text(tag, -1.0, tag_color);
+    }
+    text(&ac.callsign, 0.0, color);
+    let second = if timeshare() {
+        format!("{altitude} {speed}")
+    } else {
+        format!("{altitude} {}", ac.ty.designator)
+    };
+    text(&second, 1.0, color);
+    text(&scratchpad(world, ac), 2.0, color);
 }
 
 /// Preview of the unsent clearance, and of a drag in progress.
@@ -299,25 +363,42 @@ fn draw_pending(world: &World, ui: &UiState) {
         }
 }
 
-fn draw_alert_banner(world: &World) {
+/// Top-left system status area: clock, airport and runways, range, and alert lists.
+fn draw_status_area(world: &World, ui: &UiState) {
     let name = |id: u32| world.find(id).map(|a| a.callsign.as_str()).unwrap_or("?");
-    let mut y = 24.0;
-    let width = scope_width();
-    let mut line = |text: String, color: Color| {
-        let size = measure_text(&text, None, 22, 1.0);
-        draw_text(&text, (width - size.width) / 2.0, y, 22.0, color);
-        y += 22.0;
+    let mut y = 22.0;
+    let mut line = |text: &str, color: Color| {
+        draw_text(text, 12.0, y, SSA_FONT, color);
+        y += SSA_FONT;
     };
-    for &(a, b) in &world.alerts.separation {
-        line(format!("SEPARATION LOST  {} / {}", name(a), name(b)), CRITICAL);
+
+    let utc = (ui.clock_start + world.time as f64).rem_euclid(86_400.0) as u64;
+    line(&format!("{:02}{:02}/{:02}", utc / 3600, utc / 60 % 60, utc % 60), SSA);
+    let config = world.config();
+    let wind = &world.wind;
+    line(
+        &format!(
+            "{} {:03.0}/{:02.0}  ARR {} DEP {}",
+            world.airport.code,
+            world.airport.to_magnetic(wind.from),
+            wind.speed,
+            config.arrival,
+            config.departure
+        ),
+        SSA,
+    );
+    let range = scope_width().min(screen_height()) / 2.0 / ui.camera.scale;
+    let paused = if ui.paused { "  PAUSED" } else { "" };
+    line(&format!("RNG {range:.0}  PTL 1.0  x{:.0}{paused}", ui.rate), SSA);
+
+    // STARS lists active alerts by callsign pair.
+    for &(a, b) in world.alerts.separation.iter().chain(&world.alerts.conflict) {
+        line(&format!("{}*{} CA", name(a), name(b)), CRITICAL);
     }
     for &id in &world.alerts.terrain {
-        line(format!("LOW ALTITUDE  {}", name(id)), CRITICAL);
-    }
-    for &(a, b) in &world.alerts.conflict {
-        line(format!("CONFLICT  {} / {}", name(a), name(b)), WARNING);
+        line(&format!("{} LA", name(id)), CRITICAL);
     }
     for &(a, b) in &world.alerts.wake {
-        line(format!("WAKE SPACING  {} / {}", name(a), name(b)), WARNING);
+        line(&format!("{}*{} WK", name(a), name(b)), WARNING);
     }
 }

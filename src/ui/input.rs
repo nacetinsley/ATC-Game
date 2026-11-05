@@ -36,6 +36,8 @@ pub struct UiState {
     pub paused: bool,
     /// Sim seconds per real second.
     pub rate: f32,
+    /// UTC seconds since the epoch when the shift started, for the scope clock.
+    pub clock_start: f64,
 }
 
 impl UiState {
@@ -49,6 +51,7 @@ impl UiState {
             show_mva: true,
             paused: false,
             rate: 1.0,
+            clock_start: macroquad::miniquad::date::now(),
         }
     }
 
@@ -179,7 +182,8 @@ impl UiState {
         if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter) {
             self.transmit(world);
         }
-        if is_key_pressed(KeyCode::Escape) {
+        // Escape opens the pause menu, handled by the app.
+        if is_key_pressed(KeyCode::Backspace) || is_key_pressed(KeyCode::Delete) {
             self.cancel();
         }
         if is_key_pressed(KeyCode::Space) {

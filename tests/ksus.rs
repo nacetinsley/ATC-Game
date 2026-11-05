@@ -5,6 +5,7 @@ use atcgame::sim::airspace::{Airport, KSUS_AIRPORT};
 use atcgame::sim::clearance::Clearance;
 use atcgame::sim::performance::aircraft_type;
 use atcgame::sim::scoring::{ShiftEnd, SimEvent};
+use atcgame::sim::registration::is_valid_n_number;
 use atcgame::sim::traffic::Busyness;
 use atcgame::sim::units::{Wind, heading_vec};
 use atcgame::sim::{Speaker, TICK, World, WorldConfig};
@@ -399,6 +400,41 @@ fn a_shift_is_quiet_uses_the_real_fleet_and_completes() {
     }
     let mean = totals.iter().sum::<usize>() as f32 / totals.len() as f32;
     assert!((1.0..=8.0).contains(&mean), "mean {mean}, {totals:?}");
+}
+
+#[test]
+fn general_aviation_in_a_shift_uses_legal_n_numbers() {
+    let mut seen = std::collections::BTreeMap::new();
+    for seed in 0..20 {
+        let config = WorldConfig {
+            seed,
+            wind: Some(Wind { from: 250.0, speed: 8.0 }),
+            busyness: Busyness::VeryBusy,
+            ..Default::default()
+        };
+        let mut world = World::new(ksus(), config);
+        while world.ended.is_none() {
+            world.tick();
+            world.drain_events();
+            for ac in &world.aircraft {
+                seen.insert((seed, ac.id), (ac.callsign.clone(), ac.ty.max_speed));
+            }
+        }
+    }
+    let registered: Vec<_> = seen
+        .values()
+        .filter(|(c, _)| !c.starts_with("SPT") && !c.starts_with("GTW"))
+        .collect();
+    let foreign: Vec<_> = registered.iter().filter(|(c, _)| !c.starts_with('N')).collect();
+    for (callsign, max_speed) in &registered {
+        if callsign.starts_with('N') {
+            assert!(is_valid_n_number(callsign), "{callsign}");
+        } else {
+            assert!(*max_speed >= 250.0, "foreign {callsign} should be a jet");
+        }
+    }
+    let share = foreign.len() as f32 / registered.len() as f32;
+    assert!(share < 0.1, "{} of {}", foreign.len(), registered.len());
 }
 
 #[test]

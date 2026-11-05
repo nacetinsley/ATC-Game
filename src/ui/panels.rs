@@ -243,7 +243,7 @@ fn draw_clearance(world: &mut World, ui: &mut UiState, x: f32, top: f32) {
     if button("Transmit Enter", left, y, wide, bh) {
         ui.transmit(world);
     }
-    if button("Cancel Esc", left + wide + 6.0, y, wide, bh) {
+    if button("Cancel Bksp", left + wide + 6.0, y, wide, bh) {
         ui.cancel();
     }
 

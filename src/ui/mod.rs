@@ -36,14 +36,38 @@ const BRIEFING: [&str; 13] = [
     "          Heavy>Small 6, Large>Small 4, otherwise 3. Stay above the MVA.",
     "",
     "CONTROLS  Click/Tab select | Drag from target: heading, or onto a fix: direct | Arrows: hdg, alt",
-    "          +/-: speed | C ILS | R route | T handoff | G go-around | ENTER send | ESC cancel",
+    "          +/-: speed | C ILS | R route | T handoff | G go-around | ENTER send | BKSP cancel",
 ];
+
+/// Pause menu entries, top to bottom.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PauseItem {
+    Resume,
+    Restart,
+    Sound,
+    Controls,
+    MainMenu,
+    Quit,
+}
+
+const PAUSE_ITEMS: [PauseItem; 6] = [
+    PauseItem::Resume,
+    PauseItem::Restart,
+    PauseItem::Sound,
+    PauseItem::Controls,
+    PauseItem::MainMenu,
+    PauseItem::Quit,
+];
+const PAUSE_ROW: f32 = 40.0;
+const PAUSE_WIDTH: f32 = 340.0;
 const BRIEFING_VIEW: &str =
-    "          SPACE pause | 1 2 4 rate | M terrain | Wheel zoom | Right-drag pan";
+    "          SPACE pause | ESC menu | 1 2 4 rate | M terrain | Wheel zoom | Right-drag pan";
 
 enum Screen {
     Menu,
     Playing,
+    /// The sim is frozen behind the pause menu.
+    Paused { choice: usize, show_controls: bool },
     Ended(ShiftEnd),
 }
 
@@ -113,16 +137,68 @@ impl App {
                 }
             }
             Screen::Playing => self.play_frame(),
+            Screen::Paused { choice, show_controls } => self.pause_frame(choice, show_controls),
             Screen::Ended(end) => {
                 draw_end(&self.world, end);
                 if start_pressed() {
                     self.start_shift();
+                } else if is_key_pressed(KeyCode::Escape) {
+                    self.screen = Screen::Menu;
                 }
             }
         }
     }
 
+    fn pause_frame(&mut self, mut choice: usize, mut show_controls: bool) {
+        scope::draw(&self.world, &self.ui);
+        let count = PAUSE_ITEMS.len();
+        if is_key_pressed(KeyCode::Up) {
+            choice = (choice + count - 1) % count;
+        }
+        if is_key_pressed(KeyCode::Down) {
+            choice = (choice + 1) % count;
+        }
+        let (hovered, clicked) = draw_pause(choice, self.sounds.muted, show_controls);
+        // The mouse only takes over the highlight when it moves, so arrow keys still work.
+        let mouse_moved = mouse_delta_position() != Vec2::ZERO;
+        if let Some(index) = hovered.filter(|_| mouse_moved || clicked) {
+            choice = index;
+        }
+        let activate = clicked || start_pressed();
+
+        self.screen = Screen::Paused { choice, show_controls };
+        if is_key_pressed(KeyCode::Escape) {
+            self.resume();
+            return;
+        }
+        if !activate {
+            return;
+        }
+        match PAUSE_ITEMS[choice] {
+            PauseItem::Resume => self.resume(),
+            PauseItem::Restart => self.start_shift(),
+            PauseItem::Sound => self.sounds.muted = !self.sounds.muted,
+            PauseItem::Controls => {
+                show_controls = !show_controls;
+                self.screen = Screen::Paused { choice, show_controls };
+            }
+            PauseItem::MainMenu => self.screen = Screen::Menu,
+            PauseItem::Quit => macroquad::miniquad::window::order_quit(),
+        }
+    }
+
+    fn resume(&mut self) {
+        self.accumulator = 0.0;
+        self.screen = Screen::Playing;
+    }
+
     fn play_frame(&mut self) {
+        if is_key_pressed(KeyCode::Escape) {
+            self.ui.drag = input::Drag::None;
+            self.screen = Screen::Paused { choice: 0, show_controls: false };
+            scope::draw(&self.world, &self.ui);
+            return;
+        }
         self.ui.update(&mut self.world);
 
         if !self.ui.paused {
@@ -213,6 +289,73 @@ fn draw_menu(airports: &[Airport], choice: usize, busyness: Busyness) -> Option<
     let picked = draw_busyness(busyness, airport.traffic.is_some(), x, y);
     draw_text("Press ENTER to start your shift", x, y + 130.0, 30.0, TITLE);
     picked
+}
+
+fn pause_label(item: PauseItem, muted: bool, show_controls: bool) -> &'static str {
+    match item {
+        PauseItem::Resume => "Resume",
+        PauseItem::Restart => "Restart shift",
+        PauseItem::Sound if muted => "Sound: Off",
+        PauseItem::Sound => "Sound: On",
+        PauseItem::Controls if show_controls => "Hide controls",
+        PauseItem::Controls => "Show controls",
+        PauseItem::MainMenu => "Quit to main menu",
+        PauseItem::Quit => "Quit to desktop",
+    }
+}
+
+/// Pause menu over the frozen scope. Returns the row under the mouse and whether it was clicked.
+fn draw_pause(choice: usize, muted: bool, show_controls: bool) -> (Option<usize>, bool) {
+    draw_rectangle(0.0, 0.0, screen_width(), screen_height(), Color::new(0.0, 0.0, 0.0, 0.65));
+
+    let height = 70.0 + PAUSE_ROW * PAUSE_ITEMS.len() as f32 + 40.0;
+    let left = (screen_width() - PAUSE_WIDTH) / 2.0;
+    let top = (screen_height() - height) / 2.0;
+    draw_rectangle(left, top, PAUSE_WIDTH, height, BACKGROUND);
+    draw_rectangle_lines(left, top, PAUSE_WIDTH, height, 1.5, DIM);
+    let title = "PAUSED";
+    let size = measure_text(title, None, 36, 1.0);
+    draw_text(title, left + (PAUSE_WIDTH - size.width) / 2.0, top + 46.0, 36.0, TITLE);
+
+    let mouse = Vec2::from(mouse_position());
+    let mut hovered = None;
+    for (index, &item) in PAUSE_ITEMS.iter().enumerate() {
+        let y = top + 70.0 + PAUSE_ROW * index as f32;
+        let row = Rect::new(left + 16.0, y, PAUSE_WIDTH - 32.0, PAUSE_ROW - 6.0);
+        if row.contains(mouse) {
+            hovered = Some(index);
+        }
+        let selected = index == choice;
+        if selected {
+            draw_rectangle(row.x, row.y, row.w, row.h, Color::new(0.10, 0.22, 0.12, 1.0));
+        }
+        let label = pause_label(item, muted, show_controls);
+        let width = measure_text(label, None, 24, 1.0).width;
+        let color = if selected { TITLE } else { TEXT };
+        draw_text(label, left + (PAUSE_WIDTH - width) / 2.0, y + 24.0, 24.0, color);
+    }
+    draw_text(
+        "Up/Down  ENTER select  ESC resume",
+        left + 34.0,
+        top + height - 16.0,
+        18.0,
+        DIM,
+    );
+
+    if show_controls {
+        let lines: Vec<&str> =
+            BRIEFING[11..].iter().copied().chain(std::iter::once(BRIEFING_VIEW)).collect();
+        let box_top = top + height + 16.0;
+        let box_left = 40.0;
+        let box_width = screen_width() - 80.0;
+        draw_rectangle(box_left, box_top, box_width, 24.0 * lines.len() as f32 + 20.0, BACKGROUND);
+        for (i, line) in lines.iter().enumerate() {
+            draw_text(line, box_left + 16.0, box_top + 28.0 + 24.0 * i as f32, 20.0, TEXT);
+        }
+    }
+
+    let clicked = hovered.is_some() && is_mouse_button_pressed(MouseButton::Left);
+    (hovered, clicked)
 }
 
 fn draw_end(world: &World, end: ShiftEnd) {
