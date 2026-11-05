@@ -28,3 +28,18 @@ The FAA requires the following warranty disclaimers:
 
 Values marked as game choices in `tools/ksus_overrides.toml`, including the sector
 boundary, handoff altitudes, traffic rate and fleet, are not FAA data.
+
+## OpenStreetMap
+
+`assets/airports/ksus_ground.toml` (taxiways and aprons) is generated from
+OpenStreetMap by `tools/import_osm.py`.
+
+**© OpenStreetMap contributors.** That file is made available under the
+[Open Database License (ODbL) 1.0](https://opendatacommons.org/licenses/odbl/).
+Any changes to it must be shared under the same licence.
+See <https://www.openstreetmap.org/copyright>.
+
+OSM had no hold lines or parking positions mapped at KSUS, so the importer derives
+them: hold lines at the FAA design-standard distance from each runway centerline
+(250 ft for runways 45 m or wider, 200 ft otherwise), and parking at taxilane dead
+ends inside apron areas. These are estimates, not surveyed positions.

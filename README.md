@@ -92,6 +92,14 @@ The script uses only the Python standard library and caches downloads in
 boundary, handoff altitudes and traffic rate, live in
 `tools/ksus_overrides.toml`.
 
+The taxiway layout in `assets/airports/ksus_ground.toml` comes from
+OpenStreetMap. Run it after the FAA import, which supplies the runways and map
+origin:
+
+```sh
+python tools/import_osm.py --airport KSUS --cycle 261029
+```
+
 ## Project layout
 
 ```
@@ -108,3 +116,6 @@ tools/        FAA data importer and its tests
 products, simplified for a game and not kept current. See
 [DATA_NOTICE.md](DATA_NOTICE.md) for sources and the FAA's required
 disclaimers.
+
+KSUS taxiway data © OpenStreetMap contributors, available under the
+[ODbL](https://opendatacommons.org/licenses/odbl/).

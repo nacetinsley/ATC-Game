@@ -1,7 +1,7 @@
 //! KSUS: checks the generated FAA data and that the sim works with real geography.
 
 use atcgame::sim::aircraft::{Aircraft, Flow, Lateral, Phase};
-use atcgame::sim::airspace::{Airport, KSUS_AIRPORT};
+use atcgame::sim::airspace::{Airport, KSUS_AIRPORT, KSUS_GROUND};
 use atcgame::sim::clearance::Clearance;
 use atcgame::sim::performance::aircraft_type;
 use atcgame::sim::scoring::{ShiftEnd, SimEvent};
@@ -12,7 +12,7 @@ use atcgame::sim::{Speaker, TICK, World, WorldConfig};
 use glam::Vec2;
 
 fn ksus() -> Airport {
-    Airport::from_toml(KSUS_AIRPORT).expect("generated KSUS data is valid")
+    Airport::load(KSUS_AIRPORT, Some(KSUS_GROUND)).expect("generated KSUS data is valid")
 }
 
 fn quiet_world(wind_from: f32) -> World {
@@ -490,4 +490,24 @@ fn a_very_busy_shift_sees_more_traffic_than_a_very_quiet_one() {
     let quiet = count(Busyness::VeryQuiet);
     let busy = count(Busyness::VeryBusy);
     assert!(busy >= quiet * 3, "very quiet {quiet}, very busy {busy}");
+}
+
+#[test]
+fn ground_layout_from_osm_has_holds_at_every_runway_end_and_named_taxi_routes() {
+    let a = ksus();
+    let m = a.surface.as_ref().expect("KSUS has a ground layout");
+    let holds = m.nodes.iter().filter(|n| n.hold.is_some()).count();
+    assert!(holds >= 15, "{holds} hold lines");
+    assert!(m.parking.len() >= 8, "{} parking spots", m.parking.len());
+    for (end, runway) in a.runways.iter().enumerate() {
+        let hold = m.departure_hold(end).unwrap();
+        let gap = m.nodes[hold].pos.distance(runway.takeoff_point()) * 6076.0;
+        assert!(gap < 900.0, "{}: departure hold is {gap:.0} ft from the takeoff point", runway.id);
+        for spot in &m.parking {
+            let route = m.route(spot.node, hold, &[]).expect("reachable");
+            assert!(!route.taxiways.is_empty(), "{} to {}: {route:?}", spot.name, runway.id);
+            println!("{} -> {}: via {:?}, entering {:?}", spot.name, runway.id, route.taxiways,
+                route.runways_entered.iter().map(|&r| &m.runways[r].name).collect::<Vec<_>>());
+        }
+    }
 }

@@ -8,6 +8,7 @@ pub mod conflict;
 pub mod performance;
 pub mod scoring;
 pub mod tower;
+pub mod ground_map;
 pub mod registration;
 pub mod traffic;
 pub mod units;

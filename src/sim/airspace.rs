@@ -1,5 +1,6 @@
 //! Airport and airspace data, loaded from TOML.
 
+use super::ground_map::{GroundData, GroundMap};
 use super::performance::aircraft_type;
 use super::units::{FT_PER_NM, heading_vec, normalize_heading};
 use glam::Vec2;
@@ -9,8 +10,17 @@ use serde::Deserialize;
 pub const DEFAULT_AIRPORT: &str = include_str!("../../assets/airports/fictional.toml");
 /// Generated from FAA data by `tools/import_faa.py`.
 pub const KSUS_AIRPORT: &str = include_str!("../../assets/airports/ksus.toml");
-/// Every playable airport, in menu order.
-pub const CATALOG: [&str; 2] = [DEFAULT_AIRPORT, KSUS_AIRPORT];
+/// Generated from OpenStreetMap by `tools/import_osm.py`. ODbL, kept in its own file.
+pub const KSUS_GROUND: &str = include_str!("../../assets/airports/ksus_ground.toml");
+/// Every playable airport in menu order, with any separate ground layout.
+pub const CATALOG: [(&str, Option<&str>); 2] =
+    [(DEFAULT_AIRPORT, None), (KSUS_AIRPORT, Some(KSUS_GROUND))];
+
+/// A ground layout file on its own.
+#[derive(Deserialize)]
+struct GroundFile {
+    ground: GroundData,
+}
 
 pub const GLIDESLOPE_DEG: f32 = 3.0;
 /// Height the glideslope crosses the threshold, feet.
@@ -183,13 +193,32 @@ pub struct Airport {
     pub fixes: Vec<Fix>,
     pub stars: Vec<Star>,
     pub sids: Vec<Sid>,
+    /// Taxiways, hold lines and parking, for the tower positions.
+    pub ground: Option<GroundData>,
+    /// `ground` built into a routing graph at load.
+    #[serde(skip)]
+    pub surface: Option<GroundMap>,
 }
 
 impl Airport {
     /// Parses and checks airport data, so a bad reference fails at load, not mid-shift.
     pub fn from_toml(text: &str) -> Result<Airport, String> {
-        let airport: Airport = toml::from_str(text).map_err(|e| e.to_string())?;
+        Airport::load(text, None)
+    }
+
+    /// Airport data plus an optional ground layout from a separate file.
+    pub fn load(text: &str, ground: Option<&str>) -> Result<Airport, String> {
+        let mut airport: Airport = toml::from_str(text).map_err(|e| e.to_string())?;
+        if let Some(ground) = ground {
+            let file: GroundFile = toml::from_str(ground).map_err(|e| format!("ground: {e}"))?;
+            airport.ground = Some(file.ground);
+        }
         airport.validate()?;
+        if let Some(ground) = &airport.ground {
+            let map = GroundMap::build(ground, &airport.runways)
+                .map_err(|e| format!("{} ground layout: {e}", airport.code))?;
+            airport.surface = Some(map);
+        }
         Ok(airport)
     }
 

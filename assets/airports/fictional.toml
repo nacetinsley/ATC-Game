@@ -222,3 +222,198 @@ exit_altitude = 13000.0
 config = "East"
 fixes = ["MAPLE", "OAKEN", "RENDL"]
 exit_altitude = 15000.0
+
+# Surface layout, for the tower positions. The terminal sits between the runways,
+# with a parallel taxiway for each (A south, B north) and a cargo ramp south of
+# 27L/09R reached by crossing it on E. Hold lines are 600 ft from the centerline.
+[ground]
+
+[[ground.taxiways]]
+name = "A"
+points = [[-1.5, -0.4], [-0.75, -0.4], [-0.6, -0.4], [0.0, -0.4], [0.3, -0.4], [0.6, -0.4], [0.75, -0.4], [1.5, -0.4]]
+
+[[ground.taxiways]]
+name = "B"
+points = [[-1.5, 0.4], [-0.75, 0.4], [-0.6, 0.4], [0.0, 0.4], [0.6, 0.4], [0.75, 0.4], [1.5, 0.4]]
+
+[[ground.taxiways]]
+name = "A1"
+points = [[-1.5, -0.4], [-1.5, -0.5], [-1.5, -0.6]]
+
+[[ground.taxiways]]
+name = "A2"
+points = [[-0.75, -0.4], [-0.75, -0.5], [-0.75, -0.6]]
+
+[[ground.taxiways]]
+name = "A3"
+points = [[0.0, -0.4], [0.0, -0.5], [0.0, -0.6]]
+
+[[ground.taxiways]]
+name = "A4"
+points = [[0.75, -0.4], [0.75, -0.5], [0.75, -0.6]]
+
+[[ground.taxiways]]
+name = "A5"
+points = [[1.5, -0.4], [1.5, -0.5], [1.5, -0.6]]
+
+[[ground.taxiways]]
+name = "B1"
+points = [[-1.5, 0.4], [-1.5, 0.5], [-1.5, 0.6]]
+
+[[ground.taxiways]]
+name = "B2"
+points = [[-0.75, 0.4], [-0.75, 0.5], [-0.75, 0.6]]
+
+[[ground.taxiways]]
+name = "B3"
+points = [[0.0, 0.4], [0.0, 0.5], [0.0, 0.6]]
+
+[[ground.taxiways]]
+name = "B4"
+points = [[0.75, 0.4], [0.75, 0.5], [0.75, 0.6]]
+
+[[ground.taxiways]]
+name = "B5"
+points = [[1.5, 0.4], [1.5, 0.5], [1.5, 0.6]]
+
+[[ground.taxiways]]
+name = "C"
+points = [[-0.6, -0.4], [-0.6, 0.0], [-0.6, 0.4]]
+
+[[ground.taxiways]]
+name = "D"
+points = [[0.6, -0.4], [0.6, 0.0], [0.6, 0.4]]
+
+[[ground.taxiways]]
+name = "E"
+points = [[0.3, -0.4], [0.3, -0.5], [0.3, -0.6], [0.3, -0.7], [0.3, -0.85]]
+
+# Terminal apron and gate lead-ins.
+[[ground.taxiways]]
+points = [[-0.6, 0.0], [-0.45, 0.0], [-0.15, 0.0], [0.15, 0.0], [0.45, 0.0], [0.6, 0.0]]
+
+[[ground.taxiways]]
+points = [[-0.45, 0.0], [-0.45, 0.1]]
+
+[[ground.taxiways]]
+points = [[-0.15, 0.0], [-0.15, 0.1]]
+
+[[ground.taxiways]]
+points = [[0.15, 0.0], [0.15, 0.1]]
+
+[[ground.taxiways]]
+points = [[0.45, 0.0], [0.45, 0.1]]
+
+[[ground.taxiways]]
+points = [[-0.45, 0.0], [-0.45, -0.1]]
+
+[[ground.taxiways]]
+points = [[-0.15, 0.0], [-0.15, -0.1]]
+
+[[ground.taxiways]]
+points = [[0.15, 0.0], [0.15, -0.1]]
+
+[[ground.taxiways]]
+points = [[0.45, 0.0], [0.45, -0.1]]
+
+# Cargo ramp.
+[[ground.taxiways]]
+points = [[0.1, -0.85], [0.3, -0.85], [0.5, -0.85]]
+
+[[ground.holds]]
+at = [-1.5, -0.5]
+runway = "27L"
+
+[[ground.holds]]
+at = [-0.75, -0.5]
+runway = "27L"
+
+[[ground.holds]]
+at = [0.0, -0.5]
+runway = "27L"
+
+[[ground.holds]]
+at = [0.3, -0.5]
+runway = "27L"
+
+[[ground.holds]]
+at = [0.3, -0.7]
+runway = "27L"
+
+[[ground.holds]]
+at = [0.75, -0.5]
+runway = "27L"
+
+[[ground.holds]]
+at = [1.5, -0.5]
+runway = "27L"
+
+[[ground.holds]]
+at = [-1.5, 0.5]
+runway = "27R"
+
+[[ground.holds]]
+at = [-0.75, 0.5]
+runway = "27R"
+
+[[ground.holds]]
+at = [0.0, 0.5]
+runway = "27R"
+
+[[ground.holds]]
+at = [0.75, 0.5]
+runway = "27R"
+
+[[ground.holds]]
+at = [1.5, 0.5]
+runway = "27R"
+
+[[ground.parking]]
+name = "G1"
+at = [-0.45, 0.1]
+heading = 0.0
+
+[[ground.parking]]
+name = "G2"
+at = [-0.15, 0.1]
+heading = 0.0
+
+[[ground.parking]]
+name = "G3"
+at = [0.15, 0.1]
+heading = 0.0
+
+[[ground.parking]]
+name = "G4"
+at = [0.45, 0.1]
+heading = 0.0
+
+[[ground.parking]]
+name = "G5"
+at = [-0.45, -0.1]
+heading = 180.0
+
+[[ground.parking]]
+name = "G6"
+at = [-0.15, -0.1]
+heading = 180.0
+
+[[ground.parking]]
+name = "G7"
+at = [0.15, -0.1]
+heading = 180.0
+
+[[ground.parking]]
+name = "G8"
+at = [0.45, -0.1]
+heading = 180.0
+
+[[ground.parking]]
+name = "C1"
+at = [0.1, -0.85]
+heading = 270.0
+
+[[ground.parking]]
+name = "C2"
+at = [0.5, -0.85]
+heading = 90.0

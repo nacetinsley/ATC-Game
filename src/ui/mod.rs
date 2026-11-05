@@ -91,7 +91,7 @@ impl App {
     pub async fn new() -> App {
         let airports: Vec<Airport> = CATALOG
             .iter()
-            .map(|text| Airport::from_toml(text).expect("built-in airport data is valid"))
+            .map(|&(text, ground)| Airport::load(text, ground).expect("built-in airport data is valid"))
             .collect();
         App {
             screen: Screen::Menu,
