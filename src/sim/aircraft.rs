@@ -1,0 +1,362 @@
+//! Aircraft state and flight dynamics.
+
+use super::airspace::Airport;
+use super::autopilot;
+use super::performance::AircraftType;
+use super::units::{SECONDS_PER_HOUR, Wind, heading_diff, heading_vec, normalize_heading, tas_from_ias};
+use glam::Vec2;
+
+/// Standard rate turn, degrees per second.
+pub const STANDARD_TURN_RATE: f32 = 3.0;
+/// Turn rate at 25 degrees of bank is this divided by TAS in knots.
+const BANK_LIMIT_FACTOR: f32 = 508.7;
+/// Departures lift off at Vref plus this.
+const ROTATE_MARGIN: f32 = 15.0;
+const SPEED_LIMIT_ALTITUDE: f32 = 10000.0;
+const SPEED_LIMIT: f32 = 250.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flow {
+    Arrival,
+    Departure,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    /// Center is offering the aircraft; the player has not accepted it.
+    Offered,
+    /// Talking to the player.
+    Controlled,
+    /// Cleared for the ILS, not yet established on the localizer.
+    ClearedApproach,
+    Localizer,
+    Glideslope,
+    TowerHandedOff,
+    /// On the runway after landing.
+    Rollout,
+    /// Climbing out; becomes `Controlled` once safely airborne.
+    GoAround,
+    /// Tower's departure, until it checks in with the player.
+    TowerRelease,
+    OfferedToCenter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Lateral {
+    Heading(f32),
+    Direct(usize),
+    Route,
+    Localizer,
+}
+
+#[derive(Debug, Clone)]
+pub struct Aircraft {
+    pub id: u32,
+    pub callsign: String,
+    pub flow: Flow,
+    pub ty: &'static AircraftType,
+    pub phase: Phase,
+
+    pub pos: Vec2,
+    pub altitude: f32,
+    pub heading: f32,
+    pub ias: f32,
+    /// Feet per minute, positive climbing.
+    pub vertical_speed: f32,
+    /// Knots over the ground.
+    pub ground_velocity: Vec2,
+    pub on_ground: bool,
+
+    pub lateral: Lateral,
+    pub target_altitude: f32,
+    pub target_speed: f32,
+    pub route: Vec<usize>,
+    pub route_index: usize,
+
+    /// Runway this aircraft is cleared to, once cleared.
+    pub approach_runway: Option<usize>,
+    pub on_glideslope: bool,
+
+    pub spawn_time: f32,
+    pub entered_sector: bool,
+    /// Terrain warnings only apply once the aircraft has climbed above the MVA.
+    pub msaw_armed: bool,
+    /// Departures only: where and how high Center wants them.
+    pub exit_fix: Option<usize>,
+    pub exit_altitude: f32,
+    /// Sim time the aircraft leaves the runway after landing.
+    pub rollout_until: f32,
+}
+
+impl Aircraft {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: u32,
+        callsign: impl Into<String>,
+        flow: Flow,
+        ty: &'static AircraftType,
+        pos: Vec2,
+        heading: f32,
+        altitude: f32,
+        ias: f32,
+    ) -> Aircraft {
+        Aircraft {
+            id,
+            callsign: callsign.into(),
+            flow,
+            ty,
+            phase: Phase::Controlled,
+            pos,
+            altitude,
+            heading: normalize_heading(heading),
+            ias,
+            vertical_speed: 0.0,
+            ground_velocity: heading_vec(heading) * tas_from_ias(ias, altitude),
+            on_ground: false,
+            lateral: Lateral::Heading(normalize_heading(heading)),
+            target_altitude: altitude,
+            target_speed: ias,
+            route: Vec::new(),
+            route_index: 0,
+            approach_runway: None,
+            on_glideslope: false,
+            spawn_time: 0.0,
+            entered_sector: false,
+            msaw_armed: true,
+            exit_fix: None,
+            exit_altitude: 0.0,
+            rollout_until: 0.0,
+        }
+    }
+
+    pub fn tas(&self) -> f32 {
+        tas_from_ias(self.ias, self.altitude)
+    }
+
+    pub fn ground_speed(&self) -> f32 {
+        self.ground_velocity.length()
+    }
+
+    /// True when the player is working this aircraft and can issue clearances.
+    pub fn on_player_frequency(&self) -> bool {
+        matches!(
+            self.phase,
+            Phase::Controlled
+                | Phase::ClearedApproach
+                | Phase::Localizer
+                | Phase::Glideslope
+                | Phase::GoAround
+        )
+    }
+
+    /// Established on the final approach course.
+    pub fn on_final(&self) -> bool {
+        matches!(self.phase, Phase::Localizer | Phase::Glideslope | Phase::TowerHandedOff)
+    }
+
+    /// Fix the aircraft is navigating to, if any.
+    pub fn active_fix(&self) -> Option<usize> {
+        match self.lateral {
+            Lateral::Direct(fix) => Some(fix),
+            Lateral::Route => self.route.get(self.route_index).copied(),
+            _ => None,
+        }
+    }
+
+    /// Advance the flight model by one tick.
+    pub fn step(&mut self, dt: f32, wind: Wind, airport: &Airport) {
+        if self.on_ground {
+            self.step_ground(dt);
+            return;
+        }
+
+        let air = wind.vector_at(self.altitude);
+        let desired = autopilot::desired_heading(self, air, airport);
+        self.turn_toward(desired, dt);
+        self.step_speed(dt, airport);
+        self.step_vertical(dt, airport);
+
+        self.ground_velocity = heading_vec(self.heading) * self.tas() + air;
+        self.pos += self.ground_velocity / SECONDS_PER_HOUR * dt;
+    }
+
+    fn step_ground(&mut self, dt: f32) {
+        let target = if self.phase == Phase::TowerRelease { self.target_speed } else { 20.0 };
+        self.ias = approach(self.ias, target, self.ty.accel.max(self.ty.decel) * dt);
+        self.vertical_speed = 0.0;
+        self.ground_velocity = heading_vec(self.heading) * self.ias;
+        self.pos += self.ground_velocity / SECONDS_PER_HOUR * dt;
+        if self.phase == Phase::TowerRelease && self.ias >= self.ty.vref + ROTATE_MARGIN {
+            self.on_ground = false;
+        }
+    }
+
+    fn turn_toward(&mut self, desired: f32, dt: f32) {
+        let rate = STANDARD_TURN_RATE.min(BANK_LIMIT_FACTOR / self.tas().max(1.0));
+        let turn = heading_diff(self.heading, desired).clamp(-rate * dt, rate * dt);
+        self.heading = normalize_heading(self.heading + turn);
+    }
+
+    fn step_speed(&mut self, dt: f32, airport: &Airport) {
+        let target = self.commanded_speed(airport);
+        let rate = if target > self.ias { self.ty.accel } else { self.ty.decel };
+        self.ias = approach(self.ias, target, rate * dt);
+    }
+
+    /// Assigned speed after the speed limit and the approach speed schedule.
+    pub fn commanded_speed(&self, airport: &Airport) -> f32 {
+        let mut speed = self.target_speed.min(self.ty.max_speed);
+        if self.altitude < SPEED_LIMIT_ALTITUDE {
+            speed = speed.min(SPEED_LIMIT);
+        }
+        if let (Lateral::Localizer, Some(rwy)) = (self.lateral, self.approach_runway) {
+            let along = airport.runways[rwy].along(self.pos);
+            let schedule = if along > 10.0 {
+                180.0
+            } else if along > 5.0 {
+                self.ty.vref + 25.0
+            } else {
+                self.ty.vref + 5.0
+            };
+            speed = speed.min(schedule);
+        }
+        speed
+    }
+
+    fn step_vertical(&mut self, dt: f32, airport: &Airport) {
+        let minutes = dt / 60.0;
+        if self.on_glideslope
+            && let Some(rwy) = self.approach_runway {
+                let desired = airport.glideslope_altitude(airport.runways[rwy].along(self.pos));
+                let limit = self.ty.descent_fpm * minutes;
+                let change = (desired - self.altitude).clamp(-limit, limit);
+                self.altitude += change;
+                self.vertical_speed = change / minutes;
+                return;
+            }
+
+        let diff = self.target_altitude - self.altitude;
+        // Climb performance falls away with altitude.
+        let rate = if diff > 0.0 {
+            self.ty.climb_fpm * (1.0 - self.altitude.max(0.0) / 60000.0)
+        } else {
+            self.ty.descent_fpm
+        };
+        let limit = rate * minutes;
+        let change = diff.clamp(-limit, limit);
+        self.altitude += change;
+        self.vertical_speed = change / minutes;
+    }
+
+    /// Abandon the approach: fly runway heading and climb to the published altitude.
+    pub fn start_go_around(&mut self, airport: &Airport) {
+        let course = self
+            .approach_runway
+            .map(|r| airport.runways[r].heading)
+            .unwrap_or(self.heading);
+        self.phase = Phase::GoAround;
+        self.lateral = Lateral::Heading(course);
+        self.target_altitude = airport.go_around_altitude;
+        self.target_speed = self.ty.max_speed.min(210.0);
+        self.approach_runway = None;
+        self.on_glideslope = false;
+        self.msaw_armed = false;
+    }
+}
+
+fn approach(value: f32, target: f32, max_step: f32) -> f32 {
+    value + (target - value).clamp(-max_step, max_step)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sim::performance::aircraft_type;
+
+    fn jet(heading: f32, altitude: f32, ias: f32) -> Aircraft {
+        Aircraft::new(
+            1,
+            "TST1",
+            Flow::Arrival,
+            aircraft_type("B738").unwrap(),
+            Vec2::ZERO,
+            heading,
+            altitude,
+            ias,
+        )
+    }
+
+    fn run(ac: &mut Aircraft, seconds: f32, wind: Wind) {
+        let airport = Airport::default_airport();
+        for _ in 0..(seconds / 0.25) as usize {
+            ac.step(0.25, wind, &airport);
+        }
+    }
+
+    #[test]
+    fn turns_at_standard_rate_the_short_way() {
+        // Slow enough that the bank limit doesn't reduce the rate.
+        let mut ac = jet(350.0, 3000.0, 150.0);
+        ac.target_speed = 150.0;
+        ac.lateral = Lateral::Heading(50.0);
+        run(&mut ac, 10.0, Wind::CALM);
+        // 10 s at 3 deg/s, turning right through north.
+        assert!((ac.heading - 20.0).abs() < 0.01, "{}", ac.heading);
+        run(&mut ac, 20.0, Wind::CALM);
+        assert!((ac.heading - 50.0).abs() < 0.01, "{}", ac.heading);
+    }
+
+    #[test]
+    fn fast_aircraft_turn_slower_than_standard_rate() {
+        let mut ac = jet(0.0, 14000.0, 300.0);
+        ac.lateral = Lateral::Heading(90.0);
+        run(&mut ac, 10.0, Wind::CALM);
+        assert!(ac.heading > 10.0 && ac.heading < 25.0, "{}", ac.heading);
+    }
+
+    #[test]
+    fn descends_at_type_rate_and_levels_off() {
+        let mut ac = jet(0.0, 10000.0, 240.0);
+        ac.target_altitude = 8000.0;
+        run(&mut ac, 30.0, Wind::CALM);
+        assert!((ac.altitude - 8900.0).abs() < 1.0, "{}", ac.altitude);
+        assert!(ac.vertical_speed < 0.0);
+        run(&mut ac, 60.0, Wind::CALM);
+        assert_eq!(ac.altitude, 8000.0);
+        assert_eq!(ac.vertical_speed, 0.0);
+    }
+
+    #[test]
+    fn climb_rate_drops_with_altitude() {
+        let mut low = jet(0.0, 1000.0, 240.0);
+        low.target_altitude = 30000.0;
+        let mut high = jet(0.0, 15000.0, 240.0);
+        high.target_altitude = 30000.0;
+        run(&mut low, 4.0, Wind::CALM);
+        run(&mut high, 4.0, Wind::CALM);
+        assert!(low.vertical_speed > high.vertical_speed);
+    }
+
+    #[test]
+    fn speed_limit_below_10000_overrides_assignment() {
+        let mut ac = jet(0.0, 9000.0, 300.0);
+        ac.target_speed = 300.0;
+        run(&mut ac, 60.0, Wind::CALM);
+        assert_eq!(ac.ias, 250.0);
+    }
+
+    #[test]
+    fn wind_drifts_an_aircraft_on_a_fixed_heading() {
+        let mut ac = jet(0.0, 3000.0, 200.0);
+        run(&mut ac, 360.0, Wind { from: 270.0, speed: 30.0 });
+        // Heading north with wind from the west: 6 minutes at 36 kt drifts about 3.6 NM east.
+        assert!(ac.pos.x > 3.0 && ac.pos.x < 4.0, "{}", ac.pos.x);
+        assert!(ac.pos.y > 20.0);
+    }
+
+    #[test]
+    fn true_airspeed_exceeds_indicated_at_altitude() {
+        let ac = jet(0.0, 10000.0, 250.0);
+        assert_eq!(ac.tas(), 300.0);
+    }
+}

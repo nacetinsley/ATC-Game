@@ -1,0 +1,224 @@
+# Fictional airport. Coordinates are nautical miles from the field: x east, y north.
+# Arrival gates sit on the diagonals and departure exits on the cardinals, so the
+# two flows only cross where the player has to manage them with altitude.
+
+name = "Harrowgate International"
+code = "XHGT"
+elevation = 0.0
+go_around_altitude = 3000.0
+mva_default = 2000.0
+
+# Sector boundary.
+sector = [
+  [20.0, 52.0], [52.0, 20.0], [52.0, -20.0], [20.0, -52.0],
+  [-20.0, -52.0], [-52.0, -20.0], [-52.0, 20.0], [-20.0, 52.0],
+]
+
+[[mva]]
+altitude = 5000.0
+polygon = [[-52.0, 20.0], [-20.0, 52.0], [-10.0, 30.0], [-30.0, 12.0]]
+
+[[mva]]
+altitude = 4000.0
+polygon = [[30.0, -8.0], [52.0, -20.0], [20.0, -52.0], [12.0, -24.0]]
+
+# Each physical runway appears once per landing direction.
+[[runways]]
+id = "27L"
+x = 1.5
+y = -0.6
+heading = 270.0
+length = 3.0
+
+[[runways]]
+id = "09R"
+x = -1.5
+y = -0.6
+heading = 90.0
+length = 3.0
+
+[[runways]]
+id = "27R"
+x = 1.5
+y = 0.6
+heading = 270.0
+length = 3.0
+
+[[runways]]
+id = "09L"
+x = -1.5
+y = 0.6
+heading = 90.0
+length = 3.0
+
+[[configs]]
+name = "West"
+arrival = "27L"
+departure = "27R"
+
+[[configs]]
+name = "East"
+arrival = "09R"
+departure = "09L"
+
+# Arrival gates
+[[fixes]]
+name = "BOLTE"
+x = 36.0
+y = 36.0
+[[fixes]]
+name = "KIRNS"
+x = 36.0
+y = -36.0
+[[fixes]]
+name = "WAVRY"
+x = -36.0
+y = -36.0
+[[fixes]]
+name = "DUNLO"
+x = -36.0
+y = 36.0
+
+# Departure exits
+[[fixes]]
+name = "TOPAZ"
+x = 0.0
+y = 48.0
+[[fixes]]
+name = "MARLO"
+x = 48.0
+y = 0.0
+[[fixes]]
+name = "SEGUN"
+x = 0.0
+y = -48.0
+[[fixes]]
+name = "RENDL"
+x = -48.0
+y = 0.0
+
+# West-flow arrival fixes
+[[fixes]]
+name = "ALDER"
+x = 20.0
+y = 14.0
+[[fixes]]
+name = "BRICK"
+x = 20.0
+y = -14.0
+[[fixes]]
+name = "CEDAR"
+x = -5.0
+y = 18.0
+[[fixes]]
+name = "DOVER"
+x = -5.0
+y = -18.0
+
+# East-flow arrival fixes
+[[fixes]]
+name = "ELMOR"
+x = -20.0
+y = 14.0
+[[fixes]]
+name = "FINCH"
+x = -20.0
+y = -14.0
+[[fixes]]
+name = "GLADE"
+x = 5.0
+y = 18.0
+[[fixes]]
+name = "HAZEL"
+x = 5.0
+y = -18.0
+
+# West-flow departure fixes
+[[fixes]]
+name = "IVORY"
+x = -14.0
+y = 14.0
+[[fixes]]
+name = "JUNIP"
+x = -14.0
+y = -14.0
+[[fixes]]
+name = "LARCH"
+x = 14.0
+y = 30.0
+
+# East-flow departure fixes
+[[fixes]]
+name = "MAPLE"
+x = 14.0
+y = 14.0
+[[fixes]]
+name = "NORWD"
+x = 14.0
+y = -14.0
+[[fixes]]
+name = "OAKEN"
+x = -14.0
+y = 30.0
+
+# STARs end on a downwind fix; the player vectors them from there.
+[[stars]]
+config = "West"
+fixes = ["BOLTE", "ALDER"]
+[[stars]]
+config = "West"
+fixes = ["KIRNS", "BRICK"]
+[[stars]]
+config = "West"
+fixes = ["DUNLO", "CEDAR", "ALDER"]
+[[stars]]
+config = "West"
+fixes = ["WAVRY", "DOVER", "BRICK"]
+
+[[stars]]
+config = "East"
+fixes = ["BOLTE", "GLADE", "ELMOR"]
+[[stars]]
+config = "East"
+fixes = ["KIRNS", "HAZEL", "FINCH"]
+[[stars]]
+config = "East"
+fixes = ["DUNLO", "ELMOR"]
+[[stars]]
+config = "East"
+fixes = ["WAVRY", "FINCH"]
+
+# SIDs finish on the exit fix, where Center wants the aircraft at exit_altitude.
+[[sids]]
+config = "West"
+fixes = ["RENDL"]
+exit_altitude = 13000.0
+[[sids]]
+config = "West"
+fixes = ["IVORY", "TOPAZ"]
+exit_altitude = 13000.0
+[[sids]]
+config = "West"
+fixes = ["JUNIP", "SEGUN"]
+exit_altitude = 13000.0
+[[sids]]
+config = "West"
+fixes = ["IVORY", "LARCH", "MARLO"]
+exit_altitude = 15000.0
+
+[[sids]]
+config = "East"
+fixes = ["MARLO"]
+exit_altitude = 13000.0
+[[sids]]
+config = "East"
+fixes = ["MAPLE", "TOPAZ"]
+exit_altitude = 13000.0
+[[sids]]
+config = "East"
+fixes = ["NORWD", "SEGUN"]
+exit_altitude = 13000.0
+[[sids]]
+config = "East"
+fixes = ["MAPLE", "OAKEN", "RENDL"]
+exit_altitude = 15000.0
