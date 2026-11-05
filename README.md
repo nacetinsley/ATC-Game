@@ -1,10 +1,11 @@
-# Approach Control
+# Air Traffic Control
 
 A 2D top-down air traffic control game written in Rust with
-[macroquad](https://macroquad.rs). You work the approach radar position for a
-30-minute shift: accept arrivals from Center, vector them onto the ILS, hand
-them to Tower, and climb departures out to their exit fixes, all without
-losing separation.
+[macroquad](https://macroquad.rs). Work a 30-minute shift as Approach, Tower
+or Ground, or combine positions the way a real facility does when it's quiet.
+Vector arrivals onto the ILS, clear them to land, taxi them to the gate, and
+get departures from the gate to their exit fix, all without losing
+separation or putting two aircraft on one runway.
 
 It aims to be a realistic simulator rather than an arcade game. Aircraft fly
 real performance limits, pilots take a few seconds to respond and sometimes
@@ -17,8 +18,24 @@ reply "unable", and the scope shows only what radar sees on each sweep.
 | **XHGT** Harrowgate International | Fictional. Two parallel runways, airline traffic that builds through the shift. |
 | **KSUS** Spirit of St. Louis | Real runways, STARs, SIDs, ILS approaches and minimum vectoring altitudes from FAA data. Business jets and general aviation at an estimated real-world rate. |
 
-Choose the airport and a traffic level, from Very quiet to Very busy, on the
-start screen. The middle level is the airport's normal rate.
+Choose the airport, your position and a traffic level, from Very quiet to
+Very busy, on the start screen. The middle level is the airport's normal rate.
+
+## Positions
+
+| Position | You work | Automated |
+|---|---|---|
+| **Approach** | The radar: arrivals from Center to final, departures out to Center | Tower and Ground |
+| **Local (Tower)** | The runways: landing and takeoff clearances, runway crossings | Ground and Approach |
+| **Ground** | The taxiways: gate to hold line, runway exit to gate | Tower and Approach |
+| **Local + Ground** | Both tower positions, combined | Approach |
+| **All three combined** | Everything | Nothing |
+
+On separate positions you hand each aircraft to the next controller, and a
+forgotten handoff costs points. On a combined position there's nobody to hand
+to, so it happens silently. Without Approach, arrivals turn up established on
+the ILS about 10 miles out. Tower positions get a surface map with a radar
+inset; with all three, F1 and F2 swap which is full size.
 
 ## Features
 
@@ -32,9 +49,15 @@ start screen. The middle level is the airport's normal rate.
   the runway.
 - **Realistic callsigns:** airline flight numbers, U.S. registrations that
   follow 14 CFR 47.15, and the occasional foreign business jet.
-- **Scoring:** points for landings and clean handoffs, penalties for
-  incidents, and a rating at the end. Five separation losses and you're
-  decertified; a near collision ends the shift.
+- **Surface movement:** aircraft taxi along the real taxiway graph, stop at
+  hold lines without a crossing clearance, queue behind traffic, and turn off
+  the runway at the first exit they can stop for.
+- **Runway safety:** a landing needs a clearance by 1 NM final and a clear
+  runway. Entering a runway with traffic inside 2 NM or rolling is an
+  incursion; two aircraft nose to nose on a taxiway is a deadlock.
+- **Scoring:** points for landings, parked arrivals and clean handoffs,
+  penalties for incidents, and a rating at the end. Five separation losses
+  and you're decertified; a near collision ends the shift.
 
 ## Running it
 
@@ -55,8 +78,15 @@ cargo run --release
 | `+` / `-` | Speed +10 / -10 kt |
 | C | Clear for the ILS |
 | R | Resume the published route |
-| T | Accept a handoff, or hand off to Tower or Center |
+| T | Accept a handoff, or hand off to the next controller |
 | G | Go around |
+| Click a hold line, gate or junction | Taxi the selected aircraft there |
+| Ctrl-click a taxiway | Add it to the taxi route ("via") |
+| H | Hold position, or continue |
+| X | Cross the runway ahead |
+| W / K | Line up and wait / Cleared for takeoff |
+| L | Cleared to land |
+| F1 / F2 | Radar or surface full size (all three combined) |
 | Enter | Transmit the pending clearance |
 | Backspace | Cancel the pending clearance |
 | Space | Pause |
@@ -103,11 +133,12 @@ python tools/import_osm.py --airport KSUS --cycle 261029
 ## Project layout
 
 ```
-src/sim/      headless simulation: aircraft, autopilot, clearances, tower, traffic, conflicts, scoring
-src/ui/       macroquad front end: scope, side panel, input, menus, audio
+src/sim/      headless simulation: aircraft, autopilot, clearances, positions, ground
+              graph and movement, tower, traffic, conflicts, scoring
+src/ui/       macroquad front end: radar scope, surface map, side panel, input, menus, audio
 assets/       airport data files
 tests/        scenario tests for each airport
-tools/        FAA data importer and its tests
+tools/        FAA and OpenStreetMap importers and their tests
 ```
 
 ## Data notice

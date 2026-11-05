@@ -1,33 +1,57 @@
-//! The automated Tower: approach gates, landings, runway occupancy and departure release.
+//! Local control: approach gates, landings, runway occupancy and takeoffs, plus
+//! the automated Tower, Ground and Approach positions for whatever the player
+//! isn't working.
 
 use super::aircraft::{Aircraft, Flow, Lateral, Phase};
 use super::autopilot::should_capture_localizer;
+use super::clearance::{AT_NODE_NM, Clearance, issuer_for};
+use super::ground_map::GroundMap;
+use super::performance::WakeCategory;
+use super::positions::Position;
 use super::scoring::{GoAroundReason, SimEvent};
 use super::{Speaker, World};
 
 /// Must be with Tower by this distance on final.
 pub const TOWER_HANDOFF_GATE_NM: f32 = 5.0;
-/// Tower checks the runway is clear at this distance.
+/// Tower checks the runway and landing clearance at this distance.
 const RUNWAY_CHECK_NM: f32 = 1.0;
-const ROLLOUT_SECONDS: f32 = 45.0;
-const ROLLOUT_SECONDS_HEAVY: f32 = 55.0;
-/// Departures and go-arounds come to the player above this height over the field.
+/// Departures and go-arounds go to Approach above this height over the field.
 const CHECK_IN_AGL: f32 = 1500.0;
-/// Tower won't line a departure up in front of an arrival closer than this.
-const SHORT_FINAL_HOLD_NM: f32 = 4.0;
+/// The automated Tower clears arrivals to land inside this distance.
+const LANDING_CLEARANCE_NM: f32 = 8.0;
+/// Tower won't launch a departure in front of an arrival closer than this.
+const SHORT_FINAL_HOLD_NM: f32 = 5.0;
+/// Or send an aircraft across a runway with an arrival closer than this.
+const CROSSING_HOLD_NM: f32 = 5.0;
 /// Minimum time between departures, seconds.
 pub const DEPARTURE_INTERVAL: f32 = 90.0;
 pub const DEPARTURE_INTERVAL_AFTER_HEAVY: f32 = 150.0;
-/// How long a departure holds the runway from line-up to rotation.
-const TAKEOFF_OCCUPANCY: f32 = 45.0;
+/// Entering a runway with an arrival closer than this is an incursion.
+pub const INCURSION_FINAL_NM: f32 = 2.0;
+/// A departure should be talking to Departure by this far past the runway end.
+const DEPARTURE_HANDOFF_NM: f32 = 3.0;
+/// How long an aircraft waits for a handoff before it counts as missed, seconds.
+const HANDOFF_GRACE_S: f32 = 60.0;
+/// The automated Approach takes departures and go-arounds off the board here.
+const AUTOMATED_APPROACH_RANGE_NM: f32 = 6.0;
+/// Choosing parking, a runway crossing costs as much as this much taxiing, NM.
+const PARKING_CROSSING_NM: f32 = 2.0;
+/// Arrivals in tower-only modes appear this far out on final.
+pub const FINAL_SPAWN_NM: f32 = 10.0;
 
 impl World {
+    pub(super) fn surface(&self) -> &GroundMap {
+        self.airport.surface.as_ref().expect("airport has a ground layout")
+    }
+
     pub(super) fn run_approaches(&mut self) {
         for index in 0..self.aircraft.len() {
             match self.aircraft[index].phase {
                 Phase::ClearedApproach => self.step_cleared(index),
                 Phase::Localizer | Phase::Glideslope | Phase::TowerHandedOff => {
-                    self.step_final(index)
+                    if !self.aircraft[index].on_ground {
+                        self.step_final(index)
+                    }
                 }
                 Phase::GoAround => {
                     let check_in = self.airport.elevation + CHECK_IN_AGL;
@@ -36,7 +60,7 @@ impl World {
                         ac.phase = Phase::Controlled;
                     }
                 }
-                Phase::TowerRelease => self.step_departure_check_in(index),
+                Phase::TowerRelease => self.step_departure(index),
                 _ => {}
             }
         }
@@ -76,12 +100,19 @@ impl World {
         }
 
         if phase != Phase::TowerHandedOff {
-            if along < TOWER_HANDOFF_GATE_NM {
+            if along >= TOWER_HANDOFF_GATE_NM {
+                return;
+            }
+            let staffing = self.config.staffing;
+            if staffing.approach && staffing.local {
+                // One controller works both: there's nobody to hand off to.
+                self.aircraft[index].phase = Phase::TowerHandedOff;
+            } else {
                 let callsign = self.aircraft[index].callsign.clone();
                 self.emit(SimEvent::LateHandoff { callsign });
                 self.go_around(index, GoAroundReason::LateHandoff);
+                return;
             }
-            return;
         }
 
         if along < RUNWAY_CHECK_NM {
@@ -89,7 +120,12 @@ impl World {
                 self.go_around(index, GoAroundReason::Unstable);
                 return;
             }
-            if self.runway_occupied(rwy) {
+            if !self.aircraft[index].cleared_to_land {
+                self.go_around(index, GoAroundReason::NoLandingClearance);
+                return;
+            }
+            let physical = self.surface().runway_of_end[rwy];
+            if self.runway_occupied(physical, self.aircraft[index].id) {
                 self.go_around(index, GoAroundReason::RunwayOccupied);
                 return;
             }
@@ -106,86 +142,384 @@ impl World {
         ac.altitude = elevation;
         ac.on_ground = true;
         ac.on_glideslope = false;
+        ac.vertical_speed = 0.0;
         ac.phase = Phase::Rollout;
-        let heavy = ac.ty.wake == super::performance::WakeCategory::Heavy;
-        let occupancy = if heavy { ROLLOUT_SECONDS_HEAVY } else { ROLLOUT_SECONDS };
-        ac.rollout_until = now + occupancy;
+        if let Some(rwy) = ac.approach_runway {
+            ac.heading = self.airport.runways[rwy].heading;
+        }
         let minutes = (now - ac.spawn_time) / 60.0;
         let callsign = ac.callsign.clone();
-        if let Some(rwy) = ac.approach_runway {
-            self.runway_occupied_until[rwy] = now + occupancy;
-        }
         self.emit(SimEvent::Landed { callsign, minutes });
     }
 
-    fn runway_occupied(&self, rwy: usize) -> bool {
-        self.time < self.runway_occupied_until[rwy]
+    /// Does this aircraft occupy the physical runway?
+    pub fn occupies(&self, ac: &Aircraft, physical: usize) -> bool {
+        if !ac.on_ground {
+            return false;
+        }
+        let map = self.surface();
+        let on = |end: Option<usize>| end.is_some_and(|e| map.runway_of_end[e] == physical);
+        match ac.phase {
+            Phase::Rollout => on(ac.approach_runway),
+            Phase::TowerRelease | Phase::LinedUp => on(ac.departure_end),
+            Phase::Taxiing => ac.taxi.as_ref().is_some_and(|t| {
+                map.in_zone(t.node, physical)
+                    || t.next().is_some_and(|n| {
+                        map.in_zone(n, physical)
+                            && ac.pos.distance(map.nodes[t.node].pos) > AT_NODE_NM
+                    })
+            }),
+            _ => false,
+        }
     }
 
-    fn step_departure_check_in(&mut self, index: usize) {
-        let check_in = self.airport.elevation + CHECK_IN_AGL;
-        let ac = &mut self.aircraft[index];
-        if ac.on_ground || ac.altitude < check_in {
+    /// Anything other than `except` on the runway or past its hold lines.
+    pub fn runway_occupied(&self, physical: usize, except: u32) -> bool {
+        self.aircraft.iter().any(|a| a.id != except && self.occupies(a, physical))
+    }
+
+    /// Airborne arrivals on final to either end of the runway, closer than `nm`.
+    pub(super) fn arrivals_within(&self, physical: usize, nm: f32) -> Vec<usize> {
+        let map = self.surface();
+        (0..self.aircraft.len())
+            .filter(|&i| {
+                let a = &self.aircraft[i];
+                !a.on_ground
+                    && a.on_final()
+                    && a.approach_runway.is_some_and(|e| {
+                        map.runway_of_end[e] == physical && self.airport.runways[e].along(a.pos) < nm
+                    })
+            })
+            .collect()
+    }
+
+    /// Climbing out with Tower.
+    fn step_departure(&mut self, index: usize) {
+        let ac = &self.aircraft[index];
+        if ac.on_ground {
             return;
         }
+        let staffing = self.config.staffing;
+        let high = ac.altitude >= self.airport.elevation + CHECK_IN_AGL;
+        if !staffing.local || staffing.approach {
+            // The automated Tower switches it, or one controller works both.
+            if high {
+                self.hand_to_approach(index);
+            }
+            return;
+        }
+        let far = ac
+            .departure_end
+            .is_some_and(|e| self.airport.runways[e].far_end().distance(ac.pos) > DEPARTURE_HANDOFF_NM);
+        if far {
+            let callsign = ac.callsign.clone();
+            self.emit(SimEvent::MissedHandoff { callsign, to: "Departure" });
+            self.hand_to_approach(index);
+        }
+    }
+
+    /// Switch a departure to Approach.
+    pub(super) fn hand_to_approach(&mut self, index: usize) {
+        let ac = &mut self.aircraft[index];
         ac.phase = Phase::Controlled;
-        ac.lateral = Lateral::Route;
-        let exit = ac.exit_fix.map(|f| self.airport.fixes[f].name.clone()).unwrap_or_default();
-        let line = format!(
-            "{}, airborne, climbing to {:.0}, departure via {exit}.",
-            ac.callsign, ac.target_altitude
-        );
+        ac.freq_since = self.time;
+        if ac.flow == Flow::Departure && ac.route_index < ac.route.len() {
+            ac.lateral = Lateral::Route;
+        }
+        if !self.config.staffing.local {
+            self.check_in(index, Position::Approach);
+        }
+    }
+
+    /// The pilot's first call on a frequency the player works.
+    pub(super) fn check_in(&mut self, index: usize, frequency: Position) {
+        if !self.config.staffing.works(frequency) {
+            return;
+        }
+        let ac = &self.aircraft[index];
+        let line = match frequency {
+            Position::Approach => {
+                let exit =
+                    ac.exit_fix.map(|f| self.airport.fixes[f].name.clone()).unwrap_or_default();
+                format!(
+                    "{}, airborne, climbing to {:.0}, departure via {exit}.",
+                    ac.callsign, ac.target_altitude
+                )
+            }
+            Position::Local => match self.holding_short_of(ac) {
+                Some(runway) => format!("Tower, {}, holding short runway {runway}.", ac.callsign),
+                None => format!("Tower, {}, with you.", ac.callsign),
+            },
+            Position::Ground => match ac.parking.map(|p| self.surface().parking[p].name.clone()) {
+                Some(spot) => format!("Ground, {}, clear of the runway, for {spot}.", ac.callsign),
+                None => format!("Ground, {}, with you.", ac.callsign),
+            },
+            Position::Center => return,
+        };
         self.say(Speaker::Pilot, line);
     }
 
-    /// Line up the next departure if the runway and wake timing allow.
-    pub(super) fn run_departure_release(&mut self) {
-        if self.time < self.next_departure_time || self.departure_queue.is_empty() {
-            return;
+    fn holding_short_of(&self, ac: &Aircraft) -> Option<String> {
+        let map = self.surface();
+        let taxi = ac.taxi.as_ref()?;
+        if let Some(r) = taxi.holding_short {
+            return Some(super::clearance::spoken_runway(&self.airport, map, r));
         }
-        let Some(ty) = self.departure_queue.front().map(|a| a.ty) else { return };
-        let rwy = self.departure_runway_for(ty);
-        if self.runway_occupied(rwy) || self.arrival_on_short_final(rwy) {
-            return;
-        }
-        let Some(mut ac) = self.departure_queue.pop_front() else { return };
-        let runway = &self.airport.runways[rwy];
-        ac.pos = runway.takeoff_point();
-        ac.heading = runway.heading;
-        ac.lateral = Lateral::Heading(runway.heading);
-        ac.flow = Flow::Departure;
-        ac.phase = Phase::TowerRelease;
-        ac.on_ground = true;
-        ac.ias = 0.0;
-        ac.altitude = self.airport.elevation;
-        ac.spawn_time = self.time;
-        ac.msaw_armed = false;
-        ac.entered_sector = true;
-
-        let heavy = ac.ty.wake == super::performance::WakeCategory::Heavy;
-        self.next_departure_time =
-            self.time + if heavy { DEPARTURE_INTERVAL_AFTER_HEAVY } else { DEPARTURE_INTERVAL };
-        self.runway_occupied_until[rwy] = self.time + TAKEOFF_OCCUPANCY;
-        self.add_aircraft(ac);
+        let end = ac.departure_end?;
+        (taxi.done() && map.departure_hold(end) == Some(taxi.node))
+            .then(|| self.airport.runways[end].id.clone())
     }
 
-    fn arrival_on_short_final(&self, rwy: usize) -> bool {
-        self.aircraft.iter().any(|a| {
-            a.on_final()
-                && a.approach_runway == Some(rwy)
-                && self.airport.runways[rwy].along(a.pos) < SHORT_FINAL_HOLD_NM
-        })
+    /// A takeoff roll has begun: space the next one, and check the runway was clear.
+    pub(super) fn begin_takeoff(&mut self, index: usize) {
+        let ac = &self.aircraft[index];
+        let Some(end) = ac.departure_end else { return };
+        let physical = self.surface().runway_of_end[end];
+        let interval = if ac.ty.wake == WakeCategory::Heavy {
+            DEPARTURE_INTERVAL_AFTER_HEAVY
+        } else {
+            DEPARTURE_INTERVAL
+        };
+        self.next_departure_time = self.next_departure_time.max(self.time + interval);
+        let (id, callsign) = (ac.id, ac.callsign.clone());
+        if self.runway_occupied(physical, id) {
+            self.emit(SimEvent::RunwaySeparation { callsign });
+        }
     }
 
-    /// Remove aircraft that have finished rolling out.
-    pub(super) fn clear_finished_rollouts(&mut self) {
-        let now = self.time;
-        self.aircraft
-            .retain(|a: &Aircraft| !(a.phase == Phase::Rollout && now >= a.rollout_until));
+    fn at_departure_hold(&self, ac: &Aircraft) -> bool {
+        let (Some(taxi), Some(end)) = (&ac.taxi, ac.departure_end) else { return false };
+        let map = self.surface();
+        ac.flow == Flow::Departure
+            && ac.phase == Phase::Taxiing
+            && taxi.done()
+            && map.departure_hold(end) == Some(taxi.node)
+            && ac.pos.distance(map.nodes[taxi.node].pos) < AT_NODE_NM
+    }
+
+    /// Taxiing clear of every runway zone, and not about to enter one.
+    fn clear_of_runways(&self, ac: &Aircraft) -> bool {
+        let map = self.surface();
+        ac.phase == Phase::Taxiing
+            && ac.taxi.as_ref().is_some_and(|t| {
+                map.nodes[t.node].zones.is_empty()
+                    && t.next().is_none_or(|n| map.nodes[n].zones.is_empty())
+            })
+    }
+
+    /// A departure on its way to its own hold line stays with Tower after crossing.
+    fn bound_for_departure_hold(&self, ac: &Aircraft) -> bool {
+        let map = self.surface();
+        ac.flow == Flow::Departure
+            && ac.departure_end.is_some_and(|e| {
+                let hold = map.departure_hold(e);
+                ac.taxi.as_ref().is_some_and(|t| t.path.last().copied() == hold || t.node == hold.unwrap_or(usize::MAX))
+            })
+    }
+
+    fn local_decision(&self, ac: &Aircraft, launched: bool) -> Option<Clearance> {
+        if !ac.on_ground {
+            let end = ac.approach_runway?;
+            let close = self.airport.runways[end].along(ac.pos) < LANDING_CLEARANCE_NM;
+            return (ac.phase == Phase::TowerHandedOff && !ac.cleared_to_land && close)
+                .then_some(Clearance::ClearedToLand(end));
+        }
+        let map = self.surface();
+        let taxi = ac.taxi.as_ref().filter(|_| ac.phase == Phase::Taxiing)?;
+        if let Some(r) = taxi.holding_short {
+            let safe = !self.runway_occupied(r, ac.id)
+                && self.arrivals_within(r, CROSSING_HOLD_NM).is_empty();
+            return safe.then_some(Clearance::CrossRunway(r));
+        }
+        if self.at_departure_hold(ac) {
+            let end = ac.departure_end?;
+            let r = map.runway_of_end[end];
+            let safe = !launched
+                && self.time >= self.next_departure_time
+                && !self.runway_occupied(r, ac.id)
+                && self.arrivals_within(r, SHORT_FINAL_HOLD_NM).is_empty();
+            return safe.then_some(Clearance::ClearedForTakeoff(end));
+        }
+        // Clear of the runways: over to Ground, if anyone is working it.
+        let to_ground = self.config.staffing.surface_traffic()
+            && self.clear_of_runways(ac)
+            && !self.bound_for_departure_hold(ac);
+        to_ground.then_some(Clearance::ContactGround)
+    }
+
+    /// The automated Tower, when the player isn't working Local.
+    pub(super) fn run_local(&mut self) {
+        if self.config.staffing.local {
+            return;
+        }
+        let mut calls = Vec::new();
+        let mut launched = false;
+        for ac in &self.aircraft {
+            if ac.frequency() != Position::Local || self.call_pending(ac.id) {
+                continue;
+            }
+            if let Some(c) = self.local_decision(ac, launched) {
+                launched |= matches!(c, Clearance::ClearedForTakeoff(_));
+                calls.push((ac.id, c));
+            }
+        }
+        for (id, clearance) in calls {
+            if matches!(clearance, Clearance::ClearedForTakeoff(_)) {
+                // Hold the next release until this one is rolling.
+                self.next_departure_time = self.time + DEPARTURE_INTERVAL;
+            }
+            self.issue(id, vec![clearance], Position::Local);
+        }
+    }
+
+    fn ground_decision(&self, ac: &Aircraft) -> Option<Clearance> {
+        let map = self.surface();
+        match (ac.phase, ac.flow) {
+            (Phase::Parked, Flow::Departure) => {
+                let hold = map.departure_hold(ac.departure_end?)?;
+                Some(Clearance::Taxi { to: hold, via: Vec::new() })
+            }
+            (Phase::Taxiing, flow) => {
+                let taxi = ac.taxi.as_ref()?;
+                if taxi.holding_short.is_some() || self.at_departure_hold(ac) {
+                    return Some(Clearance::ContactTower);
+                }
+                let goal = match flow {
+                    Flow::Departure => map.departure_hold(ac.departure_end?)?,
+                    Flow::Arrival => map.parking[ac.parking?].node,
+                };
+                let heading_there = taxi.path.last() == Some(&goal) || taxi.node == goal;
+                (!heading_there).then_some(Clearance::Taxi { to: goal, via: Vec::new() })
+            }
+            _ => None,
+        }
+    }
+
+    /// The automated Ground, when the player isn't working it.
+    pub(super) fn run_ground(&mut self) {
+        if self.config.staffing.ground {
+            return;
+        }
+        self.assign_parking();
+        let mut calls = Vec::new();
+        for ac in &self.aircraft {
+            if !ac.on_ground || ac.frequency() != Position::Ground || self.call_pending(ac.id) {
+                continue;
+            }
+            if let Some(c) = self.ground_decision(ac) {
+                calls.push((ac.id, c));
+            }
+        }
+        for (id, clearance) in calls {
+            self.issue(id, vec![clearance], Position::Ground);
+        }
+    }
+
+    /// Give arrivals without a spot the nearest free one.
+    pub(super) fn assign_parking(&mut self) {
+        for index in 0..self.aircraft.len() {
+            let ac = &self.aircraft[index];
+            if ac.flow != Flow::Arrival || !ac.on_ground || ac.parking.is_some() {
+                continue;
+            }
+            let from = super::clearance::taxi_origin(ac, self.surface());
+            if let Some(spot) = self.free_parking(from) {
+                self.aircraft[index].parking = Some(spot);
+            }
+        }
+    }
+
+    /// The closest parking spot by taxi route that nobody is in or bound for.
+    /// Each runway crossing counts as a long way round.
+    pub(super) fn free_parking(&self, from: usize) -> Option<usize> {
+        let map = self.surface();
+        (0..map.parking.len())
+            .filter(|&p| {
+                let at = map.nodes[map.parking[p].node].pos;
+                !self.aircraft.iter().any(|a| {
+                    (a.flow == Flow::Arrival && a.parking == Some(p))
+                        || (a.on_ground && a.pos.distance(at) < 0.02)
+                })
+            })
+            .filter_map(|p| {
+                let route = map.route(from, map.parking[p].node, &[])?;
+                let length: f32 = route
+                    .nodes
+                    .windows(2)
+                    .map(|w| map.nodes[w[0]].pos.distance(map.nodes[w[1]].pos))
+                    .sum();
+                Some((length + PARKING_CROSSING_NM * route.runways_entered.len() as f32, p))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, p)| p)
+    }
+
+    /// The automated Approach in tower-only modes: departures and go-arounds
+    /// leave the board once they're well clear of the field.
+    pub(super) fn run_automated_approach(&mut self) {
+        if self.config.staffing.approach {
+            return;
+        }
+        let mut index = 0;
+        while index < self.aircraft.len() {
+            let ac = &self.aircraft[index];
+            let gone = !ac.on_ground
+                && ac.phase == Phase::Controlled
+                && ac.pos.length() > AUTOMATED_APPROACH_RANGE_NM;
+            if gone {
+                let ac = self.aircraft.remove(index);
+                if ac.flow == Flow::Departure {
+                    self.emit(SimEvent::Exited { callsign: ac.callsign });
+                }
+                continue;
+            }
+            index += 1;
+        }
+    }
+
+    /// Handoffs between separate tower positions the player forgot.
+    pub(super) fn check_handoffs(&mut self) {
+        let staffing = self.config.staffing;
+        for index in 0..self.aircraft.len() {
+            let ac = &self.aircraft[index];
+            if !ac.on_ground || !staffing.works(ac.frequency()) {
+                continue;
+            }
+            let freq = ac.frequency();
+            let (waiting, to, next) = if freq == Position::Local && !staffing.ground {
+                let w = self.clear_of_runways(ac) && !self.bound_for_departure_hold(ac);
+                (w && staffing.tower(), "Ground", Position::Ground)
+            } else if freq == Position::Ground && !staffing.local {
+                let w = self.at_departure_hold(ac)
+                    || ac.taxi.as_ref().is_some_and(|t| t.holding_short.is_some());
+                (w, "Tower", Position::Local)
+            } else {
+                (false, "", freq)
+            };
+            let now = self.time;
+            let ac = &mut self.aircraft[index];
+            if !waiting {
+                ac.waiting_since = None;
+                continue;
+            }
+            let since = *ac.waiting_since.get_or_insert(now);
+            if now - since >= HANDOFF_GRACE_S {
+                ac.surface_freq = next;
+                ac.freq_since = now;
+                ac.waiting_since = None;
+                let callsign = ac.callsign.clone();
+                self.emit(SimEvent::MissedHandoff { callsign, to });
+            }
+        }
+    }
+
+    /// The position the player would speak as for this instruction, if any.
+    pub fn issuer(&self, ac: &Aircraft, clearance: &Clearance) -> Option<Position> {
+        issuer_for(clearance, ac.frequency(), self.config.staffing)
     }
 }
 
-/// Departure ready for release; position and phase are set when it lines up.
+/// Departure ready for release; position and phase are set when it's placed.
 pub(super) fn queued_departure(mut ac: Aircraft, initial_altitude: f32) -> Aircraft {
     ac.target_altitude = initial_altitude;
     ac.target_speed = ac.ty.max_speed.min(250.0);

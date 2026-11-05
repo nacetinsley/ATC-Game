@@ -1,11 +1,13 @@
 //! Selection, drag vectors, hotkeys and the pending clearance.
 
-use super::camera::{Camera, mouse_in_scope};
+use super::camera::{Camera, inset_area, mouse_in_scope, scope_area};
 use super::scope::{self, BLOCK_SIZE};
+use super::surface;
 use crate::sim::World;
 use crate::sim::airspace::Airport;
 use crate::sim::aircraft::{Flow, Phase};
-use crate::sim::clearance::PendingClearance;
+use crate::sim::clearance::{Clearance, PendingClearance};
+use crate::sim::positions::{Position, Staffing};
 use crate::sim::units::vec_heading;
 use macroquad::prelude::*;
 use std::collections::HashMap;
@@ -14,6 +16,15 @@ const TARGET_HIT_PX: f32 = 12.0;
 const FIX_SNAP_PX: f32 = 14.0;
 const DRAG_START_PX: f32 = 8.0;
 const ZOOM_STEP: f32 = 1.12;
+/// Radar range shown in the inset, NM.
+const INSET_RANGE_NM: f32 = 12.0;
+
+/// The two pictures a controller can have up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    Radar,
+    Surface,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Drag {
@@ -22,11 +33,19 @@ pub enum Drag {
     Vector { id: u32, start: Vec2, active: bool },
     /// Moving a data block. `grab` is the cursor's offset within the block.
     Block { id: u32, grab: Vec2 },
-    Pan { last: Vec2 },
+    Pan { last: Vec2, surface: bool },
 }
 
 pub struct UiState {
+    /// The radar scope's camera.
     pub camera: Camera,
+    /// The surface map's camera.
+    pub surface: Camera,
+    /// Which view fills the screen; the other, if any, is an inset.
+    pub main_view: View,
+    pub staffing: Staffing,
+    /// Taxiways picked for the next taxi instruction, in order.
+    pub via: Vec<String>,
     pub selected: Option<u32>,
     pub pending: PendingClearance,
     pub drag: Drag,
@@ -41,9 +60,14 @@ pub struct UiState {
 }
 
 impl UiState {
-    pub fn new(airport: &Airport) -> UiState {
-        UiState {
+    pub fn new(airport: &Airport, staffing: Staffing) -> UiState {
+        let main_view = if staffing.approach { View::Radar } else { View::Surface };
+        let mut ui = UiState {
             camera: Camera::fit_sector(airport),
+            surface: Camera::fit_surface(airport),
+            main_view,
+            staffing,
+            via: Vec::new(),
             selected: None,
             pending: PendingClearance::default(),
             drag: Drag::None,
@@ -52,6 +76,51 @@ impl UiState {
             paused: false,
             rate: 1.0,
             clock_start: macroquad::miniquad::date::now(),
+        };
+        ui.frame_views(airport);
+        ui
+    }
+
+    /// Tower positions see both pictures: one full size, one inset.
+    pub fn has_inset(&self) -> bool {
+        self.staffing.tower()
+    }
+
+    /// Put each camera in its viewport for this frame.
+    pub fn layout(&mut self) {
+        let (main, inset) = (scope_area(), inset_area());
+        let (radar, surface) = match (self.has_inset(), self.main_view) {
+            (false, _) => (main, main),
+            (true, View::Radar) => (main, inset),
+            (true, View::Surface) => (inset, main),
+        };
+        self.camera.viewport = radar;
+        self.surface.viewport = surface;
+    }
+
+    /// Frame both views for where they now are.
+    fn frame_views(&mut self, airport: &Airport) {
+        self.layout();
+        let (radar, surface) = (self.camera.viewport, self.surface.viewport);
+        self.camera = if self.has_inset() && self.main_view == View::Surface {
+            Camera::range(glam::Vec2::ZERO, INSET_RANGE_NM, radar)
+        } else {
+            let mut c = Camera::fit_sector(airport);
+            c.viewport = radar;
+            c
+        };
+        let points: Vec<glam::Vec2> = match &airport.surface {
+            Some(map) => map.nodes.iter().map(|n| n.pos).collect(),
+            None => vec![glam::Vec2::ZERO],
+        };
+        self.surface = Camera::fit(points, surface);
+    }
+
+    /// Swap which view is full size, when both are up.
+    pub fn show(&mut self, view: View, airport: &Airport) {
+        if self.has_inset() && self.staffing.approach && self.main_view != view {
+            self.main_view = view;
+            self.frame_views(airport);
         }
     }
 
@@ -60,6 +129,7 @@ impl UiState {
         if self.selected != id {
             self.selected = id;
             self.pending = PendingClearance::default();
+            self.via.clear();
         }
     }
 
@@ -70,7 +140,8 @@ impl UiState {
             }
     }
 
-    /// One action for all handoffs: accept from Center, or pass on to Tower or Center.
+    /// One action for all handoffs: accept from Center, or pass the aircraft on
+    /// to whoever is next: Tower, Ground, Departure or Center.
     pub fn handoff(&mut self, world: &mut World) {
         let Some(id) = self.selected else { return };
         let Some(ac) = world.find(id) else { return };
@@ -78,8 +149,70 @@ impl UiState {
             (Phase::Offered, _) => {
                 world.accept_handoff(id);
             }
+            _ if ac.on_ground => match ac.frequency() {
+                Position::Ground => self.pending.add_tower(Clearance::ContactTower),
+                Position::Local => self.pending.add_tower(Clearance::ContactGround),
+                _ => {}
+            },
+            (Phase::TowerRelease | Phase::GoAround, _) => {
+                self.pending.add_tower(Clearance::ContactDeparture)
+            }
             (_, Flow::Arrival) => self.pending.handoff_tower = true,
             (_, Flow::Departure) => self.pending.handoff_center = true,
+        }
+    }
+
+    /// Hold position, or continue if already holding.
+    pub fn hold(&mut self, world: &World) {
+        let Some(ac) = self.selected.and_then(|id| world.find(id)) else { return };
+        let holding = ac.taxi.as_ref().is_some_and(|t| t.holding);
+        self.pending.add_tower(if holding { Clearance::ContinueTaxi } else { Clearance::HoldPosition });
+    }
+
+    /// Cross the runway it's holding short of, or the next one on its route.
+    pub fn cross(&mut self, world: &World) {
+        let Some(ac) = self.selected.and_then(|id| world.find(id)) else { return };
+        let (Some(taxi), Some(map)) = (&ac.taxi, world.airport.surface.as_ref()) else { return };
+        let ahead = taxi.holding_short.or_else(|| {
+            taxi.path[taxi.index.min(taxi.path.len())..]
+                .iter()
+                .flat_map(|&n| map.nodes[n].zones.iter().copied())
+                .find(|z| !taxi.cleared.contains(z))
+        });
+        if let Some(runway) = ahead {
+            self.pending.add_tower(Clearance::CrossRunway(runway));
+        }
+    }
+
+    /// Line up and wait, or cleared for takeoff, on the aircraft's departure runway.
+    pub fn departure(&mut self, world: &World, takeoff: bool) {
+        let Some(ac) = self.selected.and_then(|id| world.find(id)) else { return };
+        let Some(end) = ac.departure_end else { return };
+        let clearance = if takeoff { Clearance::ClearedForTakeoff(end) } else { Clearance::LineUpAndWait(end) };
+        // One or the other, never both.
+        self.pending.tower.retain(|c| {
+            !matches!(c, Clearance::ClearedForTakeoff(_) | Clearance::LineUpAndWait(_))
+        });
+        self.pending.add_tower(clearance);
+    }
+
+    pub fn land(&mut self, world: &World) {
+        let Some(ac) = self.selected.and_then(|id| world.find(id)) else { return };
+        let end = ac.approach_runway.unwrap_or_else(|| world.arrival_runway());
+        self.pending.add_tower(Clearance::ClearedToLand(end));
+    }
+
+    /// Add a taxiway to the via list, or take it back off if it was the last one.
+    fn toggle_via(&mut self, name: String) {
+        if self.via.last() == Some(&name) {
+            self.via.pop();
+        } else {
+            self.via.push(name);
+        }
+        for c in &mut self.pending.tower {
+            if let Clearance::Taxi { via, .. } = c {
+                *via = self.via.clone();
+            }
         }
     }
 
@@ -106,10 +239,11 @@ impl UiState {
     }
 
     pub fn cancel(&mut self) {
-        if self.pending.is_empty() {
+        if self.pending.is_empty() && self.via.is_empty() {
             self.select(None);
         } else {
             self.pending = PendingClearance::default();
+            self.via.clear();
         }
     }
 
@@ -118,7 +252,7 @@ impl UiState {
         let ids: Vec<u32> = world
             .aircraft
             .iter()
-            .filter(|a| a.on_player_frequency() || a.phase == Phase::Offered)
+            .filter(|a| world.is_players(a) || a.phase == Phase::Offered)
             .map(|a| a.id)
             .collect();
         if ids.is_empty() {
@@ -175,6 +309,27 @@ impl UiState {
             if is_key_pressed(KeyCode::G) {
                 self.pending.go_around = true;
             }
+            if is_key_pressed(KeyCode::H) {
+                self.hold(world);
+            }
+            if is_key_pressed(KeyCode::X) {
+                self.cross(world);
+            }
+            if is_key_pressed(KeyCode::W) {
+                self.departure(world, false);
+            }
+            if is_key_pressed(KeyCode::K) {
+                self.departure(world, true);
+            }
+            if is_key_pressed(KeyCode::L) {
+                self.land(world);
+            }
+        }
+        if is_key_pressed(KeyCode::F1) {
+            self.show(View::Radar, &world.airport);
+        }
+        if is_key_pressed(KeyCode::F2) {
+            self.show(View::Surface, &world.airport);
         }
         if is_key_pressed(KeyCode::T) {
             self.handoff(world);
@@ -205,25 +360,40 @@ impl UiState {
 
     fn handle_mouse(&mut self, world: &World) {
         let mouse = Vec2::from(mouse_position());
+        let in_inset = self.has_inset() && inset_area().contains(mouse);
+        let in_main = mouse_in_scope() && !in_inset;
+        let (_, wheel) = mouse_wheel();
+        let factor = if wheel > 0.0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
+        let surface_main = self.main_view == View::Surface;
 
-        if mouse_in_scope() {
-            let (_, wheel) = mouse_wheel();
+        if in_inset && wheel != 0.0 {
+            // The inset zooms about its own centre.
+            let inset = if surface_main { &mut self.camera } else { &mut self.surface };
+            let centre = inset.viewport.center();
+            inset.zoom_at(centre, factor);
+        }
+        if in_main {
             if wheel != 0.0 {
-                let factor = if wheel > 0.0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
-                self.camera.zoom_at(mouse, factor);
+                let main = if surface_main { &mut self.surface } else { &mut self.camera };
+                main.zoom_at(mouse, factor);
             }
             if is_mouse_button_pressed(MouseButton::Right) {
-                self.drag = Drag::Pan { last: mouse };
+                self.drag = Drag::Pan { last: mouse, surface: surface_main };
             }
             if is_mouse_button_pressed(MouseButton::Left) {
-                self.press_left(world, mouse);
+                if surface_main {
+                    self.surface_click(world, mouse);
+                } else {
+                    self.press_left(world, mouse);
+                }
             }
         }
 
         match self.drag {
-            Drag::Pan { last } => {
-                self.camera.pan_pixels(mouse - last);
-                self.drag = Drag::Pan { last: mouse };
+            Drag::Pan { last, surface } => {
+                let camera = if surface { &mut self.surface } else { &mut self.camera };
+                camera.pan_pixels(mouse - last);
+                self.drag = Drag::Pan { last: mouse, surface };
                 if !is_mouse_button_down(MouseButton::Right) {
                     self.drag = Drag::None;
                 }
@@ -248,6 +418,32 @@ impl UiState {
                 }
             }
             Drag::None => {}
+        }
+    }
+
+    /// A click on the surface map: pick an aircraft, or tell the selected one
+    /// where to taxi. Ctrl-click a taxiway to route via it.
+    fn surface_click(&mut self, world: &World, mouse: Vec2) {
+        let Some(map) = world.airport.surface.as_ref() else { return };
+        if let Some(id) = surface::aircraft_at(world, &self.surface, mouse) {
+            self.select(Some(id));
+            return;
+        }
+        let selected = self.selected.and_then(|id| world.find(id)).filter(|a| a.on_ground);
+        if selected.is_some() {
+            if is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl) {
+                if let Some(name) = surface::taxiway_at(map, &self.surface, mouse) {
+                    self.toggle_via(name);
+                }
+                return;
+            }
+            if let Some(node) = surface::node_at(map, &self.surface, mouse) {
+                self.pending.add_tower(Clearance::Taxi { to: node, via: self.via.clone() });
+                return;
+            }
+        }
+        if self.pending.is_empty() {
+            self.select(None);
         }
     }
 

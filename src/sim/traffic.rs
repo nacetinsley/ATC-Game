@@ -3,8 +3,8 @@
 use super::aircraft::{Aircraft, Flow, Lateral, Phase};
 use super::performance::{AircraftType, DEFAULT_FLEET_SIZE, TYPES, WakeCategory, aircraft_type};
 use super::registration;
-use super::tower::queued_departure;
-use super::units::vec_heading;
+use super::tower::{FINAL_SPAWN_NM, queued_departure};
+use super::units::{heading_vec, vec_heading};
 use super::World;
 use glam::Vec2;
 
@@ -20,6 +20,8 @@ const SPAWN_OUTSIDE_SECTOR_NM: f32 = 8.0;
 const SPAWN_CLEAR_NM: f32 = 8.0;
 const SPAWN_CLEAR_FT: f32 = 1500.0;
 const SPAWN_RETRY_S: f32 = 15.0;
+/// Spacing from other arrivals when spawning on final, NM.
+const FINAL_SPAWN_CLEAR_NM: f32 = 8.0;
 const AIRLINES: [&str; 6] = ["NVA", "BRZ", "TRL", "ORN", "MRD", "CWN"];
 /// Callsign prefix in airport data meaning "use the aircraft's registration".
 const GENERAL_AVIATION: &str = "N";
@@ -107,7 +109,7 @@ impl World {
         }
         let share = self.airport.traffic.as_ref().map_or(ARRIVAL_SHARE, |t| t.arrival_share);
         let spawned = if self.rng.f32() < share {
-            self.spawn_arrival()
+            if self.config.staffing.approach { self.spawn_arrival() } else { self.spawn_final_arrival() }
         } else {
             self.queue_departure();
             true
@@ -222,6 +224,42 @@ impl World {
         true
     }
 
+    /// With nobody working Approach, arrivals turn up established on the ILS,
+    /// already talking to Tower.
+    fn spawn_final_arrival(&mut self) -> bool {
+        let rwy = self.arrival_runway();
+        let runway = self.airport.runways[rwy].clone();
+        let busy = self.aircraft.iter().any(|a| {
+            a.approach_runway == Some(rwy)
+                && !a.on_ground
+                && (runway.along(a.pos) - FINAL_SPAWN_NM).abs() < FINAL_SPAWN_CLEAR_NM
+        });
+        if busy {
+            return false;
+        }
+        let ty = self.pick_type();
+        let callsign = self.new_callsign(ty);
+        let pos = runway.threshold() - heading_vec(runway.heading) * FINAL_SPAWN_NM;
+        let altitude = self.airport.glideslope_altitude(rwy, FINAL_SPAWN_NM);
+        let speed = ty.max_speed.min(180.0);
+        let id = self.next_id();
+        let mut ac = Aircraft::new(id, callsign, Flow::Arrival, ty, pos, runway.heading, altitude, speed);
+        ac.phase = Phase::TowerHandedOff;
+        ac.lateral = Lateral::Localizer;
+        ac.approach_runway = Some(rwy);
+        ac.on_glideslope = true;
+        ac.spawn_time = self.time;
+        ac.msaw_armed = false;
+        ac.entered_sector = self.airport.in_sector(pos);
+        ac.freq_since = self.time;
+        if self.config.staffing.local {
+            let line = format!("Tower, {}, {FINAL_SPAWN_NM:.0} mile final runway {}.", ac.callsign, runway.id);
+            self.say(super::Speaker::Pilot, line);
+        }
+        self.add_aircraft(ac);
+        true
+    }
+
     fn queue_departure(&mut self) {
         let config = self.config().name.clone();
         let sids: Vec<(Vec<usize>, f32)> = self
@@ -265,7 +303,7 @@ mod tests {
 
     #[test]
     fn registration_callsigns_are_mostly_n_numbers_with_a_few_foreign_jets() {
-        let airport = crate::sim::airspace::Airport::from_toml(crate::sim::airspace::KSUS_AIRPORT)
+        let airport = crate::sim::airspace::Airport::load(crate::sim::airspace::KSUS_AIRPORT, Some(crate::sim::airspace::KSUS_GROUND))
             .expect("valid");
         let mut world = World::new(airport, crate::sim::WorldConfig::default());
         let jet = aircraft_type("C56X").unwrap();

@@ -3,6 +3,7 @@
 use super::airspace::Airport;
 use super::autopilot;
 use super::performance::AircraftType;
+use super::positions::Position;
 use super::units::{SECONDS_PER_HOUR, Wind, heading_diff, heading_vec, normalize_heading, tas_from_ias};
 use glam::Vec2;
 
@@ -12,6 +13,10 @@ pub const STANDARD_TURN_RATE: f32 = 3.0;
 const BANK_LIMIT_FACTOR: f32 = 508.7;
 /// Departures lift off at Vref plus this.
 const ROTATE_MARGIN: f32 = 15.0;
+/// Braking after touchdown, knots per second.
+pub const ROLLOUT_DECEL: f32 = 4.0;
+/// Speed a landing aircraft slows to before turning off, knots.
+pub const EXIT_SPEED: f32 = 20.0;
 const SPEED_LIMIT_ALTITUDE: f32 = 10000.0;
 const SPEED_LIMIT: f32 = 250.0;
 
@@ -36,9 +41,48 @@ pub enum Phase {
     Rollout,
     /// Climbing out; becomes `Controlled` once safely airborne.
     GoAround,
-    /// Tower's departure, until it checks in with the player.
+    /// Rolling for takeoff and climbing out, with Tower until handed to Departure.
     TowerRelease,
     OfferedToCenter,
+    /// At a parking spot, ready to taxi.
+    Parked,
+    /// Moving or holding on the surface.
+    Taxiing,
+    /// On the runway, waiting for a takeoff clearance.
+    LinedUp,
+}
+
+/// Movement along the taxi graph.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Taxi {
+    /// Nodes to visit. `path[index]` is the next one.
+    pub path: Vec<usize>,
+    pub index: usize,
+    /// The node most recently passed.
+    pub node: usize,
+    /// Physical runways the aircraft may enter.
+    pub cleared: Vec<usize>,
+    /// Told to hold position.
+    pub holding: bool,
+    /// Physical runway the aircraft is stopped short of, waiting for a clearance.
+    pub holding_short: Option<usize>,
+    /// Another aircraft it has stopped for.
+    pub blocked_by: Option<u32>,
+}
+
+impl Taxi {
+    pub fn at(node: usize) -> Taxi {
+        Taxi { path: Vec::new(), index: 0, node, ..Default::default() }
+    }
+
+    pub fn next(&self) -> Option<usize> {
+        self.path.get(self.index).copied()
+    }
+
+    /// Reached the end of its route.
+    pub fn done(&self) -> bool {
+        self.index >= self.path.len()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -86,8 +130,22 @@ pub struct Aircraft {
     /// Departures only: where and how high Center wants them.
     pub exit_fix: Option<usize>,
     pub exit_altitude: f32,
-    /// Sim time the aircraft leaves the runway after landing.
-    pub rollout_until: f32,
+    /// On the surface: who it's talking to, Ground or Tower.
+    pub surface_freq: Position,
+    pub taxi: Option<Taxi>,
+    pub cleared_to_land: bool,
+    /// Line up and roll without stopping, once lined up.
+    pub cleared_takeoff: bool,
+    /// Departures only: the runway end it will take off from.
+    pub departure_end: Option<usize>,
+    /// Arrivals only: where it's parking.
+    pub parking: Option<usize>,
+    /// Sim time it was last handed to a new controller, for missed-handoff checks.
+    pub freq_since: f32,
+    /// Penalised already for a missed handoff in its current state.
+    pub handoff_flagged: bool,
+    /// When it started waiting for a handoff the controller hasn't given yet.
+    pub waiting_since: Option<f32>,
 }
 
 impl Aircraft {
@@ -128,7 +186,15 @@ impl Aircraft {
             msaw_armed: true,
             exit_fix: None,
             exit_altitude: 0.0,
-            rollout_until: 0.0,
+            surface_freq: Position::Ground,
+            taxi: None,
+            cleared_to_land: false,
+            cleared_takeoff: false,
+            departure_end: None,
+            parking: None,
+            freq_since: 0.0,
+            handoff_flagged: false,
+            waiting_since: None,
         }
     }
 
@@ -140,16 +206,25 @@ impl Aircraft {
         self.ground_velocity.length()
     }
 
-    /// True when the player is working this aircraft and can issue clearances.
-    pub fn on_player_frequency(&self) -> bool {
-        matches!(
-            self.phase,
-            Phase::Controlled
-                | Phase::ClearedApproach
-                | Phase::Localizer
-                | Phase::Glideslope
-                | Phase::GoAround
-        )
+    /// The controller this aircraft is talking to.
+    pub fn frequency(&self) -> Position {
+        match self.phase {
+            Phase::Offered | Phase::OfferedToCenter => Position::Center,
+            Phase::Controlled | Phase::ClearedApproach | Phase::Localizer | Phase::Glideslope => {
+                Position::Approach
+            }
+            Phase::TowerHandedOff
+            | Phase::Rollout
+            | Phase::TowerRelease
+            | Phase::LinedUp
+            | Phase::GoAround => Position::Local,
+            Phase::Parked | Phase::Taxiing => self.surface_freq,
+        }
+    }
+
+    /// Rolling down a runway for takeoff.
+    pub fn rolling(&self) -> bool {
+        self.on_ground && self.phase == Phase::TowerRelease
     }
 
     /// Established on the final approach course.
@@ -169,7 +244,10 @@ impl Aircraft {
     /// Advance the flight model by one tick.
     pub fn step(&mut self, dt: f32, wind: Wind, airport: &Airport) {
         if self.on_ground {
-            self.step_ground(dt);
+            // Taxiing aircraft are moved by the world, which knows the taxi graph.
+            if self.taxi.is_none() && self.phase != Phase::Parked && self.phase != Phase::LinedUp {
+                self.step_ground(dt);
+            }
             return;
         }
 
@@ -184,8 +262,12 @@ impl Aircraft {
     }
 
     fn step_ground(&mut self, dt: f32) {
-        let target = if self.phase == Phase::TowerRelease { self.target_speed } else { 20.0 };
-        self.ias = approach(self.ias, target, self.ty.accel.max(self.ty.decel) * dt);
+        let (target, rate) = if self.phase == Phase::TowerRelease {
+            (self.target_speed, self.ty.accel.max(self.ty.decel))
+        } else {
+            (EXIT_SPEED, ROLLOUT_DECEL)
+        };
+        self.ias = approach(self.ias, target, rate * dt);
         self.vertical_speed = 0.0;
         self.ground_velocity = heading_vec(self.heading) * self.ias;
         self.pos += self.ground_velocity / SECONDS_PER_HOUR * dt;

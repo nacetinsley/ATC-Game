@@ -3,8 +3,10 @@
 use super::camera::{PANEL_WIDTH, scope_width};
 use super::input::UiState;
 use super::scope::phase_color;
+use super::surface;
 use crate::sim::aircraft::{Aircraft, Flow, Phase};
 use crate::sim::clearance::phrase;
+use crate::sim::positions::Position;
 use crate::sim::{Speaker, World};
 use macroquad::prelude::*;
 
@@ -17,6 +19,9 @@ const BUTTON_HOVER: Color = Color::new(0.24, 0.31, 0.34, 1.0);
 const SELECTED_ROW: Color = Color::new(0.20, 0.24, 0.14, 1.0);
 const PILOT: Color = Color::new(0.55, 0.85, 1.00, 1.0);
 const SYSTEM: Color = Color::new(0.95, 0.80, 0.45, 1.0);
+const BAY: Color = Color::new(0.40, 0.48, 0.48, 1.0);
+const OTHER_STRIP: Color = Color::new(0.45, 0.52, 0.52, 1.0);
+const TOWER_STRIP: Color = Color::new(0.85, 0.92, 0.88, 1.0);
 
 const PADDING: f32 = 12.0;
 const STATUS_HEIGHT: f32 = 92.0;
@@ -89,9 +94,14 @@ fn draw_status(world: &World, ui: &UiState, x: f32) {
         18.0,
         DIM,
     );
+    let parked = if world.staffing().surface_traffic() {
+        format!("   Parked {}", world.score.parked)
+    } else {
+        String::new()
+    };
     label(
         &format!(
-            "Landed {}   Handed off {}   Go-arounds {}",
+            "Landed {}{parked}   Handed off {}   Go-arounds {}",
             world.score.landed, world.score.exited, world.score.go_arounds
         ),
         left,
@@ -112,6 +122,40 @@ fn draw_status(world: &World, ui: &UiState, x: f32) {
     );
 }
 
+/// The strip bay an aircraft's strip sits in on a tower position, in display
+/// order: the runways first, then the hold lines, taxiways and gates.
+fn bay(ac: &Aircraft) -> (usize, &'static str) {
+    match ac.phase {
+        Phase::TowerHandedOff | Phase::TowerRelease | Phase::Rollout | Phase::LinedUp | Phase::GoAround => {
+            (0, "LOCAL")
+        }
+        Phase::Taxiing => {
+            let waiting = ac.taxi.as_ref().is_some_and(|t| t.holding_short.is_some() || t.done());
+            if waiting { (1, "HOLDING") } else { (2, "TAXI") }
+        }
+        Phase::Parked => (3, "GATES"),
+        _ => (4, "RADAR"),
+    }
+}
+
+/// A tower strip: callsign, type, what it's doing and who it's talking to.
+fn tower_strip_text(world: &World, ac: &Aircraft) -> String {
+    let flow = if ac.flow == Flow::Arrival { "ARR" } else { "DEP" };
+    let owner = match ac.frequency() {
+        Position::Ground => "GND",
+        Position::Local => "TWR",
+        Position::Approach => "APP",
+        Position::Center => "CTR",
+    };
+    format!(
+        "{flow} {:<7}{}/{} {:<12} {owner}",
+        ac.callsign,
+        ac.ty.designator,
+        ac.ty.wake.letter(),
+        surface::status(world, ac)
+    )
+}
+
 fn strip_text(world: &World, ac: &Aircraft) -> String {
     let flow = if ac.flow == Flow::Arrival { "ARR" } else { "DEP" };
     let phase = match ac.phase {
@@ -123,6 +167,9 @@ fn strip_text(world: &World, ac: &Aircraft) -> String {
         Phase::TowerHandedOff | Phase::Rollout | Phase::TowerRelease => "tower",
         Phase::GoAround => "go-around",
         Phase::OfferedToCenter => "center",
+        Phase::Parked => "parked",
+        Phase::Taxiing => "taxi",
+        Phase::LinedUp => "lined up",
     };
     let exit = match (ac.flow, ac.exit_fix) {
         (Flow::Departure, Some(fix)) => {
@@ -145,13 +192,37 @@ fn draw_strips(world: &World, ui: &mut UiState, x: f32, top: f32, bottom: f32) {
     let clicked = is_mouse_button_pressed(MouseButton::Left);
     let mut y = top + 4.0;
     let mut hidden = 0;
+    let staffing = world.staffing();
 
-    let rows = world
-        .aircraft
-        .iter()
-        .filter(|a| a.flow == Flow::Arrival)
-        .chain(world.aircraft.iter().filter(|a| a.flow == Flow::Departure));
-    for ac in rows {
+    // Approach sees the airborne picture; a tower position sees bays by stage.
+    let mut rows: Vec<&Aircraft> = if staffing.tower() {
+        let mut rows: Vec<&Aircraft> = world
+            .aircraft
+            .iter()
+            .filter(|a| bay(a).0 < 4 || (staffing.approach && a.phase != Phase::OfferedToCenter))
+            .collect();
+        rows.sort_by_key(|a| bay(a).0);
+        rows
+    } else {
+        let airborne = |a: &&Aircraft| !a.on_ground || a.rolling();
+        world
+            .aircraft
+            .iter()
+            .filter(|a| a.flow == Flow::Arrival)
+            .chain(world.aircraft.iter().filter(|a| a.flow == Flow::Departure))
+            .filter(airborne)
+            .collect()
+    };
+    let mut current_bay = None;
+    for ac in rows.drain(..) {
+        if staffing.tower() && current_bay != Some(bay(ac).0) {
+            current_bay = Some(bay(ac).0);
+            if y + ROW_HEIGHT <= bottom {
+                label(bay(ac).1, x + PADDING, y + 15.0, 14.0, BAY);
+                draw_line(x + PADDING + 70.0, y + 10.0, x + PANEL_WIDTH - PADDING, y + 10.0, 1.0, DIVIDER);
+                y += 18.0;
+            }
+        }
         if y + ROW_HEIGHT > bottom {
             hidden += 1;
             continue;
@@ -163,7 +234,13 @@ fn draw_strips(world: &World, ui: &mut UiState, x: f32, top: f32, bottom: f32) {
         if clicked && rect.contains(mouse) {
             ui.select(Some(ac.id));
         }
-        label(&strip_text(world, ac), x + PADDING, y + 16.0, 17.0, phase_color(ac));
+        let (text, color) = if staffing.tower() && bay(ac).0 < 4 {
+            let color = if world.is_players(ac) { TOWER_STRIP } else { OTHER_STRIP };
+            (tower_strip_text(world, ac), color)
+        } else {
+            (strip_text(world, ac), phase_color(ac))
+        };
+        label(&text, x + PADDING, y + 16.0, 17.0, color);
         y += ROW_HEIGHT;
     }
     if hidden > 0 {
@@ -191,6 +268,13 @@ fn draw_clearance(world: &mut World, ui: &mut UiState, x: f32, top: f32) {
         20.0,
         TEXT,
     );
+
+    let tower = ac.on_ground
+        || (world.staffing().tower() && matches!(ac.frequency(), Position::Local | Position::Ground));
+    if tower {
+        draw_tower_buttons(world, ui, left, top);
+        return;
+    }
 
     // Adjustment rows: heading, altitude, speed.
     let row = |name: &str, y: f32| label(name, left, y + 18.0, 18.0, DIM);
@@ -247,8 +331,58 @@ fn draw_clearance(world: &mut World, ui: &mut UiState, x: f32, top: f32) {
         ui.cancel();
     }
 
-    // What will be said if the player transmits now.
+    draw_pending_words(world, ui, left, y + 44.0);
+}
+
+/// Runway and surface instructions, for an aircraft on a tower frequency.
+fn draw_tower_buttons(world: &mut World, ui: &mut UiState, left: f32, top: f32) {
+    let bh = 24.0;
+    let w = (PANEL_WIDTH - PADDING * 2.0 - 18.0) / 4.0;
+    let col = |i: f32| left + (w + 6.0) * i;
+    let y = top + 36.0;
+    label("Click a hold line, gate or junction to taxi there.", left, y + 14.0, 16.0, DIM);
+    let via = if ui.via.is_empty() { "Ctrl-click taxiways to route via them.".to_string() } else { format!("Via {}", ui.via.join(", ")) };
+    label(&via, left, y + 32.0, 16.0, DIM);
+
     let y = y + 44.0;
+    if button("Hold H", col(0.0), y, w, bh) {
+        ui.hold(world);
+    }
+    if button("Cross X", col(1.0), y, w, bh) {
+        ui.cross(world);
+    }
+    if button("Line up W", col(2.0), y, w, bh) {
+        ui.departure(world, false);
+    }
+    if button("Takeoff K", col(3.0), y, w, bh) {
+        ui.departure(world, true);
+    }
+    let y = y + 28.0;
+    if button("Land L", col(0.0), y, w, bh) {
+        ui.land(world);
+    }
+    if button("G/A G", col(1.0), y, w, bh) {
+        ui.pending.go_around = true;
+    }
+    if button("Contact T", col(2.0), y, w, bh) {
+        ui.handoff(world);
+    }
+    if button("Clear via", col(3.0), y, w, bh) {
+        ui.via.clear();
+    }
+    let y = y + 28.0;
+    let wide = (PANEL_WIDTH - PADDING * 2.0 - 6.0) / 2.0;
+    if button("Transmit Enter", left, y, wide, bh) {
+        ui.transmit(world);
+    }
+    if button("Cancel Bksp", left + wide + 6.0, y, wide, bh) {
+        ui.cancel();
+    }
+    draw_pending_words(world, ui, left, y + 44.0);
+}
+
+/// What will be said if the player transmits now.
+fn draw_pending_words(world: &World, ui: &UiState, left: f32, y: f32) {
     let pending = ui.pending.to_clearances();
     if pending.is_empty() {
         label("No clearance pending", left, y, 16.0, DIM);

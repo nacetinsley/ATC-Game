@@ -12,6 +12,12 @@ pub const PENALTY_LOW_EXIT: i32 = -50;
 pub const PENALTY_LATE_HANDOFF: i32 = -75;
 pub const PENALTY_GO_AROUND: i32 = -25;
 pub const PENALTY_LATE_ACCEPT: i32 = -25;
+pub const POINTS_PARKED: i32 = 20;
+pub const PENALTY_INCURSION: i32 = -400;
+pub const PENALTY_RUNWAY_SEPARATION: i32 = -300;
+pub const PENALTY_GROUND_CONFLICT: i32 = -200;
+pub const PENALTY_DEADLOCK: i32 = -100;
+pub const PENALTY_MISSED_HANDOFF: i32 = -25;
 /// Separation losses a controller can have before being decertified.
 pub const MAX_SEPARATION_LOSSES: u32 = 5;
 
@@ -27,6 +33,7 @@ pub enum GoAroundReason {
     RunwayOccupied,
     WakeSpacing,
     Unstable,
+    NoLandingClearance,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -44,6 +51,15 @@ pub enum SimEvent {
     LowExit { callsign: String },
     LateAccept { callsign: String },
     LateHandoff { callsign: String },
+    /// An aircraft entered a runway with landing traffic close in or a departure rolling.
+    RunwayIncursion { callsign: String },
+    /// Takeoff begun with the runway still occupied.
+    RunwaySeparation { callsign: String },
+    GroundConflict { a: String, b: String },
+    /// Two aircraft nose to nose with nowhere to go.
+    TaxiDeadlock { a: String, b: String },
+    MissedHandoff { callsign: String, to: &'static str },
+    Parked { callsign: String },
     ShiftEnded { end: ShiftEnd },
 }
 
@@ -68,6 +84,7 @@ pub struct Score {
     pub exited: u32,
     pub go_arounds: u32,
     pub separation_losses: u32,
+    pub parked: u32,
     pub incidents: Vec<Incident>,
 }
 
@@ -101,6 +118,7 @@ impl Score {
                     GoAroundReason::RunwayOccupied => "runway occupied",
                     GoAroundReason::WakeSpacing => "too close behind traffic",
                     GoAroundReason::Unstable => "unstable approach",
+                    GoAroundReason::NoLandingClearance => "no landing clearance",
                 };
                 self.incident(time, format!("{callsign} went around: {why}"), points);
             }
@@ -168,6 +186,43 @@ impl Score {
                     PENALTY_LATE_HANDOFF,
                 );
             }
+            SimEvent::RunwayIncursion { callsign } => {
+                self.separation_losses += 1;
+                self.incident(time, format!("Runway incursion: {callsign}"), PENALTY_INCURSION);
+            }
+            SimEvent::RunwaySeparation { callsign } => {
+                self.separation_losses += 1;
+                self.incident(
+                    time,
+                    format!("{callsign} began its takeoff with the runway occupied"),
+                    PENALTY_RUNWAY_SEPARATION,
+                );
+            }
+            SimEvent::GroundConflict { a, b } => {
+                self.incident(
+                    time,
+                    format!("Ground conflict: {a} and {b}"),
+                    PENALTY_GROUND_CONFLICT,
+                );
+            }
+            SimEvent::TaxiDeadlock { a, b } => {
+                self.incident(
+                    time,
+                    format!("{a} and {b} are nose to nose on a taxiway"),
+                    PENALTY_DEADLOCK,
+                );
+            }
+            SimEvent::MissedHandoff { callsign, to } => {
+                self.incident(
+                    time,
+                    format!("{callsign} not handed to {to}"),
+                    PENALTY_MISSED_HANDOFF,
+                );
+            }
+            SimEvent::Parked { .. } => {
+                self.parked += 1;
+                self.points += POINTS_PARKED;
+            }
             SimEvent::ConflictAlert { .. } | SimEvent::ShiftEnded { .. } => {}
         }
     }
@@ -178,7 +233,7 @@ impl Score {
     }
 
     pub fn completed(&self) -> u32 {
-        self.landed + self.exited
+        self.landed + self.exited + self.parked
     }
 
     /// Letter rating: share of the points a clean shift with this traffic would have scored.
@@ -189,7 +244,9 @@ impl Score {
         if end == ShiftEnd::Decertified {
             return "F - decertified";
         }
-        let clean = self.landed as i32 * POINTS_LANDED + self.exited as i32 * POINTS_EXITED;
+        let clean = self.landed as i32 * POINTS_LANDED
+            + self.exited as i32 * POINTS_EXITED
+            + self.parked as i32 * POINTS_PARKED;
         if clean == 0 {
             return "No rating - no flights completed";
         }

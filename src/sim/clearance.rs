@@ -1,7 +1,9 @@
-//! Clearances: what the controller says, and how the pilot responds.
+//! Clearances: what the controller says, who may say it, and how the pilot responds.
 
-use super::aircraft::{Aircraft, Flow, Lateral, Phase};
+use super::aircraft::{Aircraft, Flow, Lateral, Phase, Taxi};
 use super::airspace::Airport;
+use super::ground_map::GroundMap;
+use super::positions::{Position, Staffing};
 use super::scoring::{GoAroundReason, SimEvent};
 use super::units::{format_heading, heading_diff, normalize_heading};
 use super::{Speaker, World};
@@ -16,6 +18,8 @@ const MIN_APPROACH_CLEARANCE_NM: f32 = 6.0;
 const MAX_APPROACH_CLEARANCE_NM: f32 = 35.0;
 /// How far above the glideslope an aircraft can be and still capture it from below.
 const ABOVE_GLIDESLOPE_TOLERANCE: f32 = 200.0;
+/// Closer than this to a node, an aircraft is at it, NM.
+pub(super) const AT_NODE_NM: f32 = 1e-4;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Clearance {
@@ -28,6 +32,62 @@ pub enum Clearance {
     GoAround,
     HandoffTower,
     HandoffCenter,
+    /// Taxi to a node along these taxiways in order (empty for the shortest route).
+    Taxi { to: usize, via: Vec<String> },
+    HoldPosition,
+    ContinueTaxi,
+    /// Physical runway index in the ground map.
+    CrossRunway(usize),
+    /// Runway end index.
+    LineUpAndWait(usize),
+    ClearedForTakeoff(usize),
+    ClearedToLand(usize),
+    ContactGround,
+    ContactTower,
+    ContactDeparture,
+}
+
+impl Clearance {
+    /// Positions that can give this instruction.
+    pub fn issuers(&self) -> &'static [Position] {
+        use Position::*;
+        match self {
+            Clearance::Heading(_)
+            | Clearance::Altitude(_)
+            | Clearance::Speed(_)
+            | Clearance::DirectFix(_)
+            | Clearance::ResumeRoute
+            | Clearance::ClearedIls(_)
+            | Clearance::HandoffTower
+            | Clearance::HandoffCenter => &[Approach],
+            Clearance::GoAround => &[Local, Approach],
+            Clearance::Taxi { .. } | Clearance::HoldPosition | Clearance::ContinueTaxi => {
+                &[Ground, Local]
+            }
+            Clearance::CrossRunway(_)
+            | Clearance::LineUpAndWait(_)
+            | Clearance::ClearedForTakeoff(_)
+            | Clearance::ClearedToLand(_)
+            | Clearance::ContactGround
+            | Clearance::ContactDeparture => &[Local],
+            Clearance::ContactTower => &[Ground],
+        }
+    }
+}
+
+/// Can `speaker` talk to an aircraft on `frequency`? Its own frequency, or any
+/// frequency the player also works: that's what a combined position is.
+pub fn can_speak(speaker: Position, frequency: Position, staffing: Staffing) -> bool {
+    speaker == frequency || (staffing.works(speaker) && staffing.works(frequency))
+}
+
+/// The position the player speaks as for this instruction, if any.
+pub fn issuer_for(clearance: &Clearance, frequency: Position, staffing: Staffing) -> Option<Position> {
+    clearance
+        .issuers()
+        .iter()
+        .copied()
+        .find(|&p| staffing.works(p) && can_speak(p, frequency, staffing))
 }
 
 /// A radio call waiting for the pilot to respond.
@@ -35,7 +95,10 @@ pub enum Clearance {
 pub(super) struct RadioCall {
     pub due: f32,
     pub aircraft: u32,
-    pub clearances: Vec<Clearance>,
+    /// Each instruction with the position giving it, `None` when nobody can.
+    pub clearances: Vec<(Clearance, Option<Position>)>,
+    /// Shown in the comms log.
+    pub logged: bool,
 }
 
 fn thousands(altitude: f32) -> String {
@@ -45,6 +108,48 @@ fn thousands(altitude: f32) -> String {
     } else {
         a.to_string()
     }
+}
+
+/// The node a new taxi route starts from: where the aircraft is, or the next
+/// node if it's between two.
+pub fn taxi_origin(ac: &Aircraft, map: &GroundMap) -> usize {
+    match &ac.taxi {
+        Some(t) => match t.next() {
+            Some(next) if map.nodes[t.node].pos.distance(ac.pos) > AT_NODE_NM => next,
+            _ => t.node,
+        },
+        None => map.nearest_node(ac.pos),
+    }
+}
+
+/// A runway as a controller names it: the end in use if one is.
+pub fn spoken_runway(airport: &Airport, map: &GroundMap, physical: usize) -> String {
+    let ends = &map.runways[physical].ends;
+    ends.iter()
+        .map(|&e| airport.runways[e].id.clone())
+        .find(|id| airport.configs.iter().any(|c| c.arrival == *id || c.departure == *id))
+        .unwrap_or_else(|| airport.runways[ends[0]].id.clone())
+}
+
+fn taxi_phrase(to: usize, via: &[String], ac: &Aircraft, airport: &Airport) -> String {
+    let Some(map) = airport.surface.as_ref() else { return "taxi".into() };
+    let target = if let Some(spot) = map.parking.iter().find(|p| p.node == to) {
+        format!("taxi to {}", spot.name)
+    } else if let Some(end) = (0..airport.runways.len()).find(|&e| map.departure_hold(e) == Some(to))
+    {
+        format!("runway {}, taxi", airport.runways[end].id)
+    } else {
+        "taxi".into()
+    };
+    let Some(route) = map.route(taxi_origin(ac, map), to, via) else { return target };
+    let mut words = target;
+    if !route.taxiways.is_empty() {
+        words += &format!(" via {}", route.taxiways.join(", "));
+    }
+    for &r in &route.runways_entered {
+        words += &format!(", hold short of runway {}", spoken_runway(airport, map, r));
+    }
+    words
 }
 
 /// The controller's wording, as sent. Decided from the aircraft's state at transmission.
@@ -65,7 +170,33 @@ pub fn phrase(clearance: &Clearance, ac: &Aircraft, airport: &Airport) -> String
         Clearance::GoAround => "go around".into(),
         Clearance::HandoffTower => "contact tower".into(),
         Clearance::HandoffCenter => "contact center".into(),
+        Clearance::Taxi { to, via } => taxi_phrase(*to, via, ac, airport),
+        Clearance::HoldPosition => "hold position".into(),
+        Clearance::ContinueTaxi => "continue taxi".into(),
+        Clearance::CrossRunway(r) => match airport.surface.as_ref() {
+            Some(map) => format!("cross runway {}", spoken_runway(airport, map, *r)),
+            None => "cross the runway".into(),
+        },
+        Clearance::LineUpAndWait(e) => {
+            format!("runway {}, line up and wait", airport.runways[*e].id)
+        }
+        Clearance::ClearedForTakeoff(e) => {
+            format!("runway {}, cleared for takeoff", airport.runways[*e].id)
+        }
+        Clearance::ClearedToLand(e) => {
+            format!("runway {}, cleared to land", airport.runways[*e].id)
+        }
+        Clearance::ContactGround => "contact ground".into(),
+        Clearance::ContactTower => "contact tower".into(),
+        Clearance::ContactDeparture => "contact departure".into(),
     }
+}
+
+/// What `apply` needs to know about the world.
+struct Context<'a> {
+    airport: &'a Airport,
+    arrival_runway: usize,
+    now: f32,
 }
 
 impl World {
@@ -83,8 +214,45 @@ impl World {
         true
     }
 
-    /// Send a radio call. The pilot responds after a short random delay.
+    /// Is this aircraft talking to a position the player works?
+    pub fn is_players(&self, ac: &Aircraft) -> bool {
+        self.config.staffing.works(ac.frequency())
+    }
+
+    /// Send a radio call as the player. The pilot responds after a short random delay.
     pub fn transmit(&mut self, id: u32, clearances: Vec<Clearance>) -> bool {
+        let staffing = self.config.staffing;
+        let Some(ac) = self.aircraft.iter().find(|a| a.id == id) else {
+            return false;
+        };
+        let frequency = ac.frequency();
+        let calls = clearances
+            .into_iter()
+            .map(|c| {
+                let issuer = issuer_for(&c, frequency, staffing);
+                (c, issuer)
+            })
+            .collect();
+        self.send(id, calls, None)
+    }
+
+    /// Send a radio call from an automated position.
+    pub(super) fn issue(&mut self, id: u32, clearances: Vec<Clearance>, from: Position) {
+        let calls = clearances.into_iter().map(|c| (c, Some(from))).collect();
+        self.send(id, calls, Some(from));
+    }
+
+    /// True while an instruction to this aircraft is waiting for the pilot.
+    pub(super) fn call_pending(&self, id: u32) -> bool {
+        self.radio.iter().any(|c| c.aircraft == id)
+    }
+
+    fn send(
+        &mut self,
+        id: u32,
+        clearances: Vec<(Clearance, Option<Position>)>,
+        automated: Option<Position>,
+    ) -> bool {
         if clearances.is_empty() {
             return false;
         }
@@ -92,11 +260,18 @@ impl World {
             return false;
         };
         let words: Vec<String> =
-            clearances.iter().map(|c| phrase(c, ac, &self.airport)).collect();
-        let line = format!("{}, {}.", ac.callsign, words.join(", "));
+            clearances.iter().map(|(c, _)| phrase(c, ac, &self.airport)).collect();
+        // Automated controllers are only heard when the player works in the tower.
+        let logged = automated.is_none() || self.config.staffing.tower();
+        let line = match automated {
+            Some(from) => format!("{}: {}, {}.", from.name(), ac.callsign, words.join(", ")),
+            None => format!("{}, {}.", ac.callsign, words.join(", ")),
+        };
         let delay = PILOT_DELAY.0 + self.rng.f32() * (PILOT_DELAY.1 - PILOT_DELAY.0);
-        self.radio.push(RadioCall { due: self.time + delay, aircraft: id, clearances });
-        self.say(Speaker::Controller, line);
+        self.radio.push(RadioCall { due: self.time + delay, aircraft: id, clearances, logged });
+        if logged {
+            self.say(Speaker::Controller, line);
+        }
         true
     }
 
@@ -115,24 +290,60 @@ impl World {
         let Some(index) = self.aircraft.iter().position(|a| a.id == call.aircraft) else {
             return;
         };
-        let arrival_runway = self.arrival_runway();
+        let staffing = self.config.staffing;
+        let ctx = Context {
+            airport: &self.airport,
+            arrival_runway: self.arrival_runway(),
+            now: self.time,
+        };
         let mut readback = Vec::new();
-        for clearance in &call.clearances {
+        let mut events = Vec::new();
+        let mut rolled = false;
+        let mut new_frequency = None;
+        for (clearance, issuer) in &call.clearances {
             let ac = &mut self.aircraft[index];
-            let words = phrase(clearance, ac, &self.airport);
-            match apply(clearance, ac, &self.airport, arrival_runway) {
+            let words = phrase(clearance, ac, ctx.airport);
+            let before = ac.frequency();
+            let result = match issuer {
+                Some(p) if can_speak(*p, before, staffing) => apply(clearance, ac, &ctx),
+                _ => Err("not on your frequency".to_string()),
+            };
+            match result {
                 Ok(()) => {
                     readback.push(words);
                     if *clearance == Clearance::GoAround {
                         let callsign = ac.callsign.clone();
-                        self.emit(SimEvent::GoAround { callsign, reason: GoAroundReason::Ordered });
+                        events.push(SimEvent::GoAround { callsign, reason: GoAroundReason::Ordered });
+                    }
+                    if matches!(clearance, Clearance::ClearedForTakeoff(_)) && ac.rolling() {
+                        rolled = true;
+                    }
+                    let after = ac.frequency();
+                    // Checking in on a new frequency the player works, from one they don't.
+                    if after != before
+                        && staffing.works(after)
+                        && !issuer.is_some_and(|p| staffing.works(p))
+                    {
+                        new_frequency = Some(after);
                     }
                 }
                 Err(reason) => readback.push(format!("unable {words}, {reason}")),
             }
         }
-        let line = format!("{}, {}.", readback.join(", "), self.aircraft[index].callsign);
-        self.say(Speaker::Pilot, line);
+        let callsign = self.aircraft[index].callsign.clone();
+        if call.logged {
+            let line = format!("{}, {}.", readback.join(", "), callsign);
+            self.say(Speaker::Pilot, line);
+        }
+        for event in events {
+            self.emit(event);
+        }
+        if rolled {
+            self.begin_takeoff(index);
+        }
+        if let Some(frequency) = new_frequency {
+            self.check_in(index, frequency);
+        }
     }
 }
 
@@ -148,18 +359,47 @@ fn break_approach(ac: &mut Aircraft) {
     }
 }
 
-/// Validate one clearance and carry it out, or explain why not.
-fn apply(
-    clearance: &Clearance,
-    ac: &mut Aircraft,
-    airport: &Airport,
-    arrival_runway: usize,
-) -> Result<(), String> {
-    if !ac.on_player_frequency() {
-        return Err("not on your frequency".into());
+/// Start the takeoff roll from where the aircraft is lined up.
+pub(super) fn start_roll(ac: &mut Aircraft, airport: &Airport) {
+    let Some(end) = ac.departure_end else { return };
+    let heading = airport.runways[end].heading;
+    ac.phase = Phase::TowerRelease;
+    ac.taxi = None;
+    ac.heading = heading;
+    ac.lateral = Lateral::Heading(heading);
+    ac.ias = 0.0;
+    ac.cleared_takeoff = false;
+}
+
+fn surface<'a>(ac: &Aircraft, airport: &'a Airport) -> Result<&'a GroundMap, String> {
+    if !ac.on_ground {
+        return Err("we're airborne".into());
     }
+    airport.surface.as_ref().ok_or_else(|| "no taxi chart".to_string())
+}
+
+/// Replace an aircraft's taxi route, starting from `origin`.
+fn set_route(ac: &mut Aircraft, map: &GroundMap, origin: usize, nodes: Vec<usize>) {
+    let at_origin = map.nodes[origin].pos.distance(ac.pos) < AT_NODE_NM;
+    let taxi = ac.taxi.get_or_insert_with(|| Taxi::at(origin));
+    if at_origin {
+        taxi.node = origin;
+    }
+    // The first node is where it is; otherwise it's still heading there.
+    taxi.index = usize::from(at_origin);
+    taxi.path = nodes;
+    taxi.holding = false;
+    taxi.holding_short = None;
+}
+
+/// Validate one clearance and carry it out, or explain why not.
+fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), String> {
+    let airport = ctx.airport;
     match clearance {
         Clearance::Heading(h) => {
+            if ac.on_ground {
+                return Err("we're on the ground".into());
+            }
             break_approach(ac);
             ac.lateral = Lateral::Heading(normalize_heading(*h));
         }
@@ -193,15 +433,16 @@ fn apply(
             ac.lateral = Lateral::Route;
         }
         Clearance::ClearedIls(r) => {
-            check_ils(ac, *r, airport, arrival_runway)?;
+            check_ils(ac, *r, airport, ctx.arrival_runway)?;
             ac.phase = Phase::ClearedApproach;
             ac.approach_runway = Some(*r);
         }
         Clearance::GoAround => {
-            if !matches!(
+            let on_approach = matches!(
                 ac.phase,
-                Phase::ClearedApproach | Phase::Localizer | Phase::Glideslope
-            ) {
+                Phase::ClearedApproach | Phase::Localizer | Phase::Glideslope | Phase::TowerHandedOff
+            );
+            if !on_approach || ac.on_ground {
                 return Err("not on approach".into());
             }
             ac.start_go_around(airport);
@@ -211,12 +452,132 @@ fn apply(
                 return Err("not established".into());
             }
             ac.phase = Phase::TowerHandedOff;
+            ac.freq_since = ctx.now;
         }
         Clearance::HandoffCenter => {
             if ac.flow != Flow::Departure || ac.phase != Phase::Controlled {
                 return Err("not a departure".into());
             }
             ac.phase = Phase::OfferedToCenter;
+        }
+        Clearance::Taxi { to, via } => {
+            let map = surface(ac, airport)?;
+            if !matches!(ac.phase, Phase::Parked | Phase::Taxiing) {
+                return Err("not taxiing".into());
+            }
+            let origin = taxi_origin(ac, map);
+            let route = map.route(origin, *to, via).ok_or_else(|| "no route that way".to_string())?;
+            set_route(ac, map, origin, route.nodes);
+            // Keep a clearance for a runway it's on, so it can get off it.
+            let taxi = ac.taxi.as_mut().expect("just set");
+            let here = map.nodes[taxi.node].zones.clone();
+            taxi.cleared.retain(|r| here.contains(r));
+            ac.phase = Phase::Taxiing;
+        }
+        Clearance::HoldPosition => {
+            surface(ac, airport)?;
+            let taxi = ac.taxi.as_mut().filter(|_| ac.phase == Phase::Taxiing);
+            taxi.ok_or_else(|| "not taxiing".to_string())?.holding = true;
+        }
+        Clearance::ContinueTaxi => {
+            surface(ac, airport)?;
+            let taxi = ac.taxi.as_mut().filter(|_| ac.phase == Phase::Taxiing);
+            taxi.ok_or_else(|| "not taxiing".to_string())?.holding = false;
+        }
+        Clearance::CrossRunway(r) => {
+            let map = surface(ac, airport)?;
+            let taxi = ac.taxi.as_mut().filter(|_| ac.phase == Phase::Taxiing);
+            let taxi = taxi.ok_or_else(|| "not taxiing".to_string())?;
+            let ahead = taxi.path[taxi.index.min(taxi.path.len())..]
+                .iter()
+                .any(|&n| map.in_zone(n, *r));
+            if !ahead {
+                return Err("we don't cross that runway".into());
+            }
+            if !taxi.cleared.contains(r) {
+                taxi.cleared.push(*r);
+            }
+            if taxi.holding_short == Some(*r) {
+                taxi.holding_short = None;
+            }
+        }
+        Clearance::LineUpAndWait(end) | Clearance::ClearedForTakeoff(end) => {
+            let map = surface(ac, airport)?;
+            let takeoff = matches!(clearance, Clearance::ClearedForTakeoff(_));
+            if ac.flow != Flow::Departure {
+                return Err("we're not departing".into());
+            }
+            if ac.phase == Phase::LinedUp {
+                if ac.departure_end != Some(*end) {
+                    let ours = ac.departure_end.unwrap_or(*end);
+                    return Err(format!("we're lined up on {}", airport.runways[ours].id));
+                }
+                if takeoff {
+                    start_roll(ac, airport);
+                }
+                return Ok(());
+            }
+            if ac.phase != Phase::Taxiing {
+                return Err("not ready".into());
+            }
+            let origin = taxi_origin(ac, map);
+            let route = map
+                .route(origin, map.lineup_node[*end], &[])
+                .ok_or_else(|| "can't get to that runway".to_string())?;
+            let physical = map.runway_of_end[*end];
+            set_route(ac, map, origin, route.nodes);
+            let taxi = ac.taxi.as_mut().expect("just set");
+            if !taxi.cleared.contains(&physical) {
+                taxi.cleared.push(physical);
+            }
+            ac.departure_end = Some(*end);
+            ac.cleared_takeoff = takeoff;
+        }
+        Clearance::ClearedToLand(end) => {
+            if ac.on_ground || ac.flow != Flow::Arrival {
+                return Err("not landing".into());
+            }
+            if !matches!(
+                ac.phase,
+                Phase::TowerHandedOff | Phase::Localizer | Phase::Glideslope | Phase::ClearedApproach
+            ) {
+                return Err("not on approach".into());
+            }
+            if ac.approach_runway != Some(*end) {
+                return Err("that's not our runway".into());
+            }
+            ac.cleared_to_land = true;
+            if matches!(ac.phase, Phase::Localizer | Phase::Glideslope) {
+                ac.phase = Phase::TowerHandedOff;
+            }
+        }
+        Clearance::ContactGround => {
+            surface(ac, airport)?;
+            if ac.phase != Phase::Taxiing {
+                return Err("not taxiing".into());
+            }
+            ac.surface_freq = Position::Ground;
+            ac.freq_since = ctx.now;
+            ac.waiting_since = None;
+        }
+        Clearance::ContactTower => {
+            surface(ac, airport)?;
+            if !matches!(ac.phase, Phase::Parked | Phase::Taxiing) {
+                return Err("not taxiing".into());
+            }
+            ac.surface_freq = Position::Local;
+            ac.freq_since = ctx.now;
+            ac.waiting_since = None;
+        }
+        Clearance::ContactDeparture => {
+            if ac.on_ground || !matches!(ac.phase, Phase::TowerRelease | Phase::GoAround) {
+                return Err("not departing".into());
+            }
+            ac.phase = Phase::Controlled;
+            if ac.flow == Flow::Departure && ac.route_index < ac.route.len() {
+                ac.lateral = Lateral::Route;
+            }
+            ac.freq_since = ctx.now;
         }
     }
     Ok(())
@@ -270,6 +631,8 @@ pub struct PendingClearance {
     pub go_around: bool,
     pub handoff_tower: bool,
     pub handoff_center: bool,
+    /// Surface and runway instructions, in the order given.
+    pub tower: Vec<Clearance>,
 }
 
 impl PendingClearance {
@@ -316,6 +679,13 @@ impl PendingClearance {
         self.direct = None;
     }
 
+    /// Add a surface or runway instruction, replacing one of the same kind.
+    pub fn add_tower(&mut self, clearance: Clearance) {
+        let kind = std::mem::discriminant(&clearance);
+        self.tower.retain(|c| std::mem::discriminant(c) != kind);
+        self.tower.push(clearance);
+    }
+
     /// The radio call, ordered so a vector and an approach clearance can go in one call.
     pub fn to_clearances(&self) -> Vec<Clearance> {
         let mut out = Vec::new();
@@ -346,6 +716,7 @@ impl PendingClearance {
         if self.handoff_center {
             out.push(Clearance::HandoffCenter);
         }
+        out.extend(self.tower.iter().cloned());
         out
     }
 }
@@ -407,6 +778,33 @@ mod tests {
         assert_eq!(
             phrase(&Clearance::Altitude(3000.0), &a, &airport),
             "descend and maintain 3,000"
+        );
+    }
+
+    #[test]
+    fn combined_positions_speak_on_each_others_frequencies() {
+        use Position::*;
+        let land = Clearance::ClearedToLand(0);
+        assert_eq!(issuer_for(&land, Local, Staffing::LOCAL), Some(Local));
+        assert_eq!(issuer_for(&land, Local, Staffing::APPROACH), None);
+        let taxi = Clearance::Taxi { to: 0, via: vec![] };
+        // Local+Ground: Tower can taxi an aircraft still on Ground, and Ground one on Tower.
+        assert!(issuer_for(&taxi, Ground, Staffing::LOCAL_GROUND).is_some());
+        assert_eq!(issuer_for(&Clearance::CrossRunway(0), Ground, Staffing::LOCAL_GROUND), Some(Local));
+        // Split: Tower can't clear an aircraft still talking to Ground.
+        assert_eq!(issuer_for(&Clearance::CrossRunway(0), Ground, Staffing::LOCAL), None);
+        assert_eq!(issuer_for(&Clearance::Heading(90.0), Approach, Staffing::ALL), Some(Approach));
+    }
+
+    #[test]
+    fn a_new_tower_instruction_replaces_one_of_the_same_kind() {
+        let mut p = PendingClearance::default();
+        p.add_tower(Clearance::Taxi { to: 1, via: vec![] });
+        p.add_tower(Clearance::HoldPosition);
+        p.add_tower(Clearance::Taxi { to: 2, via: vec![] });
+        assert_eq!(
+            p.to_clearances(),
+            vec![Clearance::HoldPosition, Clearance::Taxi { to: 2, via: vec![] }]
         );
     }
 }

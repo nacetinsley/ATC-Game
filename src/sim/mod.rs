@@ -5,7 +5,9 @@ pub mod airspace;
 pub mod autopilot;
 pub mod clearance;
 pub mod conflict;
+pub mod ground;
 pub mod performance;
+pub mod positions;
 pub mod scoring;
 pub mod tower;
 pub mod ground_map;
@@ -64,6 +66,10 @@ pub struct Alerts {
     pub conflict: BTreeSet<(u32, u32)>,
     pub wake: BTreeSet<(u32, u32)>,
     pub terrain: BTreeSet<u32>,
+    /// Aircraft too close together on the ground.
+    pub ground: BTreeSet<(u32, u32)>,
+    /// Taxiing aircraft nose to nose, each waiting for the other.
+    pub deadlock: BTreeSet<(u32, u32)>,
 }
 
 impl Alerts {
@@ -73,12 +79,16 @@ impl Alerts {
 
     /// Red: separation already lost or below terrain.
     pub fn critical(&self, id: u32) -> bool {
-        Self::pair_has(&self.separation, id) || self.terrain.contains(&id)
+        Self::pair_has(&self.separation, id)
+            || self.terrain.contains(&id)
+            || Self::pair_has(&self.ground, id)
     }
 
     /// Orange: predicted conflict or wake spacing.
     pub fn warning(&self, id: u32) -> bool {
-        Self::pair_has(&self.conflict, id) || Self::pair_has(&self.wake, id)
+        Self::pair_has(&self.conflict, id)
+            || Self::pair_has(&self.wake, id)
+            || Self::pair_has(&self.deadlock, id)
     }
 }
 
@@ -93,6 +103,8 @@ pub struct WorldConfig {
     pub shift_seconds: f32,
     /// Scales the airport's traffic rate.
     pub busyness: traffic::Busyness,
+    /// The positions the player works. The rest are automated.
+    pub staffing: positions::Staffing,
 }
 
 impl Default for WorldConfig {
@@ -103,6 +115,7 @@ impl Default for WorldConfig {
             wind: None,
             shift_seconds: traffic::SHIFT_SECONDS,
             busyness: traffic::Busyness::default(),
+            staffing: positions::Staffing::default(),
         }
     }
 }
@@ -128,7 +141,6 @@ pub struct World {
     next_spawn_time: f32,
     next_departure_time: f32,
     departure_queue: VecDeque<Aircraft>,
-    runway_occupied_until: Vec<f32>,
 }
 
 impl World {
@@ -139,7 +151,6 @@ impl World {
             speed: 5.0 + rng.f32() * 20.0,
         });
         let config_index = best_config(&airport, wind);
-        let runway_occupied_until = vec![0.0; airport.runways.len()];
         let mut world = World {
             airport,
             wind,
@@ -160,7 +171,6 @@ impl World {
             next_spawn_time: 0.0,
             next_departure_time: 0.0,
             departure_queue: VecDeque::new(),
-            runway_occupied_until,
         };
         let opening = format!(
             "Shift start. Wind {:03.0} at {:.0}. Landing {}, departing {}.",
@@ -200,8 +210,18 @@ impl World {
         self.config.shift_seconds
     }
 
+    pub fn staffing(&self) -> positions::Staffing {
+        self.config.staffing
+    }
+
+    /// Departures that haven't started their takeoff roll.
     pub fn departures_waiting(&self) -> usize {
-        self.departure_queue.len()
+        let on_ground = self
+            .aircraft
+            .iter()
+            .filter(|a| a.flow == Flow::Departure && a.on_ground && !a.rolling())
+            .count();
+        self.departure_queue.len() + on_ground
     }
 
     pub fn find(&self, id: u32) -> Option<&Aircraft> {
@@ -262,16 +282,20 @@ impl World {
         if self.config.traffic {
             self.run_traffic();
         }
-        self.run_departure_release();
+        self.place_departures();
 
         let wind = self.wind;
         for ac in &mut self.aircraft {
             ac.step(TICK, wind, &self.airport);
         }
 
+        self.run_surface();
         self.run_approaches();
+        self.run_local();
+        self.run_ground();
+        self.run_automated_approach();
+        self.check_handoffs();
         self.check_sector();
-        self.clear_finished_rollouts();
         self.run_safety_net();
         self.run_sweep();
 

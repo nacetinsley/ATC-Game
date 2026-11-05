@@ -2,10 +2,11 @@
 //! symbols, history trails, timeshared data blocks and a system status area.
 //! Targets come from radar returns only.
 
-use super::camera::scope_width;
+use super::camera::clip;
 use super::input::{Drag, UiState};
 use crate::sim::aircraft::{Aircraft, Flow, Lateral, Phase};
 use crate::sim::airspace::Airport;
+use crate::sim::positions::Position;
 use crate::sim::units::{format_heading, heading_vec};
 use crate::sim::{RadarTrack, World};
 use macroquad::prelude::*;
@@ -57,9 +58,13 @@ pub fn phase_color(ac: &Aircraft) -> Color {
     match ac.phase {
         Phase::Offered => STRIP_OFFERED,
         Phase::ClearedApproach | Phase::Localizer | Phase::Glideslope => STRIP_APPROACH,
-        Phase::TowerHandedOff | Phase::TowerRelease | Phase::Rollout | Phase::OfferedToCenter => {
-            STRIP_OTHER
-        }
+        Phase::TowerHandedOff
+        | Phase::TowerRelease
+        | Phase::Rollout
+        | Phase::OfferedToCenter
+        | Phase::Parked
+        | Phase::Taxiing
+        | Phase::LinedUp => STRIP_OTHER,
         Phase::Controlled | Phase::GoAround => {
             if ac.flow == Flow::Departure { STRIP_DEPARTURE } else { STRIP_CONTROLLED }
         }
@@ -77,10 +82,10 @@ fn timeshare() -> bool {
 
 /// Who owns the track, as the letter STARS puts on the target.
 fn position_symbol(ac: &Aircraft) -> char {
-    match ac.phase {
-        _ if ac.on_player_frequency() => 'A',
-        Phase::TowerHandedOff | Phase::Rollout | Phase::TowerRelease => 'T',
-        _ => 'C',
+    match ac.frequency() {
+        Position::Approach => 'A',
+        Position::Local | Position::Ground => 'T',
+        Position::Center => 'C',
     }
 }
 
@@ -107,7 +112,7 @@ fn track_color(world: &World, ac: &Aircraft) -> Color {
     if world.alerts.warning(ac.id) {
         return WARNING;
     }
-    if ac.on_player_frequency() { OWNED } else { UNOWNED }
+    if world.is_players(ac) { OWNED } else { UNOWNED }
 }
 
 pub fn block_origin(ui: &UiState, id: u32, pos: glam::Vec2) -> Vec2 {
@@ -115,16 +120,26 @@ pub fn block_origin(ui: &UiState, id: u32, pos: glam::Vec2) -> Vec2 {
     ui.camera.to_screen(pos) + offset
 }
 
-pub fn draw(world: &World, ui: &UiState) {
-    clear_background(BACKGROUND);
-    draw_map(&world.airport, world, ui);
+/// The scope in its camera's viewport. An inset leaves out the status area.
+pub fn draw(world: &World, ui: &UiState, inset: bool) {
+    let view = ui.camera.viewport;
+    clip(Some(view));
+    draw_rectangle(view.x, view.y, view.w, view.h, BACKGROUND);
+    draw_map(&world.airport, world, ui, inset);
     for track in &world.radar {
         if let Some(ac) = world.find(track.id) {
             draw_target(world, ui, ac, track);
         }
     }
     draw_pending(world, ui);
-    draw_status_area(world, ui);
+    if inset {
+        draw_rectangle_lines(view.x, view.y, view.w, view.h, 2.0, MAP);
+        let label = format!("RADAR  RNG {:.0}", ui.camera.range_nm());
+        draw_text(&label, view.x + 8.0, view.y + 18.0, 16.0, SSA);
+    } else {
+        draw_status_area(world, ui);
+    }
+    clip(None);
 }
 
 fn draw_polygon_outline(ui: &UiState, points: &[[f32; 2]], thickness: f32, color: Color) {
@@ -147,7 +162,7 @@ fn draw_route(ui: &UiState, airport: &Airport, names: &[String]) {
     }
 }
 
-fn draw_map(airport: &Airport, world: &World, ui: &UiState) {
+fn draw_map(airport: &Airport, world: &World, ui: &UiState, inset: bool) {
     let center = ui.camera.to_screen(glam::Vec2::ZERO);
     for ring in 1..=RINGS {
         let radius = ring as f32 * RING_SPACING_NM * ui.camera.scale;
@@ -195,8 +210,9 @@ fn draw_map(airport: &Airport, world: &World, ui: &UiState) {
         draw_text(&reference.name, p.x + 8.0, p.y - 6.0, 16.0, REFERENCE);
     }
 
-    if let Some(source) = &airport.data_source {
-        draw_text(source, 10.0, screen_height() - 10.0, 16.0, MAP);
+    if let Some(source) = airport.data_source.as_ref().filter(|_| !inset) {
+        let view = ui.camera.viewport;
+        draw_text(source, view.x + 10.0, view.y + view.h - 10.0, 16.0, MAP);
     }
 
     for runway in &airport.runways {
@@ -387,7 +403,7 @@ fn draw_status_area(world: &World, ui: &UiState) {
         ),
         SSA,
     );
-    let range = scope_width().min(screen_height()) / 2.0 / ui.camera.scale;
+    let range = ui.camera.range_nm();
     let paused = if ui.paused { "  PAUSED" } else { "" };
     line(&format!("RNG {range:.0}  PTL 1.0  x{:.0}{paused}", ui.rate), SSA);
 

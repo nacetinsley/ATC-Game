@@ -5,13 +5,15 @@ pub mod camera;
 pub mod input;
 pub mod panels;
 pub mod scope;
+pub mod surface;
 
 use crate::sim::airspace::{Airport, CATALOG};
+use crate::sim::positions::Staffing;
 use crate::sim::scoring::ShiftEnd;
 use crate::sim::traffic::Busyness;
 use crate::sim::{TICK, World, WorldConfig};
 use audio::Sounds;
-use input::UiState;
+use input::{UiState, View};
 use macroquad::prelude::*;
 
 /// Longest frame time to catch up on, so a stall doesn't fast-forward the sim.
@@ -23,21 +25,74 @@ const DIM: Color = Color::new(0.55, 0.62, 0.62, 1.0);
 const BAD: Color = Color::new(1.00, 0.45, 0.40, 1.0);
 const BACKGROUND: Color = Color::new(0.02, 0.05, 0.05, 1.0);
 
-const BRIEFING: [&str; 13] = [
-    "You are the approach radar controller. Tower and Center are automated.",
-    "",
+const APPROACH_BRIEFING: [&str; 6] = [
     "ARRIVALS  Accept from Center (T). Descend and vector them to the final approach course,",
     "          at 30 degrees or less, at or below the glideslope. Clear for the ILS (C).",
-    "          Once on LOC or GS, hand to Tower (T) before 5 NM final.",
     "DEPARTURES  They check in climbing out. Climb them to the altitude on their strip,",
     "          and hand to Center (T) before they leave the sector near their exit fix.",
-    "",
     "SEPARATE  3 NM or 1,000 ft. Wake spacing on final: Heavy>Heavy 4, Heavy>Large 5,",
     "          Heavy>Small 6, Large>Small 4, otherwise 3. Stay above the MVA.",
-    "",
-    "CONTROLS  Click/Tab select | Drag from target: heading, or onto a fix: direct | Arrows: hdg, alt",
-    "          +/-: speed | C ILS | R route | T handoff | G go-around | ENTER send | BKSP cancel",
 ];
+const LOCAL_BRIEFING: [&str; 4] = [
+    "LANDING  Clear arrivals to land (L) before 1 NM final, with the runway clear.",
+    "TAKEOFF  Line up and wait (W) or cleared for takeoff (K) from the hold line. 90 s between.",
+    "CROSSING  Anyone holding short of a runway waits for you to cross them (X).",
+    "INCURSION  Nobody onto a runway with traffic inside 2 NM final or rolling.",
+];
+const GROUND_BRIEFING: [&str; 3] = [
+    "TAXI     Click an aircraft, then a hold line, gate or intersection. Ctrl-click taxiways",
+    "         first to route via them. Ground never crosses a runway: Tower does.",
+    "SPACING  Keep taxiing traffic apart: two aircraft nose to nose can't pass.",
+];
+const RADAR_CONTROLS: &str =
+    "CONTROLS  Click/Tab select | Drag: heading, or onto a fix: direct | Arrows hdg, alt | +/- speed | C ILS | R route";
+const TOWER_CONTROLS: &str =
+    "CONTROLS  H hold/continue | X cross | W line up | K takeoff | L land | G go-around | T contact next";
+const COMMON_CONTROLS: &str = "          T handoff | ENTER send | BKSP cancel";
+
+/// What the player is told before a shift, for the positions they work.
+fn briefing(staffing: Staffing) -> Vec<&'static str> {
+    let mut lines = vec![match (staffing.approach, staffing.local, staffing.ground) {
+        (true, false, false) => "You work Approach radar. Tower, Ground and Center are automated.",
+        (false, true, false) => "You work Local Control (Tower): the runways. Ground and Approach are automated.",
+        (false, false, true) => "You work Ground Control: the taxiways. Tower and Approach are automated.",
+        (false, true, true) => "You work Tower and Ground combined. Approach is automated.",
+        _ => "You work every position: Approach, Tower and Ground. F1 radar, F2 surface.",
+    }];
+    lines.push("");
+    if staffing.approach {
+        lines.extend(APPROACH_BRIEFING);
+    }
+    if staffing.local {
+        lines.extend(LOCAL_BRIEFING);
+        if !staffing.ground {
+            lines.push("HANDOFF  Hand arrivals to Ground (T) once clear of the runway.");
+        }
+        if !staffing.approach {
+            lines.push("HANDOFF  Hand departures to Departure (T) before 3 NM.");
+        }
+    }
+    if staffing.ground {
+        lines.extend(GROUND_BRIEFING);
+        if !staffing.local {
+            lines.push("HANDOFF  Hand departures to Tower (T) when they hold short.");
+        }
+    }
+    lines
+}
+
+/// The controls for the positions worked.
+fn controls(staffing: Staffing) -> Vec<&'static str> {
+    let mut lines = Vec::new();
+    if staffing.approach {
+        lines.push(RADAR_CONTROLS);
+    }
+    if staffing.tower() {
+        lines.push(TOWER_CONTROLS);
+    }
+    lines.push(COMMON_CONTROLS);
+    lines
+}
 
 /// Pause menu entries, top to bottom.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -61,7 +116,7 @@ const PAUSE_ITEMS: [PauseItem; 6] = [
 const PAUSE_ROW: f32 = 40.0;
 const PAUSE_WIDTH: f32 = 340.0;
 const BRIEFING_VIEW: &str =
-    "          SPACE pause | ESC menu | 1 2 4 rate | M terrain | Wheel zoom | Right-drag pan";
+    "          SPACE pause | ESC menu | 1 2 4 rate | M terrain | Wheel zoom | Right-drag pan | F1/F2 views";
 
 enum Screen {
     Menu,
@@ -80,11 +135,29 @@ pub struct App {
     airports: Vec<Airport>,
     choice: usize,
     busyness: Busyness,
+    /// Index into `Staffing::CHOICES`.
+    position: usize,
 }
 
-fn new_world(airport: &Airport, busyness: Busyness) -> World {
+fn new_world(airport: &Airport, busyness: Busyness, staffing: Staffing) -> World {
     let seed = macroquad::miniquad::date::now() as u64;
-    World::new(airport.clone(), WorldConfig { seed, busyness, ..Default::default() })
+    World::new(airport.clone(), WorldConfig { seed, busyness, staffing, ..Default::default() })
+}
+
+/// Both views, when the player has two: one full size, one inset.
+fn draw_views(world: &World, ui: &mut UiState) {
+    ui.layout();
+    match (ui.has_inset(), ui.main_view) {
+        (false, _) => scope::draw(world, ui, false),
+        (true, View::Radar) => {
+            scope::draw(world, ui, false);
+            surface::draw(world, ui, true);
+        }
+        (true, View::Surface) => {
+            surface::draw(world, ui, false);
+            scope::draw(world, ui, true);
+        }
+    }
 }
 
 impl App {
@@ -95,20 +168,25 @@ impl App {
             .collect();
         App {
             screen: Screen::Menu,
-            world: new_world(&airports[0], Busyness::default()),
-            ui: UiState::new(&airports[0]),
+            world: new_world(&airports[0], Busyness::default(), Staffing::default()),
+            ui: UiState::new(&airports[0], Staffing::default()),
             sounds: Sounds::load().await,
             accumulator: 0.0,
             airports,
             choice: 0,
             busyness: Busyness::default(),
+            position: 0,
         }
+    }
+
+    fn staffing(&self) -> Staffing {
+        Staffing::CHOICES[self.position]
     }
 
     fn start_shift(&mut self) {
         let airport = &self.airports[self.choice];
-        self.world = new_world(airport, self.busyness);
-        self.ui = UiState::new(airport);
+        self.world = new_world(airport, self.busyness, self.staffing());
+        self.ui = UiState::new(airport, self.staffing());
         self.accumulator = 0.0;
         self.screen = Screen::Playing;
     }
@@ -129,8 +207,15 @@ impl App {
                 if is_key_pressed(KeyCode::Right) {
                     self.busyness = self.busyness.step(1);
                 }
-                if let Some(picked) = draw_menu(&self.airports, self.choice, self.busyness) {
-                    self.busyness = picked;
+                if is_key_pressed(KeyCode::P) || is_key_pressed(KeyCode::Tab) {
+                    self.position = (self.position + 1) % Staffing::CHOICES.len();
+                }
+                let picked = draw_menu(&self.airports, self.choice, self.busyness, self.staffing());
+                if let Some(level) = picked.busyness {
+                    self.busyness = level;
+                }
+                if let Some(position) = picked.position {
+                    self.position = position;
                 }
                 if start_pressed() {
                     self.start_shift();
@@ -150,7 +235,7 @@ impl App {
     }
 
     fn pause_frame(&mut self, mut choice: usize, mut show_controls: bool) {
-        scope::draw(&self.world, &self.ui);
+        draw_views(&self.world, &mut self.ui);
         let count = PAUSE_ITEMS.len();
         if is_key_pressed(KeyCode::Up) {
             choice = (choice + count - 1) % count;
@@ -158,7 +243,8 @@ impl App {
         if is_key_pressed(KeyCode::Down) {
             choice = (choice + 1) % count;
         }
-        let (hovered, clicked) = draw_pause(choice, self.sounds.muted, show_controls);
+        let (hovered, clicked) =
+            draw_pause(choice, self.sounds.muted, show_controls, self.world.staffing());
         // The mouse only takes over the highlight when it moves, so arrow keys still work.
         let mouse_moved = mouse_delta_position() != Vec2::ZERO;
         if let Some(index) = hovered.filter(|_| mouse_moved || clicked) {
@@ -196,9 +282,10 @@ impl App {
         if is_key_pressed(KeyCode::Escape) {
             self.ui.drag = input::Drag::None;
             self.screen = Screen::Paused { choice: 0, show_controls: false };
-            scope::draw(&self.world, &self.ui);
+            draw_views(&self.world, &mut self.ui);
             return;
         }
+        self.ui.layout();
         self.ui.update(&mut self.world);
 
         if !self.ui.paused {
@@ -211,7 +298,7 @@ impl App {
         let events = self.world.drain_events();
         self.sounds.play_for(&events);
 
-        scope::draw(&self.world, &self.ui);
+        draw_views(&self.world, &mut self.ui);
         panels::draw(&mut self.world, &mut self.ui);
 
         if let Some(end) = self.world.ended {
@@ -257,18 +344,53 @@ fn draw_busyness(busyness: Busyness, real_data: bool, x: f32, y: f32) -> Option<
     picked
 }
 
-fn draw_menu(airports: &[Airport], choice: usize, busyness: Busyness) -> Option<Busyness> {
+/// Position choices as a row of buttons. Returns one if clicked.
+fn draw_positions(staffing: Staffing, x: f32, y: f32) -> Option<usize> {
+    const GAP: f32 = 10.0;
+    draw_text("POSITION  P or click to choose", x, y, 20.0, DIM);
+    let mouse = Vec2::from(mouse_position());
+    let clicked = is_mouse_button_pressed(MouseButton::Left);
+    let mut left = x;
+    let mut picked = None;
+    for (index, &choice) in Staffing::CHOICES.iter().enumerate() {
+        let label = choice.label();
+        let width = measure_text(label, None, 20, 1.0).width + 24.0;
+        let rect = Rect::new(left, y + 10.0, width, 30.0);
+        let selected = choice == staffing;
+        if selected {
+            draw_rectangle(rect.x, rect.y, rect.w, rect.h, Color::new(0.10, 0.22, 0.12, 1.0));
+        }
+        draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, if selected { TITLE } else { DIM });
+        draw_text(label, rect.x + 12.0, rect.y + 21.0, 20.0, if selected { TITLE } else { TEXT });
+        if clicked && rect.contains(mouse) {
+            picked = Some(index);
+        }
+        left += width + GAP;
+    }
+    picked
+}
+
+/// What the player changed on the menu this frame.
+#[derive(Default)]
+struct MenuPick {
+    busyness: Option<Busyness>,
+    position: Option<usize>,
+}
+
+fn draw_menu(airports: &[Airport], choice: usize, busyness: Busyness, staffing: Staffing) -> MenuPick {
     clear_background(BACKGROUND);
     let x = 60.0;
-    draw_text("APPROACH CONTROL", x, 90.0, 56.0, TITLE);
-    draw_text("30 minute shift", x, 124.0, 24.0, DIM);
+    draw_text("AIR TRAFFIC CONTROL", x, 80.0, 56.0, TITLE);
+    draw_text(format!("30 minute shift   {}", staffing.label()), x, 112.0, 24.0, DIM);
 
-    let mut y = 180.0;
-    for line in BRIEFING.iter().chain(std::iter::once(&BRIEFING_VIEW)) {
+    let mut y = 156.0;
+    let mut pick = MenuPick { position: draw_positions(staffing, x, y), ..Default::default() };
+    y += 72.0;
+    for line in briefing(staffing).iter().chain(&controls(staffing)).chain(std::iter::once(&BRIEFING_VIEW)) {
         draw_text(line, x, y, 20.0, TEXT);
-        y += 24.0;
+        y += 23.0;
     }
-    y += 20.0;
+    y += 16.0;
     draw_text("AIRPORT  Up/Down to choose", x, y, 20.0, DIM);
     y += 28.0;
     for (index, airport) in airports.iter().enumerate() {
@@ -285,10 +407,10 @@ fn draw_menu(airports: &[Airport], choice: usize, busyness: Busyness) -> Option<
         draw_text("Provided as is, with no warranty. See DATA_NOTICE.md.", x, y, 18.0, DIM);
         y += 22.0;
     }
-    y += 24.0;
-    let picked = draw_busyness(busyness, airport.traffic.is_some(), x, y);
-    draw_text("Press ENTER to start your shift", x, y + 130.0, 30.0, TITLE);
-    picked
+    y += 16.0;
+    pick.busyness = draw_busyness(busyness, airport.traffic.is_some(), x, y);
+    draw_text("Press ENTER to start your shift", x, y + 120.0, 30.0, TITLE);
+    pick
 }
 
 fn pause_label(item: PauseItem, muted: bool, show_controls: bool) -> &'static str {
@@ -305,7 +427,7 @@ fn pause_label(item: PauseItem, muted: bool, show_controls: bool) -> &'static st
 }
 
 /// Pause menu over the frozen scope. Returns the row under the mouse and whether it was clicked.
-fn draw_pause(choice: usize, muted: bool, show_controls: bool) -> (Option<usize>, bool) {
+fn draw_pause(choice: usize, muted: bool, show_controls: bool, staffing: Staffing) -> (Option<usize>, bool) {
     draw_rectangle(0.0, 0.0, screen_width(), screen_height(), Color::new(0.0, 0.0, 0.0, 0.65));
 
     let height = 70.0 + PAUSE_ROW * PAUSE_ITEMS.len() as f32 + 40.0;
@@ -344,7 +466,7 @@ fn draw_pause(choice: usize, muted: bool, show_controls: bool) -> (Option<usize>
 
     if show_controls {
         let lines: Vec<&str> =
-            BRIEFING[11..].iter().copied().chain(std::iter::once(BRIEFING_VIEW)).collect();
+            controls(staffing).into_iter().chain(std::iter::once(BRIEFING_VIEW)).collect();
         let box_top = top + height + 16.0;
         let box_left = 40.0;
         let box_width = screen_width() - 80.0;
@@ -372,8 +494,8 @@ fn draw_end(world: &World, end: ShiftEnd) {
     draw_text(format!("Rating: {}", score.rating(end)), x, 130.0, 28.0, TEXT);
     draw_text(
         format!(
-            "Score {}   Landed {}   Handed off {}   Go-arounds {}   Separation losses {}",
-            score.points, score.landed, score.exited, score.go_arounds, score.separation_losses
+            "Score {}   Landed {}   Parked {}   Handed off {}   Go-arounds {}   Separation losses {}",
+            score.points, score.landed, score.parked, score.exited, score.go_arounds, score.separation_losses
         ),
         x,
         162.0,

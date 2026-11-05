@@ -116,11 +116,12 @@ impl World {
                 }
 
                 // Pairs on the same final are spaced by the wake rules instead.
-                // Two aircraft both still with Center are Center's problem.
+                // Two aircraft neither of which is talking to the player are
+                // someone else's problem: Center's, or an automated position's.
                 if !separation_applies(a, self.airport.elevation)
                     || !separation_applies(b, self.airport.elevation)
                     || same_final(a, b)
-                    || (a.phase == Phase::Offered && b.phase == Phase::Offered)
+                    || (!self.is_players(a) && !self.is_players(b))
                 {
                     continue;
                 }
@@ -178,7 +179,7 @@ impl World {
         let low: Vec<(u32, String)> = self
             .aircraft
             .iter()
-            .filter(|a| is_below_mva(a, &self.airport))
+            .filter(|a| is_below_mva(a, &self.airport) && self.is_players(a))
             .map(|a| (a.id, a.callsign.clone()))
             .collect();
         let active: BTreeSet<u32> = low.iter().map(|(id, _)| *id).collect();
