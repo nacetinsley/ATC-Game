@@ -52,7 +52,7 @@ pub fn phrase(clearance: &Clearance, ac: &Aircraft, airport: &Airport) -> String
     match clearance {
         Clearance::Heading(h) => {
             let dir = if heading_diff(ac.heading, *h) >= 0.0 { "right" } else { "left" };
-            format!("turn {dir} heading {}", format_heading(*h))
+            format!("turn {dir} heading {}", format_heading(airport.to_magnetic(*h)))
         }
         Clearance::Altitude(a) => {
             let verb = if *a > ac.altitude { "climb" } else { "descend" };
@@ -239,7 +239,7 @@ fn check_ils(
     if !(MIN_APPROACH_CLEARANCE_NM..=MAX_APPROACH_CLEARANCE_NM).contains(&along) {
         return Err("position not suitable for the approach".into());
     }
-    if ac.altitude > airport.glideslope_altitude(along) + ABOVE_GLIDESLOPE_TOLERANCE {
+    if ac.altitude > airport.glideslope_altitude(rwy, along) + ABOVE_GLIDESLOPE_TOLERANCE {
         return Err("above the glideslope".into());
     }
     let heading = match ac.lateral {

@@ -1,0 +1,45 @@
+# Hand-set values for KSUS: everything FAA data doesn't supply. These are game
+# choices, not published facts.
+
+name = "Spirit of St. Louis"
+
+# The real St. Louis TRACON boundary isn't published, so this is a game-defined circle
+# large enough to hold every STAR entry fix (BUUDD, the farthest, is 56 NM out).
+sector_radius_nm = 60
+sector_sides = 24
+
+# SID initial climb and Center's handoff altitude aren't in the CIFP.
+departure_initial_altitude = 4000.0
+exit_altitude = 10000.0
+
+# KSTL is shown on the scope for orientation. Its traffic isn't simulated.
+[[references]]
+code = "KSTL"
+
+# 26L/08R has the ILS and takes all arrivals plus departures too long for 26R/08L.
+[[configs]]
+name = "West"
+arrival = "26L"
+departure = "26R"
+departure_long = "26L"
+star_transition = "RW26B"
+
+[[configs]]
+name = "East"
+arrival = "08R"
+departure = "08L"
+departure_long = "08R"
+star_transition = "RW08B"
+
+[traffic]
+# ESTIMATE, in movements per hour. 2022 figures: about 71,000 itinerant operations a
+# year (GA 54,649, air taxi 15,024, military 1,288, commercial 155). Assuming a third
+# of those are IFR, over the 17 tower hours a day, gives about 4 an hour. The ramp to
+# 8 stands in for a busy period. No IFR-only or peak-hour count was available.
+start_rate = 4.0
+end_rate = 8.0
+arrival_share = 0.5
+callsign_prefixes = ["N", "N", "SPT", "GTW"]
+# Business and general aviation mix. A judgement call, not KSUS-specific fleet data.
+fleet = ["C172", "PC12", "C56X", "CL35", "GLF6"]
+fleet_weights = [2.0, 2.0, 3.0, 2.0, 1.0]

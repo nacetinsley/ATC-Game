@@ -37,8 +37,9 @@ pub fn desired_heading(ac: &mut Aircraft, wind: Vec2, airport: &Airport) -> f32 
                 }
                 None => {
                     // End of the route: hold the last heading until vectored.
-                    ac.lateral = Lateral::Heading(ac.heading);
-                    ac.heading
+                    let heading = ac.route_end_heading.unwrap_or(ac.heading);
+                    ac.lateral = Lateral::Heading(heading);
+                    heading
                 }
             }
         }

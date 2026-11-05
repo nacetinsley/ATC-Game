@@ -32,6 +32,7 @@ const OFFERED: Color = Color::new(1.00, 1.00, 1.00, 1.0);
 const OTHER_FREQ: Color = Color::new(0.45, 0.52, 0.52, 1.0);
 const WARNING: Color = Color::new(1.00, 0.60, 0.10, 1.0);
 const CRITICAL: Color = Color::new(1.00, 0.20, 0.20, 1.0);
+const REFERENCE: Color = Color::new(0.55, 0.55, 0.70, 1.0);
 const GHOST: Color = Color::new(1.00, 0.95, 0.40, 1.0);
 
 /// Base colour for an aircraft's phase, before any alert overrides it.
@@ -140,8 +141,19 @@ fn draw_map(airport: &Airport, world: &World, ui: &UiState) {
         draw_text(&fix.name, p.x + 6.0, p.y + 4.0, 14.0, FIX);
     }
 
+    for reference in &airport.references {
+        let p = ui.camera.to_screen(glam::Vec2::new(reference.x, reference.y));
+        draw_line(p.x - 5.0, p.y, p.x + 5.0, p.y, 1.5, REFERENCE);
+        draw_line(p.x, p.y - 5.0, p.x, p.y + 5.0, 1.5, REFERENCE);
+        draw_text(&reference.name, p.x + 8.0, p.y - 6.0, 18.0, REFERENCE);
+    }
+
+    if let Some(source) = &airport.data_source {
+        draw_text(source, 10.0, screen_height() - 10.0, 16.0, MAP);
+    }
+
     for runway in &airport.runways {
-        let a = ui.camera.to_screen(runway.threshold());
+        let a = ui.camera.to_screen(runway.takeoff_point());
         let b = ui.camera.to_screen(runway.far_end());
         draw_line(a.x, a.y, b.x, b.y, 3.0, RUNWAY);
     }
@@ -199,7 +211,7 @@ fn status(ac: &Aircraft, airport: &Airport) -> String {
         Phase::TowerRelease => "TWR".into(),
         Phase::OfferedToCenter => "CTR".into(),
         Phase::Controlled => match ac.lateral {
-            Lateral::Heading(h) => format!("H{}", format_heading(h)),
+            Lateral::Heading(h) => format!("H{}", format_heading(airport.to_magnetic(h))),
             _ => ac
                 .active_fix()
                 .map(|f| airport.fixes[f].name.clone())
@@ -278,7 +290,7 @@ fn draw_pending(world: &World, ui: &UiState) {
                 None => (
                     mouse,
                     ui.drag_heading(world, id, mouse)
-                        .map(|h| format!("HDG {}", format_heading(h)))
+                        .map(|h| format!("HDG {}", format_heading(world.airport.to_magnetic(h))))
                         .unwrap_or_default(),
                 ),
             };

@@ -1,11 +1,16 @@
 //! Airport and airspace data, loaded from TOML.
 
-use super::units::{FT_PER_NM, heading_vec};
+use super::performance::aircraft_type;
+use super::units::{FT_PER_NM, heading_vec, normalize_heading};
 use glam::Vec2;
 use serde::Deserialize;
 
 /// The airport built into the game.
 pub const DEFAULT_AIRPORT: &str = include_str!("../../assets/airports/fictional.toml");
+/// Generated from FAA data by `tools/import_faa.py`.
+pub const KSUS_AIRPORT: &str = include_str!("../../assets/airports/ksus.toml");
+/// Every playable airport, in menu order.
+pub const CATALOG: [&str; 2] = [DEFAULT_AIRPORT, KSUS_AIRPORT];
 
 pub const GLIDESLOPE_DEG: f32 = 3.0;
 /// Height the glideslope crosses the threshold, feet.
@@ -31,7 +36,33 @@ pub struct Runway {
     pub x: f32,
     pub y: f32,
     pub heading: f32,
+    /// Landing threshold to the far end, NM.
     pub length: f32,
+    /// Where takeoffs start, when a displaced threshold puts it behind `x`/`y`.
+    pub start_x: Option<f32>,
+    pub start_y: Option<f32>,
+    #[serde(default = "default_true")]
+    pub ils: bool,
+    #[serde(default = "default_glideslope")]
+    pub glideslope_deg: f32,
+    #[serde(default = "default_crossing_height")]
+    pub threshold_crossing_height: f32,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_glideslope() -> f32 {
+    GLIDESLOPE_DEG
+}
+
+fn default_crossing_height() -> f32 {
+    THRESHOLD_CROSSING_HEIGHT
+}
+
+fn default_initial_altitude() -> f32 {
+    5000.0
 }
 
 impl Runway {
@@ -41,6 +72,18 @@ impl Runway {
 
     pub fn far_end(&self) -> Vec2 {
         self.threshold() + heading_vec(self.heading) * self.length
+    }
+
+    /// Where a takeoff roll begins.
+    pub fn takeoff_point(&self) -> Vec2 {
+        match (self.start_x, self.start_y) {
+            (Some(x), Some(y)) => Vec2::new(x, y),
+            _ => self.threshold(),
+        }
+    }
+
+    pub fn takeoff_length_ft(&self) -> f32 {
+        (self.far_end() - self.takeoff_point()).length() * FT_PER_NM
     }
 
     /// Miles to run to the threshold along the course (negative once past it).
@@ -59,16 +102,22 @@ pub struct Config {
     pub name: String,
     pub arrival: String,
     pub departure: String,
+    /// Runway for aircraft that can't use `departure` because it's too short.
+    pub departure_long: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Star {
+    pub name: Option<String>,
     pub config: String,
     pub fixes: Vec<String>,
+    /// True heading flown after the last fix, while waiting for vectors.
+    pub final_heading: Option<f32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Sid {
+    pub name: Option<String>,
     pub config: String,
     pub fixes: Vec<String>,
     pub exit_altitude: f32,
@@ -78,6 +127,36 @@ pub struct Sid {
 pub struct MvaArea {
     pub altitude: f32,
     pub polygon: Vec<[f32; 2]>,
+    /// Areas inside the polygon that belong to a different sector.
+    #[serde(default)]
+    pub holes: Vec<Vec<[f32; 2]>>,
+}
+
+impl MvaArea {
+    pub fn contains(&self, pos: Vec2) -> bool {
+        point_in_polygon(pos, &self.polygon)
+            && !self.holes.iter().any(|hole| point_in_polygon(pos, hole))
+    }
+}
+
+/// An airport's own traffic. Without one, the default fleet and busy ramp apply.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TrafficProfile {
+    /// Movements per hour at the start and end of a shift.
+    pub start_rate: f32,
+    pub end_rate: f32,
+    pub arrival_share: f32,
+    pub callsign_prefixes: Vec<String>,
+    pub fleet: Vec<String>,
+    pub fleet_weights: Vec<f32>,
+}
+
+/// A map landmark with no simulated traffic.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Reference {
+    pub name: String,
+    pub x: f32,
+    pub y: f32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -85,6 +164,16 @@ pub struct Airport {
     pub name: String,
     pub code: String,
     pub elevation: f32,
+    /// Degrees, east positive. ATC speaks magnetic; the sim works in true.
+    #[serde(default)]
+    pub magnetic_variation: f32,
+    /// Credit line for airports built from real data.
+    pub data_source: Option<String>,
+    #[serde(default = "default_initial_altitude")]
+    pub departure_initial_altitude: f32,
+    pub traffic: Option<TrafficProfile>,
+    #[serde(default)]
+    pub references: Vec<Reference>,
     pub go_around_altitude: f32,
     pub mva_default: f32,
     pub sector: Vec<[f32; 2]>,
@@ -121,6 +210,16 @@ impl Airport {
                     return Err(format!("config {}: unknown runway {id}", config.name));
                 }
             }
+            if let Some(id) = &config.departure_long
+                && self.runway_index(id).is_none()
+            {
+                return Err(format!("config {}: unknown runway {id}", config.name));
+            }
+            if let Some(rwy) = self.runway_index(&config.arrival)
+                && !self.runways[rwy].ils
+            {
+                return Err(format!("landing runway {} has no ILS", config.arrival));
+            }
             if !self.stars.iter().any(|s| s.config == config.name) {
                 return Err(format!("config {} has no STAR", config.name));
             }
@@ -143,6 +242,19 @@ impl Airport {
                 }
             }
         }
+        if let Some(traffic) = &self.traffic {
+            if traffic.fleet.is_empty() || traffic.fleet.len() != traffic.fleet_weights.len() {
+                return Err("traffic fleet and weights must match and not be empty".into());
+            }
+            if traffic.callsign_prefixes.is_empty() {
+                return Err("traffic needs at least one callsign prefix".into());
+            }
+            for name in &traffic.fleet {
+                if aircraft_type(name).is_none() {
+                    return Err(format!("traffic references unknown type {name}"));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -154,6 +266,15 @@ impl Airport {
         self.runways.iter().position(|r| r.id == id)
     }
 
+    /// True heading as a controller would say it.
+    pub fn to_magnetic(&self, true_heading: f32) -> f32 {
+        normalize_heading(true_heading - self.magnetic_variation)
+    }
+
+    pub fn to_true(&self, magnetic_heading: f32) -> f32 {
+        normalize_heading(magnetic_heading + self.magnetic_variation)
+    }
+
     /// Fix indices for a validated route.
     pub fn route_indices(&self, names: &[String]) -> Vec<usize> {
         names.iter().filter_map(|n| self.fix_index(n)).collect()
@@ -163,19 +284,22 @@ impl Airport {
         point_in_polygon(pos, &self.sector)
     }
 
-    /// Minimum vectoring altitude at a position.
+    /// Minimum vectoring altitude at a position. The default only covers places the
+    /// chart doesn't: it isn't a floor under the chart's own values.
     pub fn mva_at(&self, pos: Vec2) -> f32 {
         self.mva
             .iter()
-            .filter(|a| point_in_polygon(pos, &a.polygon))
+            .filter(|a| a.contains(pos))
             .map(|a| a.altitude)
-            .fold(self.mva_default, f32::max)
+            .reduce(f32::max)
+            .unwrap_or(self.mva_default)
     }
 
-    /// Altitude of the glideslope at a distance from the threshold.
-    pub fn glideslope_altitude(&self, along: f32) -> f32 {
-        let slope = GLIDESLOPE_DEG.to_radians().tan();
-        self.elevation + THRESHOLD_CROSSING_HEIGHT + along.max(0.0) * FT_PER_NM * slope
+    /// Altitude of a runway's glideslope at a distance from its threshold.
+    pub fn glideslope_altitude(&self, rwy: usize, along: f32) -> f32 {
+        let runway = &self.runways[rwy];
+        let slope = runway.glideslope_deg.to_radians().tan();
+        self.elevation + runway.threshold_crossing_height + along.max(0.0) * FT_PER_NM * slope
     }
 }
 
@@ -229,7 +353,7 @@ mod tests {
     #[test]
     fn glideslope_is_about_318_ft_per_mile() {
         let a = Airport::default_airport();
-        let per_nm = a.glideslope_altitude(11.0) - a.glideslope_altitude(10.0);
+        let per_nm = a.glideslope_altitude(0, 11.0) - a.glideslope_altitude(0, 10.0);
         assert!((per_nm - 318.0).abs() < 2.0, "{per_nm}");
     }
 

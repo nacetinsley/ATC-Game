@@ -18,8 +18,8 @@ const STCA_STEP_S: f32 = 5.0;
 /// An alert stays up until the pair is this far beyond the limit, to stop it flickering.
 const CLEAR_MARGIN_NM: f32 = 0.2;
 const CLEAR_MARGIN_FT: f32 = 100.0;
-/// Below this height Tower is separating traffic visually around the field.
-const SEPARATION_FLOOR_FT: f32 = 1000.0;
+/// Below this height above the field, Tower is separating traffic visually.
+const SEPARATION_FLOOR_AGL_FT: f32 = 1000.0;
 /// Past this much too close, Tower sends the follower around.
 const WAKE_GO_AROUND_MARGIN_NM: f32 = 1.5;
 
@@ -67,9 +67,9 @@ pub fn predicts_conflict(a: &Aircraft, b: &Aircraft) -> bool {
 }
 
 /// Radar separation is the player's job for this aircraft.
-fn separation_applies(ac: &Aircraft) -> bool {
+fn separation_applies(ac: &Aircraft, elevation: f32) -> bool {
     !ac.on_ground
-        && ac.altitude >= SEPARATION_FLOOR_FT
+        && ac.altitude - elevation >= SEPARATION_FLOOR_AGL_FT
         && !matches!(ac.phase, Phase::TowerHandedOff | Phase::TowerRelease | Phase::Rollout)
 }
 
@@ -117,8 +117,8 @@ impl World {
 
                 // Pairs on the same final are spaced by the wake rules instead.
                 // Two aircraft both still with Center are Center's problem.
-                if !separation_applies(a)
-                    || !separation_applies(b)
+                if !separation_applies(a, self.airport.elevation)
+                    || !separation_applies(b, self.airport.elevation)
                     || same_final(a, b)
                     || (a.phase == Phase::Offered && b.phase == Phase::Offered)
                 {

@@ -89,11 +89,19 @@ pub struct WorldConfig {
     pub wind: Option<Wind>,
     /// End the shift after this many sim-seconds.
     pub shift_seconds: f32,
+    /// Scales the airport's traffic rate.
+    pub busyness: traffic::Busyness,
 }
 
 impl Default for WorldConfig {
     fn default() -> Self {
-        WorldConfig { seed: 1, traffic: true, wind: None, shift_seconds: traffic::SHIFT_SECONDS }
+        WorldConfig {
+            seed: 1,
+            traffic: true,
+            wind: None,
+            shift_seconds: traffic::SHIFT_SECONDS,
+            busyness: traffic::Busyness::default(),
+        }
     }
 }
 
@@ -154,7 +162,7 @@ impl World {
         };
         let opening = format!(
             "Shift start. Wind {:03.0} at {:.0}. Landing {}, departing {}.",
-            world.wind.from,
+            world.airport.to_magnetic(world.wind.from),
             world.wind.speed,
             world.config().arrival,
             world.config().departure,
@@ -173,6 +181,17 @@ impl World {
 
     pub fn departure_runway(&self) -> usize {
         self.airport.runway_index(&self.config().departure).expect("validated at load")
+    }
+
+    /// Runway for a departure: the normal one unless the aircraft needs a longer one.
+    pub fn departure_runway_for(&self, ty: &performance::AircraftType) -> usize {
+        let normal = self.departure_runway();
+        match &self.config().departure_long {
+            Some(id) if self.airport.runways[normal].takeoff_length_ft() < ty.min_runway_ft => {
+                self.airport.runway_index(id).expect("validated at load")
+            }
+            _ => normal,
+        }
     }
 
     pub fn shift_seconds(&self) -> f32 {
@@ -292,7 +311,7 @@ impl World {
         if ac.flow == Flow::Departure && ac.phase == Phase::OfferedToCenter {
             let near_exit = ac
                 .exit_fix
-                .map(|f| (self.airport.fixes[f].pos() - ac.pos).length() <= EXIT_TOLERANCE_NM)
+                .map(|f| self.distance_from_exit(ac, f) <= EXIT_TOLERANCE_NM)
                 .unwrap_or(true);
             if !near_exit {
                 self.emit(SimEvent::WrongExit { callsign: callsign.clone() });
@@ -304,6 +323,25 @@ impl World {
         } else {
             self.emit(SimEvent::SectorBust { callsign });
         }
+    }
+
+    /// How far off its exit an aircraft left. An exit fix beyond the boundary can't be
+    /// reached, so there it's the distance from the route's last leg.
+    fn distance_from_exit(&self, ac: &Aircraft, exit: usize) -> f32 {
+        let fix = self.airport.fixes[exit].pos();
+        if self.airport.in_sector(fix) {
+            return (fix - ac.pos).length();
+        }
+        let start = ac
+            .route
+            .iter()
+            .rev()
+            .nth(1)
+            .map(|&f| self.airport.fixes[f].pos())
+            .unwrap_or(Vec2::ZERO);
+        let leg = fix - start;
+        let t = ((ac.pos - start).dot(leg) / leg.length_squared().max(1e-6)).clamp(0.0, 1.0);
+        (start + leg * t - ac.pos).length()
     }
 
     fn run_sweep(&mut self) {

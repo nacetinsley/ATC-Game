@@ -1,13 +1,14 @@
 //! Maps sim coordinates (NM, y north) to screen pixels (y down).
 
+use crate::sim::airspace::Airport;
 use macroquad::prelude as mq;
 
 /// Width of the side panel, pixels. The scope fills the rest of the window.
 pub const PANEL_WIDTH: f32 = 420.0;
 const MIN_SCALE: f32 = 2.0;
 const MAX_SCALE: f32 = 60.0;
-/// NM of airspace to fit on the scope's short side at startup.
-const DEFAULT_VIEW_NM: f32 = 116.0;
+/// Extra room around the sector at startup, as a share of its size.
+const VIEW_MARGIN: f32 = 1.12;
 
 pub struct Camera {
     pub center: glam::Vec2,
@@ -16,11 +17,19 @@ pub struct Camera {
 }
 
 impl Camera {
-    pub fn fit_sector() -> Camera {
+    /// Frame the whole sector, whatever its size.
+    pub fn fit_sector(airport: &Airport) -> Camera {
+        let (mut min, mut max) = (glam::Vec2::splat(f32::MAX), glam::Vec2::splat(f32::MIN));
+        for p in &airport.sector {
+            let p = glam::Vec2::new(p[0], p[1]);
+            min = min.min(p);
+            max = max.max(p);
+        }
+        let size = (max - min).max_element().max(1.0) * VIEW_MARGIN;
         let side = scope_width().min(mq::screen_height());
         Camera {
-            center: glam::Vec2::ZERO,
-            scale: (side / DEFAULT_VIEW_NM).clamp(MIN_SCALE, MAX_SCALE),
+            center: (min + max) / 2.0,
+            scale: (side / size).clamp(MIN_SCALE, MAX_SCALE),
         }
     }
 

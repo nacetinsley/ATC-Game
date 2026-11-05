@@ -11,14 +11,15 @@ pub const TOWER_HANDOFF_GATE_NM: f32 = 5.0;
 const RUNWAY_CHECK_NM: f32 = 1.0;
 const ROLLOUT_SECONDS: f32 = 45.0;
 const ROLLOUT_SECONDS_HEAVY: f32 = 55.0;
-/// Departures check in with the player above this altitude.
-const CHECK_IN_ALTITUDE: f32 = 1500.0;
+/// Departures and go-arounds come to the player above this height over the field.
+const CHECK_IN_AGL: f32 = 1500.0;
+/// Tower won't line a departure up in front of an arrival closer than this.
+const SHORT_FINAL_HOLD_NM: f32 = 4.0;
 /// Minimum time between departures, seconds.
 pub const DEPARTURE_INTERVAL: f32 = 90.0;
 pub const DEPARTURE_INTERVAL_AFTER_HEAVY: f32 = 150.0;
 /// How long a departure holds the runway from line-up to rotation.
 const TAKEOFF_OCCUPANCY: f32 = 45.0;
-pub(super) const DEPARTURE_INITIAL_ALTITUDE: f32 = 5000.0;
 
 impl World {
     pub(super) fn run_approaches(&mut self) {
@@ -29,8 +30,9 @@ impl World {
                     self.step_final(index)
                 }
                 Phase::GoAround => {
+                    let check_in = self.airport.elevation + CHECK_IN_AGL;
                     let ac = &mut self.aircraft[index];
-                    if ac.altitude >= CHECK_IN_ALTITUDE {
+                    if ac.altitude >= check_in {
                         ac.phase = Phase::Controlled;
                     }
                 }
@@ -60,7 +62,7 @@ impl World {
         let ac = &self.aircraft[index];
         let Some(rwy) = ac.approach_runway else { return };
         let along = self.airport.runways[rwy].along(ac.pos);
-        let gs_altitude = self.airport.glideslope_altitude(along);
+        let gs_altitude = self.airport.glideslope_altitude(rwy, along);
         let phase = ac.phase;
         let on_glideslope = ac.on_glideslope;
         let captures_glideslope = !on_glideslope && ac.altitude + 20.0 >= gs_altitude;
@@ -121,8 +123,9 @@ impl World {
     }
 
     fn step_departure_check_in(&mut self, index: usize) {
+        let check_in = self.airport.elevation + CHECK_IN_AGL;
         let ac = &mut self.aircraft[index];
-        if ac.on_ground || ac.altitude < CHECK_IN_ALTITUDE {
+        if ac.on_ground || ac.altitude < check_in {
             return;
         }
         ac.phase = Phase::Controlled;
@@ -140,13 +143,14 @@ impl World {
         if self.time < self.next_departure_time || self.departure_queue.is_empty() {
             return;
         }
-        let rwy = self.departure_runway();
-        if self.runway_occupied(rwy) {
+        let Some(ty) = self.departure_queue.front().map(|a| a.ty) else { return };
+        let rwy = self.departure_runway_for(ty);
+        if self.runway_occupied(rwy) || self.arrival_on_short_final(rwy) {
             return;
         }
         let Some(mut ac) = self.departure_queue.pop_front() else { return };
         let runway = &self.airport.runways[rwy];
-        ac.pos = runway.threshold();
+        ac.pos = runway.takeoff_point();
         ac.heading = runway.heading;
         ac.lateral = Lateral::Heading(runway.heading);
         ac.flow = Flow::Departure;
@@ -165,6 +169,14 @@ impl World {
         self.add_aircraft(ac);
     }
 
+    fn arrival_on_short_final(&self, rwy: usize) -> bool {
+        self.aircraft.iter().any(|a| {
+            a.on_final()
+                && a.approach_runway == Some(rwy)
+                && self.airport.runways[rwy].along(a.pos) < SHORT_FINAL_HOLD_NM
+        })
+    }
+
     /// Remove aircraft that have finished rolling out.
     pub(super) fn clear_finished_rollouts(&mut self) {
         let now = self.time;
@@ -174,8 +186,8 @@ impl World {
 }
 
 /// Departure ready for release; position and phase are set when it lines up.
-pub(super) fn queued_departure(mut ac: Aircraft) -> Aircraft {
-    ac.target_altitude = DEPARTURE_INITIAL_ALTITUDE;
+pub(super) fn queued_departure(mut ac: Aircraft, initial_altitude: f32) -> Aircraft {
+    ac.target_altitude = initial_altitude;
     ac.target_speed = ac.ty.max_speed.min(250.0);
     ac
 }

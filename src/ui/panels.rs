@@ -79,7 +79,10 @@ fn draw_status(world: &World, ui: &UiState, x: f32) {
     label(
         &format!(
             "Wind {:03.0}/{:.0}   Land {}   Depart {}",
-            world.wind.from, world.wind.speed, config.arrival, config.departure
+            world.airport.to_magnetic(world.wind.from),
+            world.wind.speed,
+            config.arrival,
+            config.departure
         ),
         left,
         48.0,

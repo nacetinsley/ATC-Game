@@ -6,8 +6,9 @@ pub mod input;
 pub mod panels;
 pub mod scope;
 
-use crate::sim::airspace::Airport;
+use crate::sim::airspace::{Airport, CATALOG};
 use crate::sim::scoring::ShiftEnd;
+use crate::sim::traffic::Busyness;
 use crate::sim::{TICK, World, WorldConfig};
 use audio::Sounds;
 use input::UiState;
@@ -28,7 +29,7 @@ const BRIEFING: [&str; 13] = [
     "ARRIVALS  Accept from Center (T). Descend and vector them to the final approach course,",
     "          at 30 degrees or less, at or below the glideslope. Clear for the ILS (C).",
     "          Once on LOC or GS, hand to Tower (T) before 5 NM final.",
-    "DEPARTURES  They check in climbing to 5,000. Climb them to the altitude on their strip,",
+    "DEPARTURES  They check in climbing out. Climb them to the altitude on their strip,",
     "          and hand to Center (T) before they leave the sector near their exit fix.",
     "",
     "SEPARATE  3 NM or 1,000 ft. Wake spacing on final: Heavy>Heavy 4, Heavy>Large 5,",
@@ -52,27 +53,38 @@ pub struct App {
     ui: UiState,
     sounds: Sounds,
     accumulator: f32,
+    airports: Vec<Airport>,
+    choice: usize,
+    busyness: Busyness,
 }
 
-fn new_world() -> World {
+fn new_world(airport: &Airport, busyness: Busyness) -> World {
     let seed = macroquad::miniquad::date::now() as u64;
-    World::new(Airport::default_airport(), WorldConfig { seed, ..Default::default() })
+    World::new(airport.clone(), WorldConfig { seed, busyness, ..Default::default() })
 }
 
 impl App {
     pub async fn new() -> App {
+        let airports: Vec<Airport> = CATALOG
+            .iter()
+            .map(|text| Airport::from_toml(text).expect("built-in airport data is valid"))
+            .collect();
         App {
             screen: Screen::Menu,
-            world: new_world(),
-            ui: UiState::new(),
+            world: new_world(&airports[0], Busyness::default()),
+            ui: UiState::new(&airports[0]),
             sounds: Sounds::load().await,
             accumulator: 0.0,
+            airports,
+            choice: 0,
+            busyness: Busyness::default(),
         }
     }
 
     fn start_shift(&mut self) {
-        self.world = new_world();
-        self.ui = UiState::new();
+        let airport = &self.airports[self.choice];
+        self.world = new_world(airport, self.busyness);
+        self.ui = UiState::new(airport);
         self.accumulator = 0.0;
         self.screen = Screen::Playing;
     }
@@ -80,7 +92,22 @@ impl App {
     pub fn frame(&mut self) {
         match self.screen {
             Screen::Menu => {
-                draw_menu();
+                let count = self.airports.len();
+                if is_key_pressed(KeyCode::Up) {
+                    self.choice = (self.choice + count - 1) % count;
+                }
+                if is_key_pressed(KeyCode::Down) {
+                    self.choice = (self.choice + 1) % count;
+                }
+                if is_key_pressed(KeyCode::Left) {
+                    self.busyness = self.busyness.step(-1);
+                }
+                if is_key_pressed(KeyCode::Right) {
+                    self.busyness = self.busyness.step(1);
+                }
+                if let Some(picked) = draw_menu(&self.airports, self.choice, self.busyness) {
+                    self.busyness = picked;
+                }
                 if start_pressed() {
                     self.start_shift();
                 }
@@ -121,18 +148,71 @@ fn start_pressed() -> bool {
     is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter)
 }
 
-fn draw_menu() {
+/// Five-notch slider for traffic level. Returns a level if one was clicked.
+fn draw_busyness(busyness: Busyness, real_data: bool, x: f32, y: f32) -> Option<Busyness> {
+    const SPACING: f32 = 130.0;
+    const HIT: f32 = 14.0;
+    draw_text("TRAFFIC  Left/Right or click to choose", x, y, 20.0, DIM);
+    let track = y + 30.0;
+    let first = x + 40.0;
+    let last = first + SPACING * (Busyness::ALL.len() - 1) as f32;
+    draw_line(first, track, last, track, 3.0, DIM);
+
+    let mouse = Vec2::from(mouse_position());
+    let clicked = is_mouse_button_pressed(MouseButton::Left);
+    let mut picked = None;
+    for (index, &level) in Busyness::ALL.iter().enumerate() {
+        let cx = first + SPACING * index as f32;
+        let selected = level == busyness;
+        if selected {
+            draw_circle(cx, track, 10.0, TITLE);
+        } else {
+            draw_circle(cx, track, 6.0, TEXT);
+        }
+        let label = level.label(real_data);
+        let width = measure_text(label, None, 18, 1.0).width;
+        draw_text(label, cx - width / 2.0, track + 30.0, 18.0, if selected { TITLE } else { TEXT });
+        if clicked && mouse.distance(Vec2::new(cx, track)) < HIT {
+            picked = Some(level);
+        }
+    }
+    let note = format!("x{} the airport's normal traffic", busyness.multiplier());
+    draw_text(&note, x, track + 56.0, 18.0, DIM);
+    picked
+}
+
+fn draw_menu(airports: &[Airport], choice: usize, busyness: Busyness) -> Option<Busyness> {
     clear_background(BACKGROUND);
     let x = 60.0;
     draw_text("APPROACH CONTROL", x, 90.0, 56.0, TITLE);
-    draw_text("Harrowgate International - 30 minute shift", x, 124.0, 24.0, DIM);
+    draw_text("30 minute shift", x, 124.0, 24.0, DIM);
 
     let mut y = 180.0;
     for line in BRIEFING.iter().chain(std::iter::once(&BRIEFING_VIEW)) {
         draw_text(line, x, y, 20.0, TEXT);
         y += 24.0;
     }
-    draw_text("Press ENTER to start your shift", x, y + 30.0, 30.0, TITLE);
+    y += 20.0;
+    draw_text("AIRPORT  Up/Down to choose", x, y, 20.0, DIM);
+    y += 28.0;
+    for (index, airport) in airports.iter().enumerate() {
+        let selected = index == choice;
+        let marker = if selected { ">" } else { " " };
+        let line = format!("{marker} {}  {}", airport.code, airport.name);
+        draw_text(&line, x, y, 24.0, if selected { TITLE } else { TEXT });
+        y += 28.0;
+    }
+    let airport = &airports[choice];
+    if let Some(source) = &airport.data_source {
+        draw_text(source, x, y, 18.0, DIM);
+        y += 22.0;
+        draw_text("Provided as is, with no warranty. See DATA_NOTICE.md.", x, y, 18.0, DIM);
+        y += 22.0;
+    }
+    y += 24.0;
+    let picked = draw_busyness(busyness, airport.traffic.is_some(), x, y);
+    draw_text("Press ENTER to start your shift", x, y + 130.0, 30.0, TITLE);
+    picked
 }
 
 fn draw_end(world: &World, end: ShiftEnd) {

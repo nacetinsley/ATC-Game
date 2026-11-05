@@ -72,6 +72,8 @@ pub struct Aircraft {
     pub target_speed: f32,
     pub route: Vec<usize>,
     pub route_index: usize,
+    /// True heading to fly at the end of the route. Otherwise it keeps its last heading.
+    pub route_end_heading: Option<f32>,
 
     /// Runway this aircraft is cleared to, once cleared.
     pub approach_runway: Option<usize>,
@@ -118,6 +120,7 @@ impl Aircraft {
             target_speed: ias,
             route: Vec::new(),
             route_index: 0,
+            route_end_heading: None,
             approach_runway: None,
             on_glideslope: false,
             spawn_time: 0.0,
@@ -227,7 +230,8 @@ impl Aircraft {
         let minutes = dt / 60.0;
         if self.on_glideslope
             && let Some(rwy) = self.approach_runway {
-                let desired = airport.glideslope_altitude(airport.runways[rwy].along(self.pos));
+                let along = airport.runways[rwy].along(self.pos);
+                let desired = airport.glideslope_altitude(rwy, along);
                 let limit = self.ty.descent_fpm * minutes;
                 let change = (desired - self.altitude).clamp(-limit, limit);
                 self.altitude += change;

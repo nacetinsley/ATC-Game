@@ -3,9 +3,10 @@
 use super::camera::{Camera, mouse_in_scope};
 use super::scope::{self, BLOCK_SIZE};
 use crate::sim::World;
+use crate::sim::airspace::Airport;
 use crate::sim::aircraft::{Flow, Phase};
 use crate::sim::clearance::PendingClearance;
-use crate::sim::units::{normalize_heading, vec_heading};
+use crate::sim::units::vec_heading;
 use macroquad::prelude::*;
 use std::collections::HashMap;
 
@@ -38,9 +39,9 @@ pub struct UiState {
 }
 
 impl UiState {
-    pub fn new() -> UiState {
+    pub fn new(airport: &Airport) -> UiState {
         UiState {
-            camera: Camera::fit_sector(),
+            camera: Camera::fit_sector(airport),
             selected: None,
             pending: PendingClearance::default(),
             drag: Drag::None,
@@ -292,12 +293,8 @@ impl UiState {
         if to_mouse.length() < 1e-3 {
             return None;
         }
-        Some(normalize_heading((vec_heading(to_mouse) / 5.0).round() * 5.0))
-    }
-}
-
-impl Default for UiState {
-    fn default() -> Self {
-        UiState::new()
+        // Round in magnetic, the headings a controller actually assigns.
+        let magnetic = world.airport.to_magnetic(vec_heading(to_mouse));
+        Some(world.airport.to_true((magnetic / 5.0).round() * 5.0))
     }
 }

@@ -1,4 +1,6 @@
 //! Aircraft performance and wake categories.
+//!
+//! Figures are rounded approximations for gameplay, not manufacturer data.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum WakeCategory {
@@ -32,11 +34,17 @@ pub struct AircraftType {
     /// Knots per second.
     pub accel: f32,
     pub decel: f32,
-    /// Altitude it arrives at when offered by Center, feet.
+    /// Altitude it arrives at when offered by Center, feet. Also the highest a
+    /// departure of this type is expected to reach before leaving the sector.
     pub arrival_altitude: f32,
+    /// Shortest runway it will take off from, feet.
+    pub min_runway_ft: f32,
 }
 
-pub static TYPES: [AircraftType; 6] = [
+/// The types an airport with no traffic section draws from. New types go after these.
+pub const DEFAULT_FLEET_SIZE: usize = 6;
+
+pub static TYPES: [AircraftType; 11] = [
     AircraftType {
         designator: "C208",
         wake: WakeCategory::Small,
@@ -48,6 +56,7 @@ pub static TYPES: [AircraftType; 6] = [
         accel: 1.5,
         decel: 1.5,
         arrival_altitude: 9000.0,
+        min_runway_ft: 2500.0,
     },
     AircraftType {
         designator: "E175",
@@ -60,6 +69,7 @@ pub static TYPES: [AircraftType; 6] = [
         accel: 2.5,
         decel: 1.5,
         arrival_altitude: 13000.0,
+        min_runway_ft: 6000.0,
     },
     AircraftType {
         designator: "A320",
@@ -72,6 +82,7 @@ pub static TYPES: [AircraftType; 6] = [
         accel: 2.5,
         decel: 1.5,
         arrival_altitude: 13000.0,
+        min_runway_ft: 7000.0,
     },
     AircraftType {
         designator: "B738",
@@ -84,6 +95,7 @@ pub static TYPES: [AircraftType; 6] = [
         accel: 2.5,
         decel: 1.5,
         arrival_altitude: 13000.0,
+        min_runway_ft: 7500.0,
     },
     AircraftType {
         designator: "A359",
@@ -96,6 +108,7 @@ pub static TYPES: [AircraftType; 6] = [
         accel: 2.0,
         decel: 1.2,
         arrival_altitude: 14000.0,
+        min_runway_ft: 8500.0,
     },
     AircraftType {
         designator: "B77W",
@@ -108,6 +121,72 @@ pub static TYPES: [AircraftType; 6] = [
         accel: 2.0,
         decel: 1.2,
         arrival_altitude: 14000.0,
+        min_runway_ft: 9500.0,
+    },
+    AircraftType {
+        designator: "C172",
+        wake: WakeCategory::Small,
+        vref: 65.0,
+        min_speed: 80.0,
+        max_speed: 120.0,
+        climb_fpm: 700.0,
+        descent_fpm: 700.0,
+        accel: 1.0,
+        decel: 1.0,
+        arrival_altitude: 6000.0,
+        min_runway_ft: 1800.0,
+    },
+    AircraftType {
+        designator: "PC12",
+        wake: WakeCategory::Small,
+        vref: 85.0,
+        min_speed: 110.0,
+        max_speed: 240.0,
+        climb_fpm: 1500.0,
+        descent_fpm: 1500.0,
+        accel: 1.5,
+        decel: 1.5,
+        arrival_altitude: 10000.0,
+        min_runway_ft: 2600.0,
+    },
+    AircraftType {
+        designator: "C56X",
+        wake: WakeCategory::Small,
+        vref: 115.0,
+        min_speed: 130.0,
+        max_speed: 300.0,
+        climb_fpm: 3500.0,
+        descent_fpm: 2500.0,
+        accel: 2.5,
+        decel: 1.5,
+        arrival_altitude: 12000.0,
+        min_runway_ft: 3800.0,
+    },
+    AircraftType {
+        designator: "CL35",
+        wake: WakeCategory::Small,
+        vref: 125.0,
+        min_speed: 140.0,
+        max_speed: 320.0,
+        climb_fpm: 3500.0,
+        descent_fpm: 2500.0,
+        accel: 2.5,
+        decel: 1.5,
+        arrival_altitude: 13000.0,
+        min_runway_ft: 5300.0,
+    },
+    AircraftType {
+        designator: "GLF6",
+        wake: WakeCategory::Large,
+        vref: 130.0,
+        min_speed: 150.0,
+        max_speed: 320.0,
+        climb_fpm: 3000.0,
+        descent_fpm: 2500.0,
+        accel: 2.5,
+        decel: 1.5,
+        arrival_altitude: 14000.0,
+        min_runway_ft: 5900.0,
     },
 ];
 
@@ -148,5 +227,11 @@ mod tests {
             assert!(t.vref <= t.min_speed, "{}", t.designator);
             assert!(t.min_speed < t.max_speed, "{}", t.designator);
         }
+    }
+
+    #[test]
+    fn default_fleet_is_unchanged_by_later_additions() {
+        let names: Vec<&str> = TYPES[..DEFAULT_FLEET_SIZE].iter().map(|t| t.designator).collect();
+        assert_eq!(names, ["C208", "E175", "A320", "B738", "A359", "B77W"]);
     }
 }
