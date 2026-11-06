@@ -1,7 +1,7 @@
 # Air Traffic Control
 
 A 2D top-down air traffic control game written in Rust with
-[macroquad](https://macroquad.rs). Work a 30-minute shift as Approach, Tower
+[macroquad](https://macroquad.rs). Work a shift, an hour by default, as Approach, Tower
 or Ground, or combine positions the way a real facility does when it's quiet.
 Vector arrivals onto the ILS, clear them to land, taxi them to the gate, and
 get departures from the gate to their exit fix, all without losing
@@ -20,6 +20,12 @@ reply "unable", and the scope shows only what radar sees on each sweep.
 
 Choose the airport, your position and a traffic level, from Very quiet to
 Very busy, on the start screen. The middle level is the airport's normal rate.
+
+The shift is an hour unless you change it. Any whole number of minutes from
+1 to 12 hours works: - and + step it by 5 minutes (15 above two hours, 1 with
+Shift held), typing a number sets it in minutes, and the buttons offer 15 min
+to 4 h. Traffic builds from the start of the shift to its peak at the end, or
+after an hour on a longer shift, then holds.
 
 ## Positions
 
@@ -70,8 +76,9 @@ at Normal traffic, busy Harrowgate about 4.
 ## Weather and runway changes
 
 The wind changes through the shift. It drifts a few degrees and knots at a
-time, and in most shifts a front comes through between 8 and 18 minutes in,
-veering the wind round over a few minutes.
+time, and in most shifts a front comes through between about a quarter and
+three fifths of the way in (8 to 18 minutes of a 30-minute shift), veering the
+wind round over a few minutes.
 
 - **ATIS:** a new information letter goes out when the wind moves 30 degrees
   or 5 knots, or the runways change. It's logged ("Information Charlie. Wind
@@ -95,7 +102,7 @@ veering the wind round over a few minutes.
 The start menu sets how often things go wrong (E steps through the levels).
 Each IFR movement has a chance of an emergency, so busier shifts see more:
 
-| Level | Chance per flight | At Harrowgate, Normal traffic |
+| Level | Chance per flight | At Harrowgate, Normal traffic, 30 minutes |
 |---|---|---|
 | Off | none | never |
 | Realistic | 1 in 3,500 (about Newark's rate) | about 1 in 200 shifts |

@@ -21,6 +21,9 @@ const FRONT_SHARE: f32 = 0.6;
 /// When in the shift a front arrives, seconds.
 const FRONT_FROM_S: f32 = 8.0 * 60.0;
 const FRONT_TO_S: f32 = 18.0 * 60.0;
+/// The shift length the front window above is written for; it scales with
+/// the actual shift, seconds.
+const FRONT_SHIFT_S: f32 = 30.0 * 60.0;
 /// How far a front veers the wind, degrees, and how strong it leaves it, knots.
 const FRONT_TURN_DEG: (f32, f32) = (140.0, 220.0);
 const FRONT_KT: (f32, f32) = (8.0, 20.0);
@@ -90,11 +93,14 @@ pub struct Weather {
 }
 
 impl Weather {
-    pub fn new(seed: u64, wind: Wind, changing: bool) -> Weather {
+    /// `shift` is the shift length in seconds: a front comes through at the
+    /// same point in a shift of any length.
+    pub fn new(seed: u64, wind: Wind, changing: bool, shift: f32) -> Weather {
+        let scale = shift / FRONT_SHIFT_S;
         let mut rng = fastrand::Rng::with_seed(seed ^ 0x5745_4154_4845_5221);
         let letter = rng.usize(0..PHONETIC.len());
         let front = (changing && rng.f32() < FRONT_SHARE).then(|| Front {
-            at: FRONT_FROM_S + rng.f32() * (FRONT_TO_S - FRONT_FROM_S),
+            at: (FRONT_FROM_S + rng.f32() * (FRONT_TO_S - FRONT_FROM_S)) * scale,
             to: FrontTo::Veer(FRONT_TURN_DEG.0 + rng.f32() * (FRONT_TURN_DEG.1 - FRONT_TURN_DEG.0)),
             speed: FRONT_KT.0 + rng.f32() * (FRONT_KT.1 - FRONT_KT.0),
         });

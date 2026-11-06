@@ -5,6 +5,7 @@ pub mod camera;
 pub mod input;
 pub mod panels;
 pub mod scope;
+pub mod shift;
 pub mod strips;
 pub mod surface;
 pub mod tutorial;
@@ -159,11 +160,29 @@ pub struct App {
     /// The lesson being played, if this is a tutorial rather than a shift.
     tutorial: Option<Tutorial>,
     emergencies: EmergencyRate,
+    /// Shift length chosen on the menu, minutes.
+    shift_minutes: u32,
+    /// Minutes being typed on the menu's number keys.
+    typed: Option<shift::Typed>,
 }
 
-fn new_world(airport: &Airport, busyness: Busyness, staffing: Staffing, vfr: bool, emergencies: EmergencyRate) -> World {
+/// What the menu chose for a new shift.
+struct ShiftChoice {
+    busyness: Busyness,
+    staffing: Staffing,
+    vfr: bool,
+    emergencies: EmergencyRate,
+    minutes: u32,
+}
+
+fn new_world(airport: &Airport, choice: ShiftChoice) -> World {
     let seed = macroquad::miniquad::date::now() as u64;
-    World::new(airport.clone(), WorldConfig { seed, busyness, staffing, vfr, emergencies, ..Default::default() })
+    let ShiftChoice { busyness, staffing, vfr, emergencies, minutes } = choice;
+    let shift_seconds = minutes as f32 * 60.0;
+    World::new(
+        airport.clone(),
+        WorldConfig { seed, busyness, staffing, vfr, emergencies, shift_seconds, ..Default::default() },
+    )
 }
 
 /// Both views, when the player has two: one full size, one inset.
@@ -211,7 +230,16 @@ impl App {
         runways.dedup();
         App {
             screen: Screen::Menu,
-            world: new_world(&airports[0], Busyness::default(), Staffing::default(), false, EmergencyRate::Off),
+            world: new_world(
+                &airports[0],
+                ShiftChoice {
+                    busyness: Busyness::default(),
+                    staffing: Staffing::default(),
+                    vfr: false,
+                    emergencies: EmergencyRate::Off,
+                    minutes: shift::DEFAULT_MINUTES,
+                },
+            ),
             ui: UiState::new(&airports[0], Staffing::default()),
             sounds: Sounds::load(&runways).await,
             accumulator: 0.0,
@@ -222,6 +250,8 @@ impl App {
             vfr: true,
             tutorial: None,
             emergencies: EmergencyRate::Occasional,
+            shift_minutes: shift::DEFAULT_MINUTES,
+            typed: None,
         }
     }
 
@@ -231,7 +261,14 @@ impl App {
 
     fn start_shift(&mut self) {
         let airport = &self.airports[self.choice];
-        self.world = new_world(airport, self.busyness, self.staffing(), self.vfr, self.emergencies);
+        let choice = ShiftChoice {
+            busyness: self.busyness,
+            staffing: self.staffing(),
+            vfr: self.vfr,
+            emergencies: self.emergencies,
+            minutes: self.shift_minutes,
+        };
+        self.world = new_world(airport, choice);
         self.ui = UiState::new(airport, self.staffing());
         self.sounds.reset(&self.world);
         self.tutorial = None;
@@ -284,10 +321,24 @@ impl App {
                 if is_key_pressed(KeyCode::E) {
                     self.emergencies = self.emergencies.next();
                 }
-                let picked =
-                    draw_menu(&self.airports, self.choice, self.busyness, self.staffing(), self.vfr, self.emergencies);
+                self.shift_keys();
+                let picked = draw_menu(
+                    &self.airports,
+                    self.choice,
+                    MenuState {
+                        busyness: self.busyness,
+                        staffing: self.staffing(),
+                        vfr: self.vfr,
+                        emergencies: self.emergencies,
+                        shift_minutes: self.shift_minutes,
+                    },
+                );
                 if let Some(rate) = picked.emergencies {
                     self.emergencies = rate;
+                }
+                if let Some(minutes) = picked.shift_minutes {
+                    self.shift_minutes = minutes;
+                    self.typed = None;
                 }
                 if picked.vfr {
                     self.vfr = !self.vfr;
@@ -319,6 +370,28 @@ impl App {
                     self.screen = Screen::Menu;
                 }
             }
+        }
+    }
+
+    /// The shift length keys on the menu: minus and plus step it (a minute at
+    /// a time with Shift), and number keys type it in minutes.
+    fn shift_keys(&mut self) {
+        // Digits first, so a step in the same frame applies to what was typed.
+        while let Some(c) = get_char_pressed() {
+            if let Some(digit) = c.to_digit(10) {
+                let typed = shift::Typed::digit(self.typed, digit, get_time());
+                self.shift_minutes = typed.minutes();
+                self.typed = Some(typed);
+            }
+        }
+        let fine = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+        if is_key_pressed(KeyCode::Minus) || is_key_pressed(KeyCode::KpSubtract) {
+            self.shift_minutes = shift::step(self.shift_minutes, false, fine);
+            self.typed = None;
+        }
+        if is_key_pressed(KeyCode::Equal) || is_key_pressed(KeyCode::KpAdd) {
+            self.shift_minutes = shift::step(self.shift_minutes, true, fine);
+            self.typed = None;
         }
     }
 
@@ -499,6 +572,64 @@ struct MenuPick {
     /// A lesson button was clicked.
     lesson: Option<LessonKind>,
     emergencies: Option<EmergencyRate>,
+    shift_minutes: Option<u32>,
+}
+
+/// The menu's current choices, to draw.
+struct MenuState {
+    busyness: Busyness,
+    staffing: Staffing,
+    vfr: bool,
+    emergencies: EmergencyRate,
+    shift_minutes: u32,
+}
+
+/// A menu button. Returns whether it was clicked, and its width.
+fn menu_button(label: &str, left: f32, top: f32, selected: bool) -> (bool, f32) {
+    let width = measure_text(label, None, 20, 1.0).width + 20.0;
+    let r = Rect::new(left, top, width, 30.0);
+    if selected {
+        draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.10, 0.22, 0.12, 1.0));
+    }
+    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, if selected { TITLE } else { DIM });
+    draw_text(label, r.x + 10.0, r.y + 21.0, 20.0, if selected { TITLE } else { TEXT });
+    let clicked = is_mouse_button_pressed(MouseButton::Left) && r.contains(Vec2::from(mouse_position()));
+    (clicked, width)
+}
+
+/// The shift length: minus and plus buttons around the length, then the
+/// presets. Returns a new length if one was clicked.
+fn draw_shift_length(minutes: u32, x: f32, y: f32) -> Option<u32> {
+    const GAP: f32 = 8.0;
+    draw_text("SHIFT LENGTH  - or +, type minutes, or click", x, y, 20.0, DIM);
+    let fine = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+    let mut picked = None;
+
+    let top = y + 10.0;
+    let (less, width) = menu_button("-", x, top, false);
+    let value = shift::label(minutes);
+    let value_x = x + width + GAP;
+    let value_w = measure_text("12 h 59 min", None, 24, 1.0).width + 16.0;
+    let text_x = value_x + (value_w - measure_text(&value, None, 24, 1.0).width) / 2.0;
+    draw_text(&value, text_x, top + 22.0, 24.0, TITLE);
+    let (more, _) = menu_button("+", value_x + value_w + GAP, top, false);
+    if less {
+        picked = Some(shift::step(minutes, false, fine));
+    }
+    if more {
+        picked = Some(shift::step(minutes, true, fine));
+    }
+
+    let mut left = x;
+    for preset in shift::PRESETS {
+        let (hit, width) = menu_button(&shift::label(preset), left, top + 40.0, preset == minutes);
+        if hit {
+            picked = Some(preset);
+        }
+        left += width + GAP;
+    }
+    draw_text("Hold Shift for one-minute steps. 1 min to 12 h.", x, top + 92.0, 18.0, DIM);
+    picked
 }
 
 /// The emergency rate buttons. Returns the one clicked, if any.
@@ -560,24 +691,20 @@ fn draw_vfr_toggle(vfr: bool, x: f32, y: f32) -> bool {
     is_mouse_button_pressed(MouseButton::Left) && rect.contains(Vec2::from(mouse_position()))
 }
 
-fn draw_menu(
-    airports: &[Airport],
-    choice: usize,
-    busyness: Busyness,
-    staffing: Staffing,
-    vfr: bool,
-    emergencies: EmergencyRate,
-) -> MenuPick {
+fn draw_menu(airports: &[Airport], choice: usize, state: MenuState) -> MenuPick {
+    let MenuState { busyness, staffing, vfr, emergencies, shift_minutes } = state;
     clear_background(BACKGROUND);
     let x = 60.0;
     draw_text("AIR TRAFFIC CONTROL", x, 80.0, 56.0, TITLE);
-    draw_text(format!("30 minute shift   {}", staffing.label()), x, 112.0, 24.0, DIM);
+    draw_text(format!("{} shift   {}", shift::label(shift_minutes), staffing.label()), x, 112.0, 24.0, DIM);
+    let right = (screen_width() - 560.0).max(820.0);
 
     let mut y = 156.0;
     let mut pick = MenuPick {
         position: draw_positions(staffing, x, y),
-        lesson: draw_lessons((screen_width() - 560.0).max(820.0), 70.0),
-        emergencies: draw_emergencies(emergencies, (screen_width() - 560.0).max(820.0), 150.0),
+        lesson: draw_lessons(right, 70.0),
+        emergencies: draw_emergencies(emergencies, right, 150.0),
+        shift_minutes: draw_shift_length(shift_minutes, right, 250.0),
         ..Default::default()
     };
     if staffing.tower() {

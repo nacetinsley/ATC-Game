@@ -8,6 +8,8 @@ use super::units::{heading_vec, vec_heading};
 use super::World;
 use glam::Vec2;
 
+/// The default shift for a `WorldConfig`: what tests and headless runs use.
+/// The game's menu picks its own length, an hour unless changed.
 pub const SHIFT_SECONDS: f32 = 30.0 * 60.0;
 const START_RATE: f32 = 20.0;
 const END_RATE: f32 = 45.0;
@@ -84,10 +86,20 @@ impl Busyness {
     }
 }
 
-/// Movements per hour at a point in the shift. Ramps linearly, then holds.
-pub fn movements_per_hour(time: f32) -> f32 {
-    let t = (time / SHIFT_SECONDS).clamp(0.0, 1.0);
-    START_RATE + (END_RATE - START_RATE) * t
+/// Traffic builds over the shift, but no longer than this; a longer shift
+/// holds the peak for the rest, seconds.
+pub const MAX_RAMP_SECONDS: f32 = 60.0 * 60.0;
+
+/// How far through the traffic ramp a shift of `shift` seconds is at `time`, 0 to 1.
+pub fn ramp_progress(time: f32, shift: f32) -> f32 {
+    let ramp = shift.clamp(1.0, MAX_RAMP_SECONDS);
+    (time / ramp).clamp(0.0, 1.0)
+}
+
+/// Movements per hour at a point in a shift of `shift` seconds. Ramps
+/// linearly, then holds.
+pub fn movements_per_hour(time: f32, shift: f32) -> f32 {
+    START_RATE + (END_RATE - START_RATE) * ramp_progress(time, shift)
 }
 
 impl World {
@@ -95,10 +107,10 @@ impl World {
     pub fn current_rate(&self) -> f32 {
         let base = match &self.airport.traffic {
             Some(t) => {
-                let progress = (self.time / SHIFT_SECONDS).clamp(0.0, 1.0);
+                let progress = ramp_progress(self.time, self.config.shift_seconds);
                 t.start_rate + (t.end_rate - t.start_rate) * progress
             }
-            None => movements_per_hour(self.time),
+            None => movements_per_hour(self.time, self.config.shift_seconds),
         };
         base * self.config.busyness.multiplier()
     }
@@ -395,9 +407,18 @@ mod tests {
 
     #[test]
     fn traffic_ramps_from_start_to_end_rate() {
-        assert_eq!(movements_per_hour(0.0), 20.0);
-        assert_eq!(movements_per_hour(SHIFT_SECONDS), 45.0);
-        assert_eq!(movements_per_hour(SHIFT_SECONDS / 2.0), 32.5);
-        assert_eq!(movements_per_hour(SHIFT_SECONDS * 2.0), 45.0);
+        assert_eq!(movements_per_hour(0.0, SHIFT_SECONDS), 20.0);
+        assert_eq!(movements_per_hour(SHIFT_SECONDS, SHIFT_SECONDS), 45.0);
+        assert_eq!(movements_per_hour(SHIFT_SECONDS / 2.0, SHIFT_SECONDS), 32.5);
+        assert_eq!(movements_per_hour(SHIFT_SECONDS * 2.0, SHIFT_SECONDS), 45.0);
+    }
+
+    #[test]
+    fn traffic_ramps_over_the_shift_up_to_an_hour_then_holds() {
+        let two_hours = 2.0 * MAX_RAMP_SECONDS;
+        assert_eq!(movements_per_hour(MAX_RAMP_SECONDS / 2.0, two_hours), 32.5);
+        assert_eq!(movements_per_hour(MAX_RAMP_SECONDS, two_hours), 45.0);
+        assert_eq!(movements_per_hour(two_hours, two_hours), 45.0);
+        assert_eq!(movements_per_hour(150.0, 300.0), 32.5);
     }
 }

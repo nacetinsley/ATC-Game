@@ -175,7 +175,7 @@ impl World {
             speed: 5.0 + rng.f32() * 20.0,
         });
         let config_index = best_config(&airport, wind);
-        let weather = weather::Weather::new(config.seed, wind, config.wind.is_none());
+        let weather = weather::Weather::new(config.seed, wind, config.wind.is_none(), config.shift_seconds);
         let mut world = World {
             airport,
             wind,
