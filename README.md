@@ -279,6 +279,22 @@ You need a recent stable [Rust toolchain](https://rustup.rs) (edition 2024).
 cargo run --release
 ```
 
+### macOS app
+
+To build a double-clickable `Air Traffic Control.app` on a Mac:
+
+```sh
+cargo install cargo-bundle
+cargo bundle --release
+```
+
+The app is written to `target/release/bundle/osx/`. Drag it to Applications.
+It isn't signed, so the first time, right-click it and choose Open. For an
+Apple Silicon and Intel build, add `--target aarch64-apple-darwin` or
+`--target x86_64-apple-darwin` (after `rustup target add` for it).
+
+On Windows the release build opens without a console window.
+
 ## Controls
 
 | Input | Action |

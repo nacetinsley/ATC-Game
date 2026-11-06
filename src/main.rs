@@ -1,3 +1,7 @@
+// Release builds are a windowed app on Windows, so no console opens with the
+// game. Debug builds keep the console for panics and logs.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use atcgame::ui::App;
 use macroquad::prelude::*;
 

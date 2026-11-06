@@ -10,6 +10,23 @@ macroquad = { version = "0.4", features = ["audio"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 
+# The macOS app: `cargo install cargo-bundle`, then `cargo bundle --release`
+# on a Mac. Every asset is compiled into the binary, so the bundle needs only
+# the executable and the icon (drawn by tools/make_icon.py).
+[package.metadata.bundle]
+name = "Air Traffic Control"
+identifier = "io.github.nacetinsley.atcgame"
+icon = [
+    "assets/icon/icon_32.png",
+    "assets/icon/icon_64.png",
+    "assets/icon/icon_128.png",
+    "assets/icon/icon_256.png",
+    "assets/icon/icon_512.png",
+]
+category = "public.app-category.simulation-games"
+short_description = "A realistic 2D air traffic control game."
+osx_minimum_system_version = "11.0"
+
 # Keep the game code quick to rebuild, but run dependencies optimised so the
 # window stays smooth in debug builds.
 [profile.dev.package."*"]
