@@ -257,3 +257,9 @@ fn vfr_traffic_gets_the_runway_its_airport_gives_it() {
     assert_eq!(Airport::default_airport().vfr_runway, VfrRunway::Shared);
     assert_eq!(ksus().vfr_runway, VfrRunway::Own);
 }
+
+#[test]
+fn harrowgate_sees_half_the_light_aircraft_of_ksus() {
+    assert_eq!(ksus().vfr_rate, atcgame::sim::vfr::VFR_RATE);
+    assert_eq!(Airport::default_airport().vfr_rate, ksus().vfr_rate / 2.0);
+}

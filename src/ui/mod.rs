@@ -6,11 +6,13 @@ pub mod input;
 pub mod panels;
 pub mod scope;
 pub mod surface;
+pub mod tutorial;
 
 use crate::sim::airspace::{Airport, CATALOG};
 use crate::sim::positions::Staffing;
 use crate::sim::scoring::ShiftEnd;
 use crate::sim::traffic::Busyness;
+use crate::sim::tutorial::{LessonKind, Tutorial};
 use crate::sim::{TICK, World, WorldConfig};
 use audio::Sounds;
 use input::{UiState, View};
@@ -149,6 +151,8 @@ pub struct App {
     position: usize,
     /// VFR traffic, when a tower position is chosen.
     vfr: bool,
+    /// The lesson being played, if this is a tutorial rather than a shift.
+    tutorial: Option<Tutorial>,
 }
 
 fn new_world(airport: &Airport, busyness: Busyness, staffing: Staffing, vfr: bool) -> World {
@@ -206,6 +210,7 @@ impl App {
             busyness: Busyness::default(),
             position: 0,
             vfr: true,
+            tutorial: None,
         }
     }
 
@@ -217,8 +222,26 @@ impl App {
         let airport = &self.airports[self.choice];
         self.world = new_world(airport, self.busyness, self.staffing(), self.vfr);
         self.ui = UiState::new(airport, self.staffing());
+        self.tutorial = None;
         self.accumulator = 0.0;
         self.screen = Screen::Playing;
+    }
+
+    fn start_lesson(&mut self, kind: LessonKind) {
+        let tutorial = Tutorial::new(kind);
+        self.world = tutorial.world();
+        self.ui = UiState::new(&self.world.airport, kind.staffing());
+        self.tutorial = Some(tutorial);
+        self.accumulator = 0.0;
+        self.screen = Screen::Playing;
+    }
+
+    /// Start again: the same lesson, or a new shift.
+    fn restart(&mut self) {
+        match self.tutorial.as_ref().map(|t| t.kind) {
+            Some(kind) => self.start_lesson(kind),
+            None => self.start_shift(),
+        }
     }
 
     pub fn frame(&mut self) {
@@ -253,7 +276,13 @@ impl App {
                 if let Some(position) = picked.position {
                     self.position = position;
                 }
-                if start_pressed() {
+                let lesson_keys = [KeyCode::F5, KeyCode::F6, KeyCode::F7];
+                let lesson = picked
+                    .lesson
+                    .or_else(|| lesson_keys.iter().position(|&k| is_key_pressed(k)).map(|i| LessonKind::ALL[i]));
+                if let Some(kind) = lesson {
+                    self.start_lesson(kind);
+                } else if start_pressed() {
                     self.start_shift();
                 }
             }
@@ -262,7 +291,7 @@ impl App {
             Screen::Ended(end) => {
                 draw_end(&self.world, end);
                 if start_pressed() {
-                    self.start_shift();
+                    self.restart();
                 } else if is_key_pressed(KeyCode::Escape) {
                     self.screen = Screen::Menu;
                 }
@@ -298,13 +327,16 @@ impl App {
         }
         match PAUSE_ITEMS[choice] {
             PauseItem::Resume => self.resume(),
-            PauseItem::Restart => self.start_shift(),
+            PauseItem::Restart => self.restart(),
             PauseItem::Sound => self.sounds.muted = !self.sounds.muted,
             PauseItem::Controls => {
                 show_controls = !show_controls;
                 self.screen = Screen::Paused { choice, show_controls };
             }
-            PauseItem::MainMenu => self.screen = Screen::Menu,
+            PauseItem::MainMenu => {
+                self.tutorial = None;
+                self.screen = Screen::Menu;
+            }
             PauseItem::Quit => macroquad::miniquad::window::order_quit(),
         }
     }
@@ -322,7 +354,27 @@ impl App {
             return;
         }
         self.ui.layout();
-        self.ui.update(&mut self.world);
+        if let Some(tutorial) = &mut self.tutorial {
+            if tutorial.finished() {
+                // The lesson is over: Enter goes back to the menu.
+                if start_pressed() {
+                    self.tutorial = None;
+                    self.screen = Screen::Menu;
+                    return;
+                }
+            } else if tutorial.current().is_some_and(|s| s.read) {
+                if start_pressed() {
+                    tutorial.acknowledge();
+                }
+            } else if is_key_pressed(KeyCode::S) {
+                tutorial.show_me(&mut self.world);
+            }
+        }
+        // Enter on a lesson page turns the page; it doesn't also send a command.
+        let lesson_page = self.tutorial.as_ref().is_some_and(|t| t.finished() || t.current().is_some_and(|s| s.read));
+        if !lesson_page {
+            self.ui.update(&mut self.world);
+        }
 
         if !self.ui.paused {
             self.accumulator += get_frame_time().min(MAX_FRAME_SECONDS) * self.ui.rate;
@@ -334,8 +386,15 @@ impl App {
         let events = self.world.drain_events();
         self.sounds.play_for(&events);
 
+        if let Some(tutorial) = &mut self.tutorial {
+            tutorial.update(&mut self.world);
+        }
+
         draw_views(&self.world, &mut self.ui);
         panels::draw(&mut self.world, &mut self.ui);
+        if let Some(tutorial) = &self.tutorial {
+            tutorial::draw(tutorial, &self.world, &self.ui);
+        }
 
         if let Some(end) = self.world.ended {
             self.screen = Screen::Ended(end);
@@ -413,6 +472,30 @@ struct MenuPick {
     position: Option<usize>,
     /// The VFR toggle was clicked.
     vfr: bool,
+    /// A lesson button was clicked.
+    lesson: Option<LessonKind>,
+}
+
+/// The lesson buttons. Returns the one clicked, if any.
+fn draw_lessons(x: f32, y: f32) -> Option<LessonKind> {
+    const GAP: f32 = 10.0;
+    draw_text("TUTORIAL  F5 F6 F7 or click", x, y, 20.0, DIM);
+    let mouse = Vec2::from(mouse_position());
+    let clicked = is_mouse_button_pressed(MouseButton::Left);
+    let mut left = x;
+    let mut picked = None;
+    for (kind, key) in LessonKind::ALL.into_iter().zip(["F5", "F6", "F7"]) {
+        let label = format!("{key} {}", kind.label());
+        let width = measure_text(&label, None, 20, 1.0).width + 24.0;
+        let rect = Rect::new(left, y + 10.0, width, 30.0);
+        draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, DIM);
+        draw_text(&label, rect.x + 12.0, rect.y + 21.0, 20.0, TEXT);
+        if clicked && rect.contains(mouse) {
+            picked = Some(kind);
+        }
+        left += width + GAP;
+    }
+    picked
 }
 
 /// The VFR traffic toggle, for tower positions. True if clicked.
@@ -432,7 +515,11 @@ fn draw_menu(airports: &[Airport], choice: usize, busyness: Busyness, staffing: 
     draw_text(format!("30 minute shift   {}", staffing.label()), x, 112.0, 24.0, DIM);
 
     let mut y = 156.0;
-    let mut pick = MenuPick { position: draw_positions(staffing, x, y), ..Default::default() };
+    let mut pick = MenuPick {
+        position: draw_positions(staffing, x, y),
+        lesson: draw_lessons((screen_width() - 560.0).max(820.0), 70.0),
+        ..Default::default()
+    };
     if staffing.tower() {
         pick.vfr = draw_vfr_toggle(vfr, x, y + 68.0);
     }

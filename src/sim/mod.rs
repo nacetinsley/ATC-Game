@@ -13,8 +13,10 @@ pub mod tower;
 pub mod ground_map;
 pub mod registration;
 pub mod traffic;
+pub mod tutorial;
 pub mod units;
 pub mod vfr;
+pub mod weather;
 
 use aircraft::{Aircraft, Flow, Phase};
 use airspace::{Airport, Config};
@@ -100,7 +102,8 @@ pub struct WorldConfig {
     pub seed: u64,
     /// Generate traffic. Tests turn this off and place their own aircraft.
     pub traffic: bool,
-    /// Fixed wind, or `None` to roll one from the seed.
+    /// Fixed wind, or `None` to roll one from the seed and let it change
+    /// through the shift.
     pub wind: Option<Wind>,
     /// End the shift after this many sim-seconds.
     pub shift_seconds: f32,
@@ -136,6 +139,8 @@ pub struct World {
     pub score: Score,
     pub alerts: Alerts,
     pub ended: Option<ShiftEnd>,
+    /// Wind changes, the ATIS and runway changes.
+    pub weather: weather::Weather,
 
     config: WorldConfig,
     config_index: usize,
@@ -158,6 +163,7 @@ impl World {
             speed: 5.0 + rng.f32() * 20.0,
         });
         let config_index = best_config(&airport, wind);
+        let weather = weather::Weather::new(config.seed, wind, config.wind.is_none());
         let mut world = World {
             airport,
             wind,
@@ -168,6 +174,7 @@ impl World {
             score: Score::new(Credit::for_staffing(config.staffing)),
             alerts: Alerts::default(),
             ended: None,
+            weather,
             config,
             config_index,
             rng,
@@ -180,12 +187,7 @@ impl World {
             next_vfr_time: FIRST_VFR_S,
             departure_queue: VecDeque::new(),
         };
-        let opening = format!(
-            "Shift start. Wind {:03.0} at {:.0}. {}.",
-            world.airport.to_magnetic(world.wind.from),
-            world.wind.speed,
-            world.runways_in_use(),
-        );
+        let opening = format!("Shift start. {}", world.atis_text());
         world.say(Speaker::System, opening);
         world
     }
@@ -313,6 +315,7 @@ impl World {
         }
         self.time += TICK;
 
+        self.run_weather();
         self.run_radio();
         if self.config.traffic {
             self.run_traffic();

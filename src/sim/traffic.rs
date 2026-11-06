@@ -227,6 +227,10 @@ impl World {
     /// With nobody working Approach, arrivals turn up established on the ILS,
     /// already talking to Tower.
     fn spawn_final_arrival(&mut self) -> bool {
+        // After a runway change, the old flow lands before the new one starts.
+        if self.landing_against_flow() {
+            return false;
+        }
         let rwy = self.arrival_runway();
         let runway = self.airport.runways[rwy].clone();
         let busy = self.aircraft.iter().any(|a| {
@@ -253,7 +257,12 @@ impl World {
         ac.entered_sector = self.airport.in_sector(pos);
         ac.freq_since = self.time;
         if self.config.staffing.local {
-            let line = format!("Tower, {}, {FINAL_SPAWN_NM:.0} mile final runway {}.", ac.callsign, runway.id);
+            let line = format!(
+                "Tower, {}, {FINAL_SPAWN_NM:.0} mile final runway {}, with {}.",
+                ac.callsign,
+                runway.id,
+                self.weather.information()
+            );
             self.say(super::Speaker::Pilot, line);
         }
         self.add_aircraft(ac);
@@ -272,6 +281,34 @@ impl World {
         let (route, exit_altitude) = sids[self.rng.usize(0..sids.len())].clone();
         let ty = self.pick_type();
         self.request_departure(ty, route, exit_altitude);
+    }
+
+    /// A SID from the runway configuration in use: one leaving by `exit` if
+    /// there is one, otherwise any. Returns the route and its exit altitude.
+    pub(super) fn sid_for_exit(&mut self, exit: Option<usize>) -> (Vec<usize>, f32) {
+        let config = self.config().name.clone();
+        let sids: Vec<(Vec<usize>, f32)> = self
+            .airport
+            .sids
+            .iter()
+            .filter(|s| s.config == config)
+            .map(|s| (self.airport.route_indices(&s.fixes), s.exit_altitude))
+            .collect();
+        if let Some(same) = sids.iter().find(|(route, _)| exit.is_some() && route.last().copied() == exit) {
+            return same.clone();
+        }
+        sids[self.rng.usize(0..sids.len())].clone()
+    }
+
+    /// The configuration in use's STAR from this gate, if it has one.
+    pub(super) fn star_from_gate(&self, gate: usize) -> Option<(Vec<usize>, Option<f32>)> {
+        let config = &self.config().name;
+        self.airport
+            .stars
+            .iter()
+            .filter(|s| &s.config == config)
+            .map(|s| (self.airport.route_indices(&s.fixes), s.final_heading))
+            .find(|(route, _)| route.first() == Some(&gate))
     }
 
     /// Add a departure to Tower's queue.

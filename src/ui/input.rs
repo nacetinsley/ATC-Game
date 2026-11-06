@@ -439,6 +439,14 @@ impl UiState {
             let centre = inset.viewport.center();
             inset.zoom_at(centre, factor);
         }
+        if in_inset && is_mouse_button_pressed(MouseButton::Left) {
+            // The inset is a working view too: pick aircraft from it.
+            if surface_main {
+                self.press_left(world, mouse);
+            } else {
+                self.surface_click(world, mouse);
+            }
+        }
         if in_main {
             if wheel != 0.0 {
                 let main = if surface_main { &mut self.surface } else { &mut self.camera };
@@ -535,7 +543,10 @@ impl UiState {
                     return;
                 }
                 self.select(Some(track.id));
-                self.drag = Drag::Vector { id: track.id, start: mouse, active: false };
+                // Only Approach vectors; a tower controller just picks the target.
+                if self.staffing.approach {
+                    self.drag = Drag::Vector { id: track.id, start: mouse, active: false };
+                }
                 return;
             }
         }

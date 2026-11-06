@@ -261,6 +261,15 @@ pub fn status(world: &World, ac: &Aircraft) -> String {
             if taxi.holding {
                 return "HOLD POSN".into();
             }
+            // Bound for another runway's hold line: a runway change moved it.
+            let goal = taxi.path.last().copied().unwrap_or(taxi.node);
+            let own_hold = ac.departure_end.and_then(|e| map.departure_hold(e));
+            let stale = ac.flow == Flow::Departure
+                && own_hold != Some(goal)
+                && (0..airport.runways.len()).any(|e| map.departure_hold(e) == Some(goal));
+            if stale {
+                return format!("RE-TAXI {}", runway(ac.departure_end));
+            }
             if taxi.done() {
                 let at_hold = ac.departure_end.is_some_and(|e| map.departure_hold(e) == Some(taxi.node));
                 return if at_hold { format!("RDY {}", runway(ac.departure_end)) } else { "STOPPED".into() };
@@ -369,13 +378,17 @@ fn draw_status(world: &World, ui: &UiState) {
     let (arrival, departure, vfr) = world.runway_ids();
     line(
         &format!(
-            "WIND {:03.0}/{:02.0}  ARR {arrival} DEP {departure}{}",
+            "ATIS {}  WIND {:03.0}/{:02.0}  ARR {arrival} DEP {departure}{}",
+            world.weather.letter(),
             world.airport.to_magnetic(world.wind.from),
             world.wind.speed,
             vfr.map(|v| format!(" VFR {v}")).unwrap_or_default()
         ),
         STATUS,
     );
+    if let Some(change) = world.runway_change_line() {
+        line(&change, WARNING);
+    }
     let paused = if ui.paused { "  PAUSED" } else { "" };
     line(&format!("x{:.0}{paused}", ui.rate), STATUS);
     if !ui.via.is_empty() {

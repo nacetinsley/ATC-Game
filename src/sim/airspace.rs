@@ -74,6 +74,10 @@ fn default_crossing_height() -> f32 {
     THRESHOLD_CROSSING_HEIGHT
 }
 
+fn default_vfr_rate() -> f32 {
+    super::vfr::VFR_RATE
+}
+
 fn default_initial_altitude() -> f32 {
     5000.0
 }
@@ -206,6 +210,9 @@ pub struct Airport {
     /// Where VFR traffic flies when it's switched on.
     #[serde(default)]
     pub vfr_runway: VfrRunway,
+    /// VFR movements per hour at the Normal traffic level.
+    #[serde(default = "default_vfr_rate")]
+    pub vfr_rate: f32,
     pub sector: Vec<[f32; 2]>,
     pub mva: Vec<MvaArea>,
     pub runways: Vec<Runway>,

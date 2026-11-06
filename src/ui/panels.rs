@@ -83,10 +83,11 @@ fn draw_status(world: &World, ui: &UiState, x: f32) {
     let (arrival, departure, vfr) = world.runway_ids();
     label(
         &format!(
-            "Wind {:03.0}/{:.0}   Land {arrival}   Depart {departure}{}",
+            "ATIS {}  Wind {:03.0}/{:.0}  Land {arrival}  Depart {departure}{}",
+            world.weather.letter(),
             world.airport.to_magnetic(world.wind.from),
             world.wind.speed,
-            vfr.map(|v| format!("   VFR {v}")).unwrap_or_default()
+            vfr.map(|v| format!("  VFR {v}")).unwrap_or_default()
         ),
         left,
         48.0,
@@ -108,17 +109,21 @@ fn draw_status(world: &World, ui: &UiState, x: f32) {
         18.0,
         DIM,
     );
-    label(
-        &format!(
-            "Separation losses {}   Departures holding {}",
-            world.score.separation_losses,
-            world.departures_waiting()
+    // An announced runway change takes the bottom line until it happens.
+    match world.runway_change_line() {
+        Some(change) => label(&change, left, 84.0, 18.0, SYSTEM),
+        None => label(
+            &format!(
+                "Separation losses {}   Departures holding {}",
+                world.score.separation_losses,
+                world.departures_waiting()
+            ),
+            left,
+            84.0,
+            18.0,
+            DIM,
         ),
-        left,
-        84.0,
-        18.0,
-        DIM,
-    );
+    }
 }
 
 /// The strip bay an aircraft's strip sits in on a tower position, in display

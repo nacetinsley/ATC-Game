@@ -206,22 +206,27 @@ impl World {
     }
 
     fn check_wake(&mut self) {
-        let runway = self.arrival_runway();
-        let mut on_final: Vec<(f32, usize)> = self
+        // Each runway's own final: after a runway change, the last arrivals
+        // to the old runway still need spacing.
+        let mut on_final: Vec<(usize, f32, usize)> = self
             .aircraft
             .iter()
             .enumerate()
-            .filter(|(_, a)| a.on_final() && a.approach_runway == Some(runway))
-            .map(|(i, a)| (self.airport.runways[runway].along(a.pos), i))
+            // VFR traffic self-spaces in the pattern, closer than IFR wake minima.
+            .filter(|(_, a)| a.on_final() && a.vfr.is_none())
+            .filter_map(|(i, a)| a.approach_runway.map(|r| (r, self.airport.runways[r].along(a.pos), i)))
             .collect();
-        on_final.sort_by(|x, y| x.0.total_cmp(&y.0));
+        on_final.sort_by(|x, y| x.0.cmp(&y.0).then(x.1.total_cmp(&y.1)));
 
         let mut active = BTreeSet::new();
         let mut events = Vec::new();
         let mut go_arounds = Vec::new();
         for window in on_final.windows(2) {
-            let (lead_along, lead) = window[0];
-            let (follow_along, follow) = window[1];
+            let (lead_runway, lead_along, lead) = window[0];
+            let (follow_runway, follow_along, follow) = window[1];
+            if lead_runway != follow_runway {
+                continue;
+            }
             let (leader, follower) = (&self.aircraft[lead], &self.aircraft[follow]);
             let required = wake_required_nm(leader.ty.wake, follower.ty.wake);
             let gap = follow_along - lead_along;

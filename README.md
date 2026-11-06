@@ -63,6 +63,39 @@ they're told to follow, extend if there's no gap, and won't cut in front of
 traffic already on base or final. You sequence them rather than separate
 them, so the only air penalty between VFR aircraft is a near collision. A VFR
 aircraft not cleared by short final goes around and rejoins the pattern.
+Each airport sets its own VFR rate: KSUS sees about 8 light aircraft an hour
+at Normal traffic, busy Harrowgate about 4.
+
+## Weather and runway changes
+
+The wind changes through the shift. It drifts a few degrees and knots at a
+time, and in most shifts a front comes through between 8 and 18 minutes in,
+veering the wind round over a few minutes.
+
+- **ATIS:** a new information letter goes out when the wind moves 30 degrees
+  or 5 knots, or the runways change. It's logged ("Information Charlie. Wind
+  090 at 14...") and shown beside the wind on every status line. Pilots
+  checking in with Tower quote it.
+- **Runway change:** once the tailwind on the arrival runway passes 5 knots
+  and the other direction is better, a change is announced 4 minutes ahead.
+  The status lines show it in amber (`RWY CHG 3:40 ARR 09R DEP 09L`).
+- **When it takes effect:** departures not yet cleared for takeoff are given
+  the new runway and a SID with the same exit fix. They need re-taxiing: the
+  surface tag reads `RE-TAXI 09L`, and on Local you send anyone at the old
+  hold back to Ground. Arrivals already cleared for the ILS land on the old
+  runway; arrivals still on their STAR switch to the new one. Everyone else
+  needs vectoring round to the new final. VFR traffic in the pattern breaks
+  off and re-enters for the new runway.
+- **Automated Tower** won't release a departure into the new direction while
+  an arrival is still landing the old way.
+
+## Tutorials
+
+The start menu has a lesson for each position (F5 Approach, F6 Local, F7
+Ground). Each puts a few aircraft at Harrowgate and walks you through working
+them, one instruction at a time, with a ring around the aircraft or spot it's
+about. Press S on any step to have it done for you. If a step goes wrong (an
+arrival goes around, say), the lesson takes you back and lets you try again.
 
 ## Features
 
@@ -124,6 +157,8 @@ cargo run --release
 | Backspace | Cancel the pending clearance |
 | Space | Pause |
 | Esc | Pause menu |
+| F5 / F6 / F7 | Start menu: Approach, Local or Ground tutorial |
+| S | Tutorial: show me |
 | 1 / 2 / 4 | Sim speed |
 | M | Toggle the MVA map |
 | Mouse wheel, right-drag | Zoom and pan |

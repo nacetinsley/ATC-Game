@@ -385,7 +385,9 @@ impl World {
                 // Airborne with a margin before anyone lands.
                 && !self.landing_within(r, takeoff_window(ac), true)
                 // A jet would run up the back of a light aircraft still on upwind.
-                && (ac.vfr.is_some() || !self.upwind_traffic(r));
+                && (ac.vfr.is_some() || !self.upwind_traffic(r))
+                // After a runway change, the last arrival the old way lands first.
+                && !self.landing_against_flow();
             return safe.then_some(Clearance::ClearedForTakeoff(end));
         }
         // Clear of the runways: over to Ground, if anyone is working it.

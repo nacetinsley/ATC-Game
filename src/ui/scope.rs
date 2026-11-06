@@ -398,14 +398,18 @@ fn draw_status_area(world: &World, ui: &UiState) {
     let (arrival, departure, vfr) = world.runway_ids();
     line(
         &format!(
-            "{} {:03.0}/{:02.0}  ARR {arrival} DEP {departure}{}",
+            "{} {} {:03.0}/{:02.0}  ARR {arrival} DEP {departure}{}",
             world.airport.code,
+            world.weather.letter(),
             world.airport.to_magnetic(wind.from),
             wind.speed,
             vfr.map(|v| format!(" VFR {v}")).unwrap_or_default()
         ),
         SSA,
     );
+    if let Some(change) = world.runway_change_line() {
+        line(&change, WARNING);
+    }
     let range = ui.camera.range_nm();
     let paused = if ui.paused { "  PAUSED" } else { "" };
     line(&format!("RNG {range:.0}  PTL 1.0  x{:.0}{paused}", ui.rate), SSA);

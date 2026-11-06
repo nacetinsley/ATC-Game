@@ -81,7 +81,8 @@ const ENTRY_CAPTURE_NM: f32 = 0.4;
 const JOIN_LEAD_NM: f32 = 0.8;
 /// Within this of the downwind line, a joining aircraft is on the downwind, NM.
 const JOINED_NM: f32 = 0.15;
-/// VFR movements per hour at the Real-world traffic level.
+/// VFR movements per hour at the Real-world traffic level, unless the airport
+/// sets its own.
 pub const VFR_RATE: f32 = 8.0;
 /// Automated Tower extends downwind traffic due to land this long after a
 /// waiting departure would need the runway, seconds.
@@ -230,7 +231,7 @@ impl World {
         let busy = self.departures_waiting() > BUSY_DEPARTURES;
         let spawned = !(busy && intent != VfrIntent::Arrival) && self.spawn_vfr(intent);
         self.next_vfr_time = if spawned {
-            let rate = VFR_RATE * self.config.busyness.multiplier().min(MAX_VFR_MULTIPLIER);
+            let rate = self.airport.vfr_rate * self.config.busyness.multiplier().min(MAX_VFR_MULTIPLIER);
             self.time + 3600.0 / rate * (0.75 + self.rng.f32() * 0.5)
         } else {
             self.time + SPAWN_RETRY_S
@@ -399,6 +400,7 @@ impl World {
 
     /// One tick of flying the pattern. True if the aircraft left the board.
     fn fly_pattern(&mut self, index: usize) -> bool {
+        self.follow_runway_change(index);
         let elevation = self.airport.elevation;
         let pattern_alt = elevation + PATTERN_AGL;
         let ac = &self.aircraft[index];
@@ -426,6 +428,8 @@ impl World {
                             && match v.leg {
                                 Leg::Downwind => near_merge(f.a(b.pos)),
                                 Leg::Upwind | Leg::Crosswind => near_merge(crosswind_at),
+                                // One aircraft joins at a time.
+                                Leg::Join => true,
                                 _ => false,
                             }
                     })

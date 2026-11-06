@@ -10,6 +10,8 @@ mva_default = 2000.0
 # A busy airline airport can't give a runway to light aircraft, so VFR traffic
 # shares the departure runway and the jets keep it.
 vfr_runway = "shared"
+# Half the light aircraft of a general aviation field like KSUS.
+vfr_rate = 4.0
 
 # Sector boundary.
 sector = [
