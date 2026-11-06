@@ -9,6 +9,7 @@ pub mod surface;
 pub mod tutorial;
 
 use crate::sim::airspace::{Airport, CATALOG};
+use crate::sim::emergency::EmergencyRate;
 use crate::sim::positions::Staffing;
 use crate::sim::scoring::ShiftEnd;
 use crate::sim::traffic::Busyness;
@@ -153,11 +154,12 @@ pub struct App {
     vfr: bool,
     /// The lesson being played, if this is a tutorial rather than a shift.
     tutorial: Option<Tutorial>,
+    emergencies: EmergencyRate,
 }
 
-fn new_world(airport: &Airport, busyness: Busyness, staffing: Staffing, vfr: bool) -> World {
+fn new_world(airport: &Airport, busyness: Busyness, staffing: Staffing, vfr: bool, emergencies: EmergencyRate) -> World {
     let seed = macroquad::miniquad::date::now() as u64;
-    World::new(airport.clone(), WorldConfig { seed, busyness, staffing, vfr, ..Default::default() })
+    World::new(airport.clone(), WorldConfig { seed, busyness, staffing, vfr, emergencies, ..Default::default() })
 }
 
 /// Both views, when the player has two: one full size, one inset.
@@ -201,7 +203,7 @@ impl App {
             .collect();
         App {
             screen: Screen::Menu,
-            world: new_world(&airports[0], Busyness::default(), Staffing::default(), false),
+            world: new_world(&airports[0], Busyness::default(), Staffing::default(), false, EmergencyRate::Off),
             ui: UiState::new(&airports[0], Staffing::default()),
             sounds: Sounds::load().await,
             accumulator: 0.0,
@@ -211,6 +213,7 @@ impl App {
             position: 0,
             vfr: true,
             tutorial: None,
+            emergencies: EmergencyRate::Occasional,
         }
     }
 
@@ -220,7 +223,7 @@ impl App {
 
     fn start_shift(&mut self) {
         let airport = &self.airports[self.choice];
-        self.world = new_world(airport, self.busyness, self.staffing(), self.vfr);
+        self.world = new_world(airport, self.busyness, self.staffing(), self.vfr, self.emergencies);
         self.ui = UiState::new(airport, self.staffing());
         self.tutorial = None;
         self.accumulator = 0.0;
@@ -267,7 +270,14 @@ impl App {
                 if is_key_pressed(KeyCode::V) && self.staffing().tower() {
                     self.vfr = !self.vfr;
                 }
-                let picked = draw_menu(&self.airports, self.choice, self.busyness, self.staffing(), self.vfr);
+                if is_key_pressed(KeyCode::E) {
+                    self.emergencies = self.emergencies.next();
+                }
+                let picked =
+                    draw_menu(&self.airports, self.choice, self.busyness, self.staffing(), self.vfr, self.emergencies);
+                if let Some(rate) = picked.emergencies {
+                    self.emergencies = rate;
+                }
                 if picked.vfr {
                     self.vfr = !self.vfr;
                 }
@@ -474,6 +484,34 @@ struct MenuPick {
     vfr: bool,
     /// A lesson button was clicked.
     lesson: Option<LessonKind>,
+    emergencies: Option<EmergencyRate>,
+}
+
+/// The emergency rate buttons. Returns the one clicked, if any.
+fn draw_emergencies(rate: EmergencyRate, x: f32, y: f32) -> Option<EmergencyRate> {
+    const GAP: f32 = 8.0;
+    draw_text("EMERGENCIES  E or click", x, y, 20.0, DIM);
+    let mouse = Vec2::from(mouse_position());
+    let clicked = is_mouse_button_pressed(MouseButton::Left);
+    let mut left = x;
+    let mut picked = None;
+    for level in EmergencyRate::ALL {
+        let label = level.label();
+        let width = measure_text(label, None, 20, 1.0).width + 20.0;
+        let r = Rect::new(left, y + 10.0, width, 30.0);
+        let selected = level == rate;
+        if selected {
+            draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.10, 0.22, 0.12, 1.0));
+        }
+        draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, if selected { TITLE } else { DIM });
+        draw_text(label, r.x + 10.0, r.y + 21.0, 20.0, if selected { TITLE } else { TEXT });
+        if clicked && r.contains(mouse) {
+            picked = Some(level);
+        }
+        left += width + GAP;
+    }
+    draw_text(rate.note(), x, y + 62.0, 18.0, DIM);
+    picked
 }
 
 /// The lesson buttons. Returns the one clicked, if any.
@@ -508,7 +546,14 @@ fn draw_vfr_toggle(vfr: bool, x: f32, y: f32) -> bool {
     is_mouse_button_pressed(MouseButton::Left) && rect.contains(Vec2::from(mouse_position()))
 }
 
-fn draw_menu(airports: &[Airport], choice: usize, busyness: Busyness, staffing: Staffing, vfr: bool) -> MenuPick {
+fn draw_menu(
+    airports: &[Airport],
+    choice: usize,
+    busyness: Busyness,
+    staffing: Staffing,
+    vfr: bool,
+    emergencies: EmergencyRate,
+) -> MenuPick {
     clear_background(BACKGROUND);
     let x = 60.0;
     draw_text("AIR TRAFFIC CONTROL", x, 80.0, 56.0, TITLE);
@@ -518,6 +563,7 @@ fn draw_menu(airports: &[Airport], choice: usize, busyness: Busyness, staffing: 
     let mut pick = MenuPick {
         position: draw_positions(staffing, x, y),
         lesson: draw_lessons((screen_width() - 560.0).max(820.0), 70.0),
+        emergencies: draw_emergencies(emergencies, (screen_width() - 560.0).max(820.0), 150.0),
         ..Default::default()
     };
     if staffing.tower() {

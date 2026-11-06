@@ -113,6 +113,21 @@ fn draw_layout(world: &World, map: &GroundMap, cam: &Camera) {
                 t += 24.0;
             }
         }
+        // A closed runway gets a cross at each end and down the middle.
+        if world.closed_physical() == Some(index) {
+            let length = runway.start.distance(runway.end);
+            for t in [0.15, 0.5, 0.85] {
+                let at = runway.start + dir * length * t;
+                let arm = 0.06;
+                let (a, b) = (to_screen(cam, at + (dir + side / RUNWAY_HALF_WIDTH_NM) * arm), to_screen(cam, at - (dir + side / RUNWAY_HALF_WIDTH_NM) * arm));
+                let (c, d) = (to_screen(cam, at + (dir - side / RUNWAY_HALF_WIDTH_NM) * arm), to_screen(cam, at - (dir - side / RUNWAY_HALF_WIDTH_NM) * arm));
+                draw_line(a.x, a.y, b.x, b.y, 3.0, CRITICAL);
+                draw_line(c.x, c.y, d.x, d.y, 3.0, CRITICAL);
+            }
+            let mid = to_screen(cam, (runway.start + runway.end) / 2.0);
+            let size = measure_text("CLOSED", None, 18, 1.0);
+            draw_text("CLOSED", mid.x - size.width / 2.0, mid.y - 10.0, 18.0, CRITICAL);
+        }
         // Each end's number at its threshold, just outside the pavement.
         for &end in &runway.ends {
             let r = &world.airport.runways[end];
@@ -248,6 +263,9 @@ pub fn status(world: &World, ac: &Aircraft) -> String {
     let airport = &world.airport;
     let Some(map) = airport.surface.as_ref() else { return String::new() };
     let runway = |e: Option<usize>| e.map(|e| airport.runways[e].id.clone()).unwrap_or_default();
+    if ac.on_ground && ac.emergency.as_ref().is_some_and(|e| e.stops_on_runway()) && ac.phase == Phase::Rollout {
+        return "DISABLED".into();
+    }
     match ac.phase {
         Phase::Parked => match ac.taxi.as_ref().and_then(|t| map.parking.iter().find(|p| p.node == t.node)) {
             Some(spot) => format!("{} {}", spot.name, runway(ac.departure_end)),
@@ -388,6 +406,9 @@ fn draw_status(world: &World, ui: &UiState) {
     );
     if let Some(change) = world.runway_change_line() {
         line(&change, WARNING);
+    }
+    if let Some(closed) = world.closure_line() {
+        line(&closed, WARNING);
     }
     let paused = if ui.paused { "  PAUSED" } else { "" };
     line(&format!("x{:.0}{paused}", ui.rate), STATUS);

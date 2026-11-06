@@ -318,8 +318,12 @@ fn draw_target(world: &World, ui: &UiState, ac: &Aircraft, track: &RadarTrack) {
     let speed = format!("{:02.0}", (track.ground_speed / 10.0).round());
 
     // Tower's traffic drops to a limited data block: altitude and speed only.
+    let emergency = ac.emergency.as_ref().filter(|e| e.declared()).map(|e| e.tag());
     if matches!(ac.phase, Phase::TowerHandedOff | Phase::Rollout) && !selected {
         draw_text(format!("{altitude} {speed}"), p.x + 10.0, p.y - 6.0, BLOCK_FONT, color);
+        if let Some(tag) = emergency {
+            draw_text(tag, p.x + 10.0, p.y - 6.0 - BLOCK_LINE, BLOCK_FONT, CRITICAL);
+        }
         return;
     }
 
@@ -352,7 +356,11 @@ fn draw_target(world: &World, ui: &UiState, ac: &Aircraft, track: &RadarTrack) {
         format!("{altitude} {}", ac.ty.designator)
     };
     text(&second, 1.0, color);
-    text(&scratchpad(world, ac), 2.0, color);
+    // An emergency code timeshares with the scratchpad, in red.
+    match emergency {
+        Some(tag) if timeshare() => text(tag, 2.0, CRITICAL),
+        _ => text(&scratchpad(world, ac), 2.0, color),
+    }
 }
 
 /// Preview of the unsent clearance, and of a drag in progress.
@@ -414,6 +422,9 @@ fn draw_status_area(world: &World, ui: &UiState) {
     );
     if let Some(change) = world.runway_change_line() {
         line(&change, WARNING);
+    }
+    if let Some(closed) = world.closure_line() {
+        line(&closed, WARNING);
     }
     let range = ui.camera.range_nm();
     let paused = if ui.paused { "  PAUSED" } else { "" };

@@ -76,6 +76,7 @@ impl Sounds {
                 e,
                 SimEvent::LossOfSeparation { .. }
                     | SimEvent::NearCollision { .. }
+                    | SimEvent::EmergencyDeclared { .. }
                     | SimEvent::Msaw { .. }
             )
         }) {

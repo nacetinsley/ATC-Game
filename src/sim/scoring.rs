@@ -1,5 +1,6 @@
 //! Turns sim events into a score, an incident list and a shift rating.
 
+use super::emergency::EmergencyKind;
 use super::positions::Staffing;
 
 pub const POINTS_LANDED: i32 = 100;
@@ -21,6 +22,13 @@ pub const PENALTY_GROUND_CONFLICT: i32 = -200;
 pub const PENALTY_DEADLOCK: i32 = -100;
 pub const PENALTY_MISSED_HANDOFF: i32 = -25;
 pub const POINTS_TOUCH_AND_GO: i32 = 20;
+pub const POINTS_EMERGENCY_LANDED: i32 = 150;
+/// Landed this soon after declaring.
+pub const POINTS_EMERGENCY_PROMPT: i32 = 250;
+pub const EMERGENCY_PROMPT_MINUTES: f32 = 8.0;
+pub const POINTS_EMERGENCY_PARKED: i32 = 50;
+pub const PENALTY_EMERGENCY_GO_AROUND: i32 = -150;
+pub const PENALTY_EMERGENCY_DIVERT: i32 = -300;
 /// Separation losses a controller can have before being decertified.
 pub const MAX_SEPARATION_LOSSES: u32 = 5;
 
@@ -66,6 +74,13 @@ pub enum SimEvent {
     NoFrequencyChange { callsign: String },
     Parked { callsign: String },
     TouchAndGo { callsign: String },
+    EmergencyDeclared { callsign: String, kind: EmergencyKind },
+    EmergencyLanded { callsign: String, kind: EmergencyKind, minutes: f32 },
+    EmergencyGoAround { callsign: String },
+    /// A low-fuel aircraft left for its alternate.
+    EmergencyDiverted { callsign: String },
+    /// A medical arrival reached its gate promptly.
+    EmergencyParked { callsign: String },
     ShiftEnded { end: ShiftEnd },
 }
 
@@ -280,7 +295,33 @@ impl Score {
                     self.points += POINTS_TOUCH_AND_GO;
                 }
             }
-            SimEvent::ConflictAlert { .. } | SimEvent::ShiftEnded { .. } => {}
+            SimEvent::EmergencyLanded { callsign, kind, minutes } => {
+                if self.credit.landings {
+                    let points = if *minutes <= EMERGENCY_PROMPT_MINUTES {
+                        POINTS_EMERGENCY_PROMPT
+                    } else {
+                        POINTS_EMERGENCY_LANDED
+                    };
+                    let text = format!("{callsign} landed safely with a {} after {minutes:.0} min", kind.describe());
+                    self.incident(time, text, points);
+                }
+            }
+            SimEvent::EmergencyGoAround { callsign } => {
+                if self.credit.landings {
+                    self.incident(time, format!("{callsign} went around during an emergency"), PENALTY_EMERGENCY_GO_AROUND);
+                }
+            }
+            SimEvent::EmergencyDiverted { callsign } => {
+                if self.credit.landings {
+                    self.incident(time, format!("{callsign} diverted, short of fuel"), PENALTY_EMERGENCY_DIVERT);
+                }
+            }
+            SimEvent::EmergencyParked { callsign } => {
+                if self.credit.parking {
+                    self.incident(time, format!("{callsign} at the gate for the paramedics"), POINTS_EMERGENCY_PARKED);
+                }
+            }
+            SimEvent::ConflictAlert { .. } | SimEvent::EmergencyDeclared { .. } | SimEvent::ShiftEnded { .. } => {}
         }
     }
 

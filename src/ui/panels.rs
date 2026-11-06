@@ -19,6 +19,7 @@ const BUTTON_HOVER: Color = Color::new(0.24, 0.31, 0.34, 1.0);
 const SELECTED_ROW: Color = Color::new(0.20, 0.24, 0.14, 1.0);
 const PILOT: Color = Color::new(0.55, 0.85, 1.00, 1.0);
 const SYSTEM: Color = Color::new(0.95, 0.80, 0.45, 1.0);
+const EMERGENCY: Color = Color::new(1.00, 0.35, 0.30, 1.0);
 const BAY: Color = Color::new(0.40, 0.48, 0.48, 1.0);
 const OTHER_STRIP: Color = Color::new(0.45, 0.52, 0.52, 1.0);
 const TOWER_STRIP: Color = Color::new(0.85, 0.92, 0.88, 1.0);
@@ -111,8 +112,8 @@ fn draw_status(world: &World, ui: &UiState, x: f32) {
         18.0,
         DIM,
     );
-    // An announced runway change takes the bottom line until it happens.
-    match world.runway_change_line() {
+    // An announced runway change, or a closed runway, takes the bottom line.
+    match world.runway_change_line().or_else(|| world.closure_line()) {
         Some(change) => label(&change, left, 84.0, 18.0, SYSTEM),
         None => label(
             &format!(
@@ -219,13 +220,16 @@ fn draw_strips(world: &World, ui: &mut UiState, x: f32, top: f32, bottom: f32) {
         rows
     } else {
         let airborne = |a: &&Aircraft| !a.on_ground || a.rolling();
-        world
+        let mut rows: Vec<&Aircraft> = world
             .aircraft
             .iter()
             .filter(|a| a.flow == Flow::Arrival)
             .chain(world.aircraft.iter().filter(|a| a.flow == Flow::Departure))
             .filter(airborne)
-            .collect()
+            .collect();
+        // Emergencies go to the top of the board.
+        rows.sort_by_key(|a| !a.in_emergency());
+        rows
     };
     let mut current_bay = None;
     for ac in rows.drain(..) {
@@ -248,12 +252,16 @@ fn draw_strips(world: &World, ui: &mut UiState, x: f32, top: f32, bottom: f32) {
         if clicked && rect.contains(mouse) {
             ui.select(Some(ac.id));
         }
-        let (text, color) = if staffing.tower() && bay(ac).0 < 4 {
+        let (mut text, mut color) = if staffing.tower() && bay(ac).0 < 4 {
             let color = if world.is_players(ac) { TOWER_STRIP } else { OTHER_STRIP };
             (tower_strip_text(world, ac), color)
         } else {
             (strip_text(world, ac), phase_color(ac))
         };
+        if let Some(e) = ac.emergency.as_ref().filter(|e| e.declared()) {
+            text = format!("{} {text}", e.strip());
+            color = EMERGENCY;
+        }
         label(&text, x + PADDING, y + 16.0, 17.0, color);
         y += ROW_HEIGHT;
     }
@@ -454,6 +462,7 @@ fn draw_log(world: &World, x: f32, top: f32) {
             Speaker::Controller => TEXT,
             Speaker::Pilot => PILOT,
             Speaker::System => SYSTEM,
+            Speaker::Emergency => EMERGENCY,
         };
         for line in wrap(&entry.text, width).iter().rev() {
             if y < top + LOG_LINE {

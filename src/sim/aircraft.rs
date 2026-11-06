@@ -257,6 +257,8 @@ pub struct Aircraft {
     pub waiting_since: Option<f32>,
     /// VFR aircraft only.
     pub vfr: Option<Vfr>,
+    /// Something gone wrong: an emergency, declared or still to come.
+    pub emergency: Option<super::emergency::Emergency>,
 }
 
 impl Aircraft {
@@ -307,6 +309,7 @@ impl Aircraft {
             handoff_flagged: false,
             waiting_since: None,
             vfr: None,
+            emergency: None,
         }
     }
 
@@ -388,6 +391,9 @@ impl Aircraft {
     fn step_ground(&mut self, dt: f32) {
         let (target, rate) = if self.phase == Phase::TowerRelease {
             (self.target_speed, self.roll_accel())
+        } else if self.emergency.as_ref().is_some_and(|e| e.stops_on_runway()) {
+            // Disabled: brakes to a stop on the runway.
+            (0.0, ROLLOUT_DECEL)
         } else {
             (EXIT_SPEED, ROLLOUT_DECEL)
         };
@@ -415,6 +421,9 @@ impl Aircraft {
     /// Assigned speed after the speed limit and the approach speed schedule.
     pub fn commanded_speed(&self, airport: &Airport) -> f32 {
         let mut speed = self.target_speed.min(self.ty.max_speed);
+        if let Some(cap) = self.emergency_speed_cap() {
+            speed = speed.min(cap);
+        }
         if self.altitude < SPEED_LIMIT_ALTITUDE {
             speed = speed.min(SPEED_LIMIT);
         }
@@ -448,9 +457,9 @@ impl Aircraft {
         let diff = self.target_altitude - self.altitude;
         // Climb performance falls away with altitude.
         let rate = if diff > 0.0 {
-            self.ty.climb_fpm * (1.0 - self.altitude.max(0.0) / 60000.0)
+            self.emergency_climb(self.ty.climb_fpm * (1.0 - self.altitude.max(0.0) / 60000.0))
         } else {
-            self.ty.descent_fpm
+            self.emergency_descent(self.ty.descent_fpm)
         };
         let limit = rate * minutes;
         let change = diff.clamp(-limit, limit);

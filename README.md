@@ -89,6 +89,50 @@ veering the wind round over a few minutes.
 - **Automated Tower** won't release a departure into the new direction while
   an arrival is still landing the old way.
 
+## Emergencies
+
+The start menu sets how often things go wrong (E steps through the levels).
+Each IFR movement has a chance of an emergency, so busier shifts see more:
+
+| Level | Chance per flight | At Harrowgate, Normal traffic |
+|---|---|---|
+| Off | none | never |
+| Realistic | 1 in 3,500 (about Newark's rate) | about 1 in 200 shifts |
+| Occasional (default) | 1 in 48 | about 1 in 3 shifts |
+| Frequent | 1 in 16 | about 1 a shift |
+| Intense | 1 in 5 | several a shift |
+
+The pilot declares on your frequency ("Mayday, mayday, mayday...", or
+"Pan-pan" for a medical), the alert sounds, and the data block shows `EM` in
+red (`RDOF` for a radio failure). The strip reads `EMRG ENG`, `EMRG FUEL` and
+so on, and moves to the top of the board.
+
+- **Medical:** wants priority, and paramedics at the gate. Ground earns a
+  bonus for parking it within 4 minutes of landing.
+- **Low fuel:** won't slow below 210 knots away from the approach. A second
+  go-around and it diverts to its alternate, which costs you.
+- **Engine failure or bird strike:** a departure levels off at about 3,000 ft
+  above the field, climbs at a third of its normal rate, and asks to come
+  back. It refuses high altitudes and high speeds. With Approach automated, it
+  turns up on final again a few minutes later.
+- **Pressurization failure** (Approach only): Center hands it over at 16,000
+  or 17,000 ft. Soon after, it descends at 6,000 fpm to 10,000 ft (or the MVA)
+  and ignores altitude instructions on the way down. Separation lost during
+  that descent isn't charged to you.
+- **Radio failure:** squawks 7600 and answers nothing. It flies its arrival,
+  then joins the ILS by itself. Clearing it to land from Local becomes a
+  steady green light; without one it goes around and tries again.
+- **Smoke, hydraulic failure or a gear problem:** it lands and stops on the
+  runway, which closes for 6 to 10 minutes until the tow clears it. Only at
+  airports with a parallel runway. Arrivals and departures move to the
+  parallel, a new ATIS goes out, the surface map crosses out the closed runway,
+  and the status lines show `RWY 27L/09R CLSD 6:40`. VFR pattern work stops
+  while it's closed.
+
+Landing an emergency earns 150 points, or 250 within 8 minutes of declaring.
+A go-around costs 150 and a low-fuel diversion 300. The automated Tower holds
+departures while an emergency is within 10 miles of landing on the same runway.
+
 ## Tutorials
 
 The start menu has a lesson for each position (F5 Approach, F6 Local, F7
@@ -158,6 +202,7 @@ cargo run --release
 | Space | Pause |
 | Esc | Pause menu |
 | F5 / F6 / F7 | Start menu: Approach, Local or Ground tutorial |
+| E | Start menu: how often emergencies happen |
 | S | Tutorial: show me |
 | 1 / 2 / 4 | Sim speed |
 | M | Toggle the MVA map |
@@ -174,7 +219,12 @@ python -m unittest discover -s tools
 ```
 
 The simulation in `src/sim` has no graphics dependency and is deterministic
-from a seed, so scenarios run headless.
+from a seed, so scenarios run headless. A longer run, 600 automated shifts
+with emergencies on Intense, is ignored by default:
+
+```sh
+cargo test --release --test emergency -- --ignored
+```
 
 ## Updating the KSUS data
 

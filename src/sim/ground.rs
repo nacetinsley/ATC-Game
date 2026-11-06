@@ -254,6 +254,7 @@ impl World {
         }
         for &index in parked.iter().rev() {
             let ac = self.aircraft.remove(index);
+            self.emergency_parked(&ac);
             self.emit(SimEvent::Parked { callsign: ac.callsign });
         }
         self.check_ground_conflicts();
@@ -265,6 +266,10 @@ impl World {
         for index in 0..self.aircraft.len() {
             let ac = &self.aircraft[index];
             if ac.phase != Phase::Rollout || !ac.on_ground || ac.taxi.is_some() {
+                continue;
+            }
+            // Disabled: it stops on the runway and waits for the tow.
+            if ac.emergency.as_ref().is_some_and(|e| e.stops_on_runway()) {
                 continue;
             }
             let parking = if self.config.staffing.surface_traffic() { self.free_parking(self.surface().nearest_node(ac.pos)) } else { None };

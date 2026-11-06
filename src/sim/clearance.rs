@@ -332,6 +332,10 @@ impl World {
         let Some(index) = self.aircraft.iter().position(|a| a.id == call.aircraft) else {
             return;
         };
+        if self.aircraft[index].nordo() {
+            self.answer_nordo(index, &call);
+            return;
+        }
         let staffing = self.config.staffing;
         let ctx = Context {
             airport: &self.airport,
@@ -385,6 +389,30 @@ impl World {
         }
         if let Some(frequency) = new_frequency {
             self.check_in(index, frequency);
+        }
+    }
+}
+
+impl World {
+    /// No radio. A landing clearance gets through as a steady green light from
+    /// the tower; nothing else does.
+    fn answer_nordo(&mut self, index: usize, call: &RadioCall) {
+        let staffing = self.config.staffing;
+        let ac = &mut self.aircraft[index];
+        let callsign = ac.callsign.clone();
+        let frequency = ac.frequency();
+        let light = call.clearances.iter().any(|(c, issuer)| {
+            matches!(c, Clearance::ClearedToLand(_))
+                && issuer.is_some_and(|p| p == Position::Local && can_speak(p, frequency, staffing))
+        });
+        let line = if light && ac.phase == Phase::TowerHandedOff {
+            ac.cleared_to_land = true;
+            format!("Tower: steady green light to {callsign}. It rocks its wings.")
+        } else {
+            format!("No reply from {callsign}: radio failure.")
+        };
+        if call.logged {
+            self.say(Speaker::System, line);
         }
     }
 }
@@ -460,6 +488,9 @@ fn clear_vfr_landing(ac: &mut Aircraft, end: usize, kind: Landing, airport: &Air
 /// Validate one clearance and carry it out, or explain why not.
 fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), String> {
     let airport = ctx.airport;
+    if let Some(reason) = super::emergency::refusal(ac, clearance, airport.elevation) {
+        return Err(reason);
+    }
     // Radar vectors don't apply to VFR traffic flying its own pattern.
     if ac.vfr.is_some() && clearance.issuers() == [Position::Approach] {
         return Err("we're VFR".into());

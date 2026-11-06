@@ -218,29 +218,43 @@ impl World {
         ac.route = route;
         ac.route_end_heading = final_heading;
         ac.spawn_time = self.time;
+        self.roll_arrival_emergency(&mut ac, false);
         let line = format!("Center: offering {} via {}.", ac.callsign, self.airport.fixes[ac.route[0]].name);
         self.say(super::Speaker::System, line);
         self.add_aircraft(ac);
         true
     }
 
-    /// With nobody working Approach, arrivals turn up established on the ILS,
-    /// already talking to Tower.
-    fn spawn_final_arrival(&mut self) -> bool {
+    /// Whether an arrival can be put on final to the arrival runway now: clear
+    /// of other arrivals near the spawn point, and of VFR traffic already on
+    /// base or final for the same runway (as when a closure puts IFR arrivals
+    /// on the pattern runway).
+    pub(super) fn room_on_final(&self) -> bool {
         // After a runway change, the old flow lands before the new one starts.
         if self.landing_against_flow() {
             return false;
         }
         let rwy = self.arrival_runway();
-        let runway = self.airport.runways[rwy].clone();
-        let busy = self.aircraft.iter().any(|a| {
-            a.approach_runway == Some(rwy)
+        let runway = &self.airport.runways[rwy];
+        let physical = self.airport.surface.as_ref().map(|m| m.runway_of_end[rwy]);
+        !self.aircraft.iter().any(|a| {
+            let spacing = a.approach_runway == Some(rwy)
                 && !a.on_ground
-                && (runway.along(a.pos) - FINAL_SPAWN_NM).abs() < FINAL_SPAWN_CLEAR_NM
-        });
-        if busy {
+                && (runway.along(a.pos) - FINAL_SPAWN_NM).abs() < FINAL_SPAWN_CLEAR_NM;
+            let vfr_landing =
+                a.vfr.is_some() && physical.is_some_and(|p| self.landing_distance(a, p).is_some());
+            spacing || vfr_landing
+        })
+    }
+
+    /// With nobody working Approach, arrivals turn up established on the ILS,
+    /// already talking to Tower.
+    fn spawn_final_arrival(&mut self) -> bool {
+        if !self.room_on_final() {
             return false;
         }
+        let rwy = self.arrival_runway();
+        let runway = self.airport.runways[rwy].clone();
         let ty = self.pick_type();
         let callsign = self.new_callsign(ty);
         let pos = runway.threshold() - heading_vec(runway.heading) * FINAL_SPAWN_NM;
@@ -256,7 +270,9 @@ impl World {
         ac.msaw_armed = false;
         ac.entered_sector = self.airport.in_sector(pos);
         ac.freq_since = self.time;
-        if self.config.staffing.local {
+        self.roll_arrival_emergency(&mut ac, true);
+        // Radio failures say nothing, and emergencies make their own call.
+        if self.config.staffing.local && ac.emergency.is_none() {
             let line = format!(
                 "Tower, {}, {FINAL_SPAWN_NM:.0} mile final runway {}, with {}.",
                 ac.callsign,
@@ -281,6 +297,7 @@ impl World {
         let (route, exit_altitude) = sids[self.rng.usize(0..sids.len())].clone();
         let ty = self.pick_type();
         self.request_departure(ty, route, exit_altitude);
+        self.roll_departure_emergency();
     }
 
     /// A SID from the runway configuration in use: one leaving by `exit` if

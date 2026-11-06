@@ -90,6 +90,8 @@ pub fn is_below_mva(ac: &Aircraft, airport: &Airport) -> bool {
         && ac.msaw_armed
         && !ac.on_final()
         && !matches!(ac.phase, Phase::GoAround | Phase::TowerRelease | Phase::Rollout)
+        // Without a radio it can't be given a safe altitude.
+        && !ac.nordo()
         && ac.altitude < airport.mva_at(ac.pos)
 }
 
@@ -147,7 +149,9 @@ impl World {
                         && vertical < SEPARATION_FT + CLEAR_MARGIN_FT);
                 if lost {
                     los.insert(pair);
-                    if !was_lost {
+                    // An emergency descent is the pilot's deviation, not the controller's.
+                    let deviating = [a, b].iter().any(|x| x.emergency.as_ref().is_some_and(|e| e.descending));
+                    if !was_lost && !deviating {
                         events.push(SimEvent::LossOfSeparation {
                             a: a.callsign.clone(),
                             b: b.callsign.clone(),
@@ -258,8 +262,11 @@ impl World {
         ac.start_go_around(&self.airport);
         let callsign = ac.callsign.clone();
         let line = format!("{callsign} going around, climbing to {:.0}.", ac.target_altitude);
-        self.say(Speaker::Pilot, line);
+        // No radio: Tower sees it go around, but nobody hears it.
+        let speaker = if ac.nordo() { Speaker::System } else { Speaker::Pilot };
+        self.say(speaker, line);
         self.emit(SimEvent::GoAround { callsign, reason });
+        self.emergency_go_around(index);
     }
 }
 

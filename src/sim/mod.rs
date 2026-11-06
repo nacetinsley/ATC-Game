@@ -5,6 +5,7 @@ pub mod airspace;
 pub mod autopilot;
 pub mod clearance;
 pub mod conflict;
+pub mod emergency;
 pub mod ground;
 pub mod performance;
 pub mod positions;
@@ -43,6 +44,8 @@ pub enum Speaker {
     Controller,
     Pilot,
     System,
+    /// Mayday and pan-pan calls, and radio-failure notices.
+    Emergency,
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +116,8 @@ pub struct WorldConfig {
     pub staffing: positions::Staffing,
     /// VFR traffic, on tower positions only.
     pub vfr: bool,
+    /// How often emergencies happen.
+    pub emergencies: emergency::EmergencyRate,
 }
 
 impl Default for WorldConfig {
@@ -125,6 +130,7 @@ impl Default for WorldConfig {
             busyness: traffic::Busyness::default(),
             staffing: positions::Staffing::default(),
             vfr: false,
+            emergencies: emergency::EmergencyRate::Off,
         }
     }
 }
@@ -141,6 +147,8 @@ pub struct World {
     pub ended: Option<ShiftEnd>,
     /// Wind changes, the ATIS and runway changes.
     pub weather: weather::Weather,
+    /// Emergency state: closed runways, aircraft being brought back.
+    pub emergencies: emergency::Emergencies,
 
     config: WorldConfig,
     config_index: usize,
@@ -175,6 +183,7 @@ impl World {
             alerts: Alerts::default(),
             ended: None,
             weather,
+            emergencies: emergency::Emergencies::new(config.seed),
             config,
             config_index,
             rng,
@@ -213,8 +222,10 @@ impl World {
         &self.airport.configs[self.config_index]
     }
 
+    /// The landing runway: the configuration's, or its parallel while it's closed.
     pub fn arrival_runway(&self) -> usize {
-        self.airport.runway_index(&self.config().arrival).expect("validated at load")
+        let end = self.airport.runway_index(&self.config().arrival).expect("validated at load");
+        self.avoiding_closure(end)
     }
 
     /// The runway IFR departures use. With VFR traffic on at an airport that
@@ -229,7 +240,8 @@ impl World {
     }
 
     pub(crate) fn configured_departure_runway(&self) -> usize {
-        self.airport.runway_index(&self.config().departure).expect("validated at load")
+        let end = self.airport.runway_index(&self.config().departure).expect("validated at load");
+        self.avoiding_closure(end)
     }
 
     /// Runway for a departure: the normal one unless the aircraft needs a longer one.
@@ -237,7 +249,7 @@ impl World {
         let normal = self.departure_runway();
         match &self.config().departure_long {
             Some(id) if self.airport.runways[normal].takeoff_length_ft() < ty.min_runway_ft => {
-                self.airport.runway_index(id).expect("validated at load")
+                self.avoiding_closure(self.airport.runway_index(id).expect("validated at load"))
             }
             _ => normal,
         }
@@ -330,6 +342,7 @@ impl World {
 
         self.run_surface();
         self.run_approaches();
+        self.run_emergencies();
         self.run_pattern();
         self.run_local();
         self.run_ground();

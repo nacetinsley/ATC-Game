@@ -166,6 +166,7 @@ impl World {
         let minutes = if ac.vfr.is_some() { 0.0 } else { (now - ac.spawn_time) / 60.0 };
         let callsign = ac.callsign.clone();
         self.emit(SimEvent::Landed { callsign, minutes });
+        self.emergency_landed(index);
     }
 
     /// Does this aircraft occupy the physical runway?
@@ -387,7 +388,9 @@ impl World {
                 // A jet would run up the back of a light aircraft still on upwind.
                 && (ac.vfr.is_some() || !self.upwind_traffic(r))
                 // After a runway change, the last arrival the old way lands first.
-                && !self.landing_against_flow();
+                && !self.landing_against_flow()
+                // An emergency about to land gets the runway to itself.
+                && !self.emergency_inbound(r);
             return safe.then_some(Clearance::ClearedForTakeoff(end));
         }
         // Clear of the runways: over to Ground, if anyone is working it.

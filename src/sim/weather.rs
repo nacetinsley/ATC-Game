@@ -150,13 +150,17 @@ impl World {
 
     /// "Information Bravo. Wind 270 at 12. Landing 27L, departing 27R."
     pub fn atis_text(&self) -> String {
-        format!(
+        let mut text = format!(
             "Information {}. Wind {:03.0} at {:.0}. {}.",
             self.weather.information(),
             self.airport.to_magnetic(self.wind.from),
             self.wind.speed,
             self.runways_in_use()
-        )
+        );
+        if let Some(closed) = self.closed_runway_name() {
+            text += &format!(" Runway {closed} closed.");
+        }
+        text
     }
 
     /// The announced runway change, if one is coming: seconds until it
@@ -220,7 +224,7 @@ impl World {
     }
 
     /// Put out the next ATIS letter with the current wind and runways.
-    fn new_atis(&mut self) {
+    pub(super) fn new_atis(&mut self) {
         let w = &mut self.weather;
         w.letter = (w.letter + 1) % PHONETIC.len();
         w.broadcast = self.wind;
@@ -286,7 +290,7 @@ impl World {
 
     /// Departures that haven't been cleared onto a runway move to the new
     /// one. Pilots get a new SID leaving by the same exit where there is one.
-    fn reassign_departures(&mut self) {
+    pub(super) fn reassign_departures(&mut self) {
         let surface = self.config.staffing.surface_traffic();
         let mut queue = std::mem::take(&mut self.departure_queue);
         for ac in &mut queue {
