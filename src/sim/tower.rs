@@ -4,7 +4,7 @@
 
 use super::aircraft::{Aircraft, Flow, Lateral, Phase};
 use super::autopilot::should_capture_localizer;
-use super::clearance::{AT_NODE_NM, Clearance, issuer_for};
+use super::clearance::{AT_NODE_NM, Clearance, PILOT_DELAY, issuer_for};
 use super::ground_map::GroundMap;
 use super::performance::WakeCategory;
 use super::positions::Position;
@@ -14,13 +14,14 @@ use super::{Speaker, World};
 /// Must be with Tower by this distance on final.
 pub const TOWER_HANDOFF_GATE_NM: f32 = 5.0;
 /// Tower checks the runway and landing clearance at this distance.
-const RUNWAY_CHECK_NM: f32 = 1.0;
+pub(super) const RUNWAY_CHECK_NM: f32 = 1.0;
 /// Departures and go-arounds go to Approach above this height over the field.
 const CHECK_IN_AGL: f32 = 1500.0;
 /// The automated Tower clears arrivals to land inside this distance.
 const LANDING_CLEARANCE_NM: f32 = 8.0;
-/// Tower won't launch a departure in front of an arrival closer than this.
-const SHORT_FINAL_HOLD_NM: f32 = 5.0;
+/// Tower never launches a departure in front of an arrival closer than this,
+/// whatever its speed.
+const SHORT_FINAL_HOLD_NM: f32 = 2.5;
 /// Or send an aircraft across a runway with an arrival closer than this.
 const CROSSING_HOLD_NM: f32 = 5.0;
 /// Minimum time between departures, seconds.
@@ -40,10 +41,14 @@ const PARKING_CROSSING_NM: f32 = 2.0;
 pub const FINAL_SPAWN_NM: f32 = 10.0;
 /// Entering a runway with VFR traffic this close on base or final is an incursion.
 pub const VFR_INCURSION_NM: f32 = 1.0;
+/// Tower never launches a departure in front of VFR traffic closer than this:
+/// the incursion distance, plus how far it flies while the departure gets onto
+/// the runway, NM.
+const VFR_RELEASE_NM: f32 = 1.6;
 /// Time a crossing takes, with margin, for VFR traffic about to land, seconds.
 const VFR_CROSSING_S: f32 = 75.0;
-/// A departure must be airborne this long before VFR traffic lands, seconds.
-const VFR_TAKEOFF_MARGIN_S: f32 = 30.0;
+/// A departure must be airborne this long before the next arrival lands, seconds.
+const TAKEOFF_MARGIN_S: f32 = 15.0;
 /// Time from the hold line to starting the roll, seconds.
 const LINE_UP_S: f32 = 30.0;
 /// Minimum time between a VFR departure and the next, seconds.
@@ -305,6 +310,33 @@ impl World {
             && ac.pos.distance(map.nodes[taxi.node].pos) < AT_NODE_NM
     }
 
+    /// How long the runway must stay clear for a departure ready at this
+    /// physical runway's hold line, seconds, if one is waiting there.
+    pub(super) fn departure_window(&self, physical: usize) -> Option<f32> {
+        let map = self.surface();
+        self.aircraft
+            .iter()
+            .filter(|a| self.at_departure_hold(a) && a.departure_end.is_some_and(|e| map.runway_of_end[e] == physical))
+            .map(takeoff_window)
+            .max_by(f32::total_cmp)
+    }
+
+    /// A departure from this physical runway is on its way: cleared and
+    /// lining up, or rolling, but not yet airborne.
+    pub(super) fn departure_under_way(&self, physical: usize) -> bool {
+        let map = self.surface();
+        self.aircraft.iter().any(|a| {
+            let mine = a.departure_end.is_some_and(|e| map.runway_of_end[e] == physical);
+            let going = match a.phase {
+                Phase::LinedUp | Phase::TowerRelease => true,
+                // Cleared onto it: for takeoff, or (briefly, and harmlessly) across it.
+                Phase::Taxiing => a.taxi.as_ref().is_some_and(|t| t.cleared.contains(&physical)),
+                _ => false,
+            };
+            a.flow == Flow::Departure && a.on_ground && mine && going
+        })
+    }
+
     /// Taxiing clear of every runway zone, and not about to enter one.
     fn clear_of_runways(&self, ac: &Aircraft) -> bool {
         let map = self.surface();
@@ -340,7 +372,7 @@ impl World {
         if let Some(r) = taxi.holding_short {
             let safe = !self.runway_occupied(r, ac.id)
                 && self.arrivals_within(r, CROSSING_HOLD_NM, 0.0).is_empty()
-                && !self.vfr_landing_within(r, VFR_CROSSING_S);
+                && !self.landing_within(r, VFR_CROSSING_S, false);
             return safe.then_some(Clearance::CrossRunway(r));
         }
         if self.at_departure_hold(ac) {
@@ -349,8 +381,9 @@ impl World {
             let safe = !launched
                 && self.time >= self.next_departure_time
                 && !self.runway_occupied(r, ac.id)
-                && self.arrivals_within(r, SHORT_FINAL_HOLD_NM, 0.0).is_empty()
-                && !self.vfr_landing_within(r, LINE_UP_S + ac.takeoff_roll_seconds() + VFR_TAKEOFF_MARGIN_S)
+                && self.arrivals_within(r, SHORT_FINAL_HOLD_NM, VFR_RELEASE_NM).is_empty()
+                // Airborne with a margin before anyone lands.
+                && !self.landing_within(r, takeoff_window(ac), true)
                 // A jet would run up the back of a light aircraft still on upwind.
                 && (ac.vfr.is_some() || !self.upwind_traffic(r));
             return safe.then_some(Clearance::ClearedForTakeoff(end));
@@ -550,4 +583,10 @@ pub(super) fn queued_departure(mut ac: Aircraft, initial_altitude: f32) -> Aircr
     ac.target_altitude = initial_altitude;
     ac.target_speed = ac.ty.max_speed.min(250.0);
     ac
+}
+
+/// From a takeoff clearance to airborne, with a margin before anyone may land:
+/// the pilot answering, lining up, and the roll, seconds.
+fn takeoff_window(ac: &Aircraft) -> f32 {
+    PILOT_DELAY.1 + LINE_UP_S + ac.takeoff_roll_seconds() + TAKEOFF_MARGIN_S
 }

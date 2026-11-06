@@ -394,16 +394,15 @@ fn draw_status_area(world: &World, ui: &UiState) {
 
     let utc = (ui.clock_start + world.time as f64).rem_euclid(86_400.0) as u64;
     line(&format!("{:02}{:02}/{:02}", utc / 3600, utc / 60 % 60, utc % 60), SSA);
-    let config = world.config();
     let wind = &world.wind;
+    let (arrival, departure, vfr) = world.runway_ids();
     line(
         &format!(
-            "{} {:03.0}/{:02.0}  ARR {} DEP {}",
+            "{} {:03.0}/{:02.0}  ARR {arrival} DEP {departure}{}",
             world.airport.code,
             world.airport.to_magnetic(wind.from),
             wind.speed,
-            config.arrival,
-            config.departure
+            vfr.map(|v| format!(" VFR {v}")).unwrap_or_default()
         ),
         SSA,
     );

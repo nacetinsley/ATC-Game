@@ -13,9 +13,11 @@ pub const SEPARATION_NM: f32 = 3.0;
 pub const SEPARATION_FT: f32 = 1000.0;
 pub const NEAR_COLLISION_NM: f32 = 0.5;
 pub const NEAR_COLLISION_FT: f32 = 500.0;
-/// Tower doesn't separate VFR traffic, only sequences it; this close is a near miss.
-pub const VFR_NEAR_COLLISION_NM: f32 = 0.1;
-pub const VFR_NEAR_COLLISION_FT: f32 = 200.0;
+/// Tower doesn't radar-separate VFR traffic, or IFR traffic on its own runways
+/// (a departure off one parallel beside an arrival on the other is normal);
+/// this close is a near miss.
+pub const TOWER_NEAR_COLLISION_NM: f32 = 0.1;
+pub const TOWER_NEAR_COLLISION_FT: f32 = 200.0;
 pub const STCA_LOOKAHEAD_S: f32 = 60.0;
 const STCA_STEP_S: f32 = 5.0;
 /// An alert stays up until the pair is this far beyond the limit, to stop it flickering.
@@ -113,8 +115,10 @@ impl World {
                 let vertical = (a.altitude - b.altitude).abs();
                 let pair = pair_key(a.id, b.id);
 
-                let near = if a.vfr.is_some() || b.vfr.is_some() {
-                    lateral < VFR_NEAR_COLLISION_NM && vertical < VFR_NEAR_COLLISION_FT
+                let elevation = self.airport.elevation;
+                let with_tower = !separation_applies(a, elevation) && !separation_applies(b, elevation);
+                let near = if a.vfr.is_some() || b.vfr.is_some() || with_tower {
+                    lateral < TOWER_NEAR_COLLISION_NM && vertical < TOWER_NEAR_COLLISION_FT
                 } else {
                     is_near_collision(lateral, vertical)
                 };

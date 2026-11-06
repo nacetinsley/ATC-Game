@@ -80,14 +80,13 @@ fn draw_status(world: &World, ui: &UiState, x: f32) {
     label(&format!("{clock} left   {rate}"), left + 80.0, 24.0, 22.0, TEXT);
     label(&format!("Score {}", world.score.points), left + 280.0, 24.0, 22.0, TEXT);
 
-    let config = world.config();
+    let (arrival, departure, vfr) = world.runway_ids();
     label(
         &format!(
-            "Wind {:03.0}/{:.0}   Land {}   Depart {}",
+            "Wind {:03.0}/{:.0}   Land {arrival}   Depart {departure}{}",
             world.airport.to_magnetic(world.wind.from),
             world.wind.speed,
-            config.arrival,
-            config.departure
+            vfr.map(|v| format!("   VFR {v}")).unwrap_or_default()
         ),
         left,
         48.0,

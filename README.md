@@ -50,8 +50,12 @@ it on, light aircraft share the field with the airliners:
 - **VFR departures** climb out ahead and want a frequency change (T) by 3
   miles.
 
-Each runway end flies its pattern on the side published in the FAA data (right
-traffic at KSUS on 08R and 26R). Pilots self-space on downwind behind whoever
+VFR traffic gets a runway of its own: the parallel normally used for
+departures (26R or 08L at KSUS, as in real life). IFR departures move over to
+share the arrival runway. Each runway end flies its pattern on the side
+published in the FAA data (right traffic at KSUS on 08R and 26R), which keeps
+the circuit on the far side from the IFR runway, and VFR departures turn out
+that way too. Pilots self-space on downwind behind whoever
 they're told to follow, extend if there's no gap, and won't cut in front of
 traffic already on base or final. You sequence them rather than separate
 them, so the only air penalty between VFR aircraft is a near collision. A VFR
@@ -76,7 +80,9 @@ aircraft not cleared by short final goes around and rejoins the pattern.
   runway. Entering a runway with traffic inside 2 NM or rolling is an
   incursion; two aircraft nose to nose on a taxiway is a deadlock.
 - **Scoring:** points for landings, parked arrivals and clean handoffs,
-  penalties for incidents, and a rating at the end. Five separation losses
+  penalties for incidents, and a rating at the end. You only earn points for
+  your own positions' work: a Ground controller isn't credited for the
+  landings an automated Tower made. Five separation losses
   and you're decertified; a near collision ends the shift.
 
 ## Running it

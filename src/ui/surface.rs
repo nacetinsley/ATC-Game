@@ -355,7 +355,6 @@ fn draw_status(world: &World, ui: &UiState) {
         y += 18.0;
     };
     let utc = (ui.clock_start + world.time as f64).rem_euclid(86_400.0) as u64;
-    let config = world.config();
     line(
         &format!(
             "{:02}{:02}/{:02}  {}  {}",
@@ -367,13 +366,13 @@ fn draw_status(world: &World, ui: &UiState) {
         ),
         STATUS,
     );
+    let (arrival, departure, vfr) = world.runway_ids();
     line(
         &format!(
-            "WIND {:03.0}/{:02.0}  ARR {} DEP {}",
+            "WIND {:03.0}/{:02.0}  ARR {arrival} DEP {departure}{}",
             world.airport.to_magnetic(world.wind.from),
             world.wind.speed,
-            config.arrival,
-            config.departure
+            vfr.map(|v| format!(" VFR {v}")).unwrap_or_default()
         ),
         STATUS,
     );

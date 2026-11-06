@@ -229,3 +229,22 @@ fn automated_shifts_with_vfr_traffic_are_clean() {
     }
     assert!(touch_and_goes > 4, "{touch_and_goes} touch-and-goes");
 }
+
+/// With VFR on, the pattern has the configured departure runway to itself and
+/// IFR departures share the arrival runway; with it off, nothing moves.
+#[test]
+fn vfr_traffic_gets_its_own_runway() {
+    for airport in [Airport::default_airport(), ksus()] {
+        let code = airport.code.clone();
+        let with = world(airport.clone(), 250.0, Staffing::LOCAL_GROUND);
+        let ids = |w: &World, end: usize| w.airport.runways[end].id.clone();
+        assert_eq!(with.departure_runway(), with.arrival_runway(), "{code}");
+        assert_eq!(ids(&with, with.pattern_runway()), with.config().departure, "{code}");
+        assert_ne!(with.pattern_runway(), with.departure_runway(), "{code}");
+
+        let mut config = WorldConfig { seed: 11, traffic: false, staffing: Staffing::LOCAL_GROUND, ..Default::default() };
+        config.wind = Some(Wind { from: 250.0, speed: 5.0 });
+        let without = World::new(airport, config);
+        assert_eq!(ids(&without, without.departure_runway()), without.config().departure, "{code}");
+    }
+}

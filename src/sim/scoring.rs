@@ -1,5 +1,7 @@
 //! Turns sim events into a score, an incident list and a shift rating.
 
+use super::positions::Staffing;
+
 pub const POINTS_LANDED: i32 = 100;
 pub const POINTS_EXITED: i32 = 80;
 pub const PENALTY_SEPARATION: i32 = -300;
@@ -12,7 +14,7 @@ pub const PENALTY_LOW_EXIT: i32 = -50;
 pub const PENALTY_LATE_HANDOFF: i32 = -75;
 pub const PENALTY_GO_AROUND: i32 = -25;
 pub const PENALTY_LATE_ACCEPT: i32 = -25;
-pub const POINTS_PARKED: i32 = 20;
+pub const POINTS_PARKED: i32 = 50;
 pub const PENALTY_INCURSION: i32 = -400;
 pub const PENALTY_RUNWAY_SEPARATION: i32 = -300;
 pub const PENALTY_GROUND_CONFLICT: i32 = -200;
@@ -81,8 +83,37 @@ pub struct Incident {
     pub points: i32,
 }
 
+/// Which completed flights earn the player points: only the work their own
+/// positions did, not what the automated controllers handled for them.
+#[derive(Debug, Clone, Copy)]
+pub struct Credit {
+    /// Landings and touch-and-goes: Local, or Approach delivering them to final.
+    pub landings: bool,
+    pub touch_and_goes: bool,
+    /// Arrivals taxied in to the gate.
+    pub parking: bool,
+}
+
+impl Credit {
+    pub fn for_staffing(staffing: Staffing) -> Credit {
+        Credit {
+            landings: staffing.approach || staffing.local,
+            touch_and_goes: staffing.local,
+            parking: staffing.ground,
+        }
+    }
+}
+
+impl Default for Credit {
+    fn default() -> Self {
+        Credit { landings: true, touch_and_goes: true, parking: true }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Score {
+    /// Departures always count: every position has a hand in getting them out.
+    pub credit: Credit,
     pub points: i32,
     pub landed: u32,
     pub exited: u32,
@@ -99,11 +130,17 @@ fn delay_penalty(minutes: f32) -> i32 {
 }
 
 impl Score {
+    pub fn new(credit: Credit) -> Score {
+        Score { credit, ..Default::default() }
+    }
+
     pub fn apply(&mut self, time: f32, event: &SimEvent) {
         match event {
             SimEvent::Landed { minutes, .. } => {
                 self.landed += 1;
-                self.points += POINTS_LANDED + delay_penalty(*minutes);
+                if self.credit.landings {
+                    self.points += POINTS_LANDED + delay_penalty(*minutes);
+                }
             }
             SimEvent::Exited { .. } => {
                 self.exited += 1;
@@ -233,11 +270,15 @@ impl Score {
             }
             SimEvent::Parked { .. } => {
                 self.parked += 1;
-                self.points += POINTS_PARKED;
+                if self.credit.parking {
+                    self.points += POINTS_PARKED;
+                }
             }
             SimEvent::TouchAndGo { .. } => {
                 self.touch_and_goes += 1;
-                self.points += POINTS_TOUCH_AND_GO;
+                if self.credit.touch_and_goes {
+                    self.points += POINTS_TOUCH_AND_GO;
+                }
             }
             SimEvent::ConflictAlert { .. } | SimEvent::ShiftEnded { .. } => {}
         }
@@ -260,10 +301,11 @@ impl Score {
         if end == ShiftEnd::Decertified {
             return "F - decertified";
         }
-        let clean = self.landed as i32 * POINTS_LANDED
+        let counted = |credited: bool, n: u32| if credited { n as i32 } else { 0 };
+        let clean = counted(self.credit.landings, self.landed) * POINTS_LANDED
             + self.exited as i32 * POINTS_EXITED
-            + self.parked as i32 * POINTS_PARKED
-            + self.touch_and_goes as i32 * POINTS_TOUCH_AND_GO;
+            + counted(self.credit.parking, self.parked) * POINTS_PARKED
+            + counted(self.credit.touch_and_goes, self.touch_and_goes) * POINTS_TOUCH_AND_GO;
         if clean == 0 {
             return "No rating - no flights completed";
         }
@@ -319,5 +361,19 @@ mod tests {
         assert!(s.rating(ShiftEnd::Decertified).starts_with('F'));
         s.apply(0.0, &SimEvent::Msaw { callsign: "A".into() });
         assert!(s.rating(ShiftEnd::Completed).starts_with('E'));
+    }
+
+    #[test]
+    fn only_the_players_own_work_earns_points() {
+        let mut s = Score::new(Credit::for_staffing(Staffing::GROUND));
+        s.apply(0.0, &landed(5.0));
+        s.apply(0.0, &SimEvent::TouchAndGo { callsign: "B".into() });
+        assert_eq!((s.points, s.landed, s.touch_and_goes), (0, 1, 1));
+        assert!(s.rating(ShiftEnd::Completed).starts_with("No rating"));
+        s.apply(0.0, &SimEvent::Parked { callsign: "A".into() });
+        assert_eq!(s.points, POINTS_PARKED);
+        let mut s = Score::new(Credit::for_staffing(Staffing::LOCAL));
+        s.apply(0.0, &SimEvent::Parked { callsign: "A".into() });
+        assert_eq!(s.points, 0);
     }
 }

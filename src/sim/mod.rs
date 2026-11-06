@@ -20,7 +20,7 @@ use aircraft::{Aircraft, Flow, Phase};
 use airspace::{Airport, Config};
 use clearance::RadioCall;
 use glam::Vec2;
-use scoring::{Score, ShiftEnd, SimEvent};
+use scoring::{Credit, Score, ShiftEnd, SimEvent};
 use std::collections::{BTreeSet, VecDeque};
 use units::{Wind, heading_vec, vec_heading};
 
@@ -165,7 +165,7 @@ impl World {
             aircraft: Vec::new(),
             radar: Vec::new(),
             log: Vec::new(),
-            score: Score::default(),
+            score: Score::new(Credit::for_staffing(config.staffing)),
             alerts: Alerts::default(),
             ended: None,
             config,
@@ -181,14 +181,30 @@ impl World {
             departure_queue: VecDeque::new(),
         };
         let opening = format!(
-            "Shift start. Wind {:03.0} at {:.0}. Landing {}, departing {}.",
+            "Shift start. Wind {:03.0} at {:.0}. {}.",
             world.airport.to_magnetic(world.wind.from),
             world.wind.speed,
-            world.config().arrival,
-            world.config().departure,
+            world.runways_in_use(),
         );
         world.say(Speaker::System, opening);
         world
+    }
+
+    /// Runways in use: arrival, IFR departure, and the VFR runway if VFR is on.
+    pub fn runway_ids(&self) -> (&str, &str, Option<&str>) {
+        let id = |end: usize| self.airport.runways[end].id.as_str();
+        let vfr = self.vfr_enabled().then(|| id(self.pattern_runway()));
+        (id(self.arrival_runway()), id(self.departure_runway()), vfr)
+    }
+
+    /// "Landing 26L, departing 26L, VFR 26R", for the shift opening.
+    pub fn runways_in_use(&self) -> String {
+        let (arrival, departure, vfr) = self.runway_ids();
+        let mut text = format!("Landing {arrival}, departing {departure}");
+        if let Some(vfr) = vfr {
+            text += &format!(", VFR {vfr}");
+        }
+        text
     }
 
     pub fn config(&self) -> &Config {
@@ -199,7 +215,14 @@ impl World {
         self.airport.runway_index(&self.config().arrival).expect("validated at load")
     }
 
+    /// The runway IFR departures use. With VFR traffic on, the configured
+    /// departure runway is given over to it, and IFR departures share the
+    /// arrival runway instead.
     pub fn departure_runway(&self) -> usize {
+        if self.vfr_enabled() { self.arrival_runway() } else { self.configured_departure_runway() }
+    }
+
+    pub(crate) fn configured_departure_runway(&self) -> usize {
         self.airport.runway_index(&self.config().departure).expect("validated at load")
     }
 

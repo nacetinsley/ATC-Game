@@ -22,6 +22,8 @@ const MAX_EXTEND_NM: f32 = 4.0;
 /// Turn crosswind past the runway end, once at least this high above the field.
 const CROSSWIND_AGL: f32 = 600.0;
 const CROSSWIND_PAST_END_NM: f32 = 0.3;
+/// On a long runway, turn crosswind this far from the threshold at the latest, NM.
+const CROSSWIND_MAX_ALONG_NM: f32 = 1.5;
 /// VFR departures turn on course at this height above the field.
 const DEPARTURE_TURN_AGL: f32 = 500.0;
 /// A landing clearance is needed by this distance from the threshold, NM.
@@ -43,6 +45,15 @@ const AUTO_RELEASE_NM: f32 = 1.5;
 const FOLLOW_GAP_NM: f32 = 1.0;
 /// Pilots slow behind traffic on the same leg closer than this, NM.
 const CATCH_UP_NM: f32 = 0.8;
+/// Closer than this behind traffic on the same leg, pilots slow below its speed
+/// to open the gap, NM.
+const MIN_TRAIL_NM: f32 = 0.6;
+const OPEN_GAP_KT: f32 = 15.0;
+/// A pilot at the entry point won't start the join with downwind traffic this
+/// close to where they'd merge, NM; they orbit there until it's clear.
+const JOIN_CLEAR_NM: f32 = 0.7;
+/// How far downwind traffic flies while a pilot joins from the entry point, NM.
+const JOIN_TIME_NM: f32 = 1.4;
 /// How hard pilots steer back onto a leg, per NM off it.
 const TRACK_GAIN: f32 = 1.5;
 /// Pilots outside the pattern look out for traffic this close, NM and feet,
@@ -54,9 +65,11 @@ const AVOID_CPA_NM: f32 = 0.4;
 const AVOID_CPA_FT: f32 = 400.0;
 const AVOID_LOOKAHEAD_S: f32 = 45.0;
 /// VFR arrivals come from within this many degrees of straight out from the
-/// pattern side; departures leave within this of straight ahead.
+/// pattern side.
 const ARRIVAL_SPREAD_DEG: f32 = 45.0;
-const DEPARTURE_SPREAD_DEG: f32 = 30.0;
+/// VFR departures turn out toward the pattern side, away from the IFR runway,
+/// by between these many degrees off the runway heading.
+const DEPARTURE_TURN_DEG: (f32, f32) = (20.0, 70.0);
 /// Arrive at the 45 degree entry this far out from the downwind, NM.
 const ENTRY_NM: f32 = 1.0;
 /// Within this of the entry point it counts as reached, NM.
@@ -67,6 +80,9 @@ const JOIN_LEAD_NM: f32 = 0.8;
 const JOINED_NM: f32 = 0.15;
 /// VFR movements per hour at the Real-world traffic level.
 pub const VFR_RATE: f32 = 8.0;
+/// Automated Tower extends downwind traffic due to land this long after a
+/// waiting departure would need the runway, seconds.
+const EXTEND_MARGIN_S: f32 = 20.0;
 /// Most closed-traffic aircraft at once, on the ground or in the air.
 const MAX_CLOSED: usize = 4;
 /// VFR traffic grows with the traffic level only up to this multiple.
@@ -190,8 +206,10 @@ impl World {
     }
 
     /// The runway end VFR traffic uses: the departure runway.
+    /// The runway VFR traffic has to itself: the configured departure runway,
+    /// with IFR departures moved over to the arrival runway.
     pub fn pattern_runway(&self) -> usize {
-        self.departure_runway()
+        self.configured_departure_runway()
     }
 
     pub(super) fn run_vfr_traffic(&mut self) {
@@ -233,8 +251,11 @@ impl World {
                 vfr.cleared_pattern = true;
             }
             VfrIntent::Departure => {
-                let heading = self.airport.runways[end].heading;
-                vfr.outbound = normalize_heading(heading + (self.rng.f32() * 2.0 - 1.0) * DEPARTURE_SPREAD_DEG);
+                let runway = &self.airport.runways[end];
+                let side = if runway.right_traffic { 1.0 } else { -1.0 };
+                let (least, most) = DEPARTURE_TURN_DEG;
+                let turn = least + self.rng.f32() * (most - least);
+                vfr.outbound = normalize_heading(runway.heading + side * turn);
             }
             VfrIntent::Arrival => return self.spawn_vfr_arrival(ty, vfr),
         }
@@ -387,6 +408,25 @@ impl World {
         let local = self.config.staffing.local;
         let callsign = ac.callsign.clone();
         let mut lines = Vec::new();
+        // Traffic at, or about to reach, the point on the downwind a joining
+        // aircraft would merge at. Pilots wait at the entry point for it to pass.
+        let merge = f.length / 2.0;
+        let crosswind_at = (f.length + CROSSWIND_PAST_END_NM).min(CROSSWIND_MAX_ALONG_NM);
+        let near_merge = |along: f32| (-JOIN_CLEAR_NM..JOIN_TIME_NM + JOIN_CLEAR_NM).contains(&(along - merge));
+        let entry_blocked = vfr.leg == Leg::Entry
+            && vfr.cleared_pattern
+            && self.aircraft.iter().any(|b| {
+                b.id != ac.id
+                    && !b.on_ground
+                    && b.vfr.as_ref().is_some_and(|v| {
+                        v.end == vfr.end
+                            && match v.leg {
+                                Leg::Downwind => near_merge(f.a(b.pos)),
+                                Leg::Upwind | Leg::Crosswind => near_merge(crosswind_at),
+                                _ => false,
+                            }
+                    })
+            });
 
         // Leg changes.
         let leg = vfr.leg;
@@ -398,7 +438,7 @@ impl World {
                     if local {
                         lines.push(format!("{callsign}, holding outside your airspace, request entry."));
                     }
-                } else if vfr.cleared_pattern && ac.pos.distance(f.entry()) < ENTRY_CAPTURE_NM {
+                } else if vfr.cleared_pattern && !entry_blocked && ac.pos.distance(f.entry()) < ENTRY_CAPTURE_NM {
                     vfr.leg = Leg::Join;
                 }
             }
@@ -411,7 +451,7 @@ impl World {
                 let agl = ac.altitude - elevation;
                 if vfr.intent == VfrIntent::Departure && agl >= DEPARTURE_TURN_AGL {
                     vfr.leg = Leg::Departing;
-                } else if a >= f.length + CROSSWIND_PAST_END_NM && agl >= CROSSWIND_AGL {
+                } else if a >= (f.length + CROSSWIND_PAST_END_NM).min(CROSSWIND_MAX_ALONG_NM) && agl >= CROSSWIND_AGL {
                     vfr.leg = Leg::Crosswind;
                 }
             }
@@ -457,6 +497,12 @@ impl World {
         let on_line = |offset: f32| (offset * TRACK_GAIN).clamp(-0.6, 0.6);
         let speed = pattern_speed(ac.ty);
         match vfr.leg {
+            // Orbit at the entry point until the downwind is clear to join.
+            Leg::Entry if entry_blocked && ac.pos.distance(f.entry()) < ENTRY_CAPTURE_NM * 2.0 => {
+                ac.lateral = Lateral::Heading(normalize_heading(ac.heading + 30.0));
+                ac.target_altitude = pattern_alt + 500.0;
+                ac.target_speed = speed;
+            }
             Leg::Entry => {
                 ac.lateral = steer(f.entry() - ac.pos, ac);
                 ac.target_altitude = pattern_alt + 500.0;
@@ -560,13 +606,24 @@ impl World {
         }
     }
 
-    /// Seconds until an airborne aircraft lands on this physical runway, if it's
-    /// on its way: on final or base, or a VFR aircraft past midfield downwind.
+    /// Seconds until an airborne aircraft needs this physical runway clear,
+    /// if it's on its way to land there: on final or base, an IFR arrival
+    /// headed for it, or a VFR aircraft past midfield downwind. Pilots check the
+    /// runway short of the threshold, so that's where this counts to.
     pub(super) fn time_to_land(&self, ac: &Aircraft, physical: usize) -> Option<f32> {
         let speed = ac.ground_speed().max(40.0) / SECONDS_PER_HOUR;
+        let check = if ac.vfr.is_some() { LANDING_CHECK_NM } else { super::tower::RUNWAY_CHECK_NM };
         if let Some(d) = self.landing_distance(ac, physical) {
             let base = ac.vfr.as_ref().is_some_and(|v| v.leg == Leg::Base);
-            return Some(if base { d * 1.3 } else { d } / speed);
+            let d = if base { d * 1.3 } else { d };
+            return Some((d - check).max(0.0) / speed);
+        }
+        // An IFR arrival still joining the localizer: straight to the threshold,
+        // which no real path is shorter than.
+        if ac.vfr.is_none() && !ac.on_ground && ac.flow == super::aircraft::Flow::Arrival {
+            let end = ac.approach_runway?;
+            return (self.surface().runway_of_end[end] == physical)
+                .then(|| (self.airport.runways[end].threshold().distance(ac.pos) - check).max(0.0) / speed);
         }
         let vfr = ac.vfr.as_ref()?;
         let downwind = !ac.on_ground && ac.phase == Phase::Pattern && vfr.leg == Leg::Downwind;
@@ -580,14 +637,21 @@ impl World {
         }
         // Down to the base turn, across, and in on final.
         let path = (a + BASE_NM).max(0.0) + DOWNWIND_NM + BASE_NM.max(-a);
-        Some(path / speed)
+        Some((path - LANDING_CHECK_NM).max(0.0) / speed)
     }
 
-    /// A VFR aircraft will land on this runway within `seconds`.
-    pub(super) fn vfr_landing_within(&self, physical: usize, seconds: f32) -> bool {
-        self.aircraft
-            .iter()
-            .any(|a| a.vfr.is_some() && self.time_to_land(a, physical).is_some_and(|t| t < seconds))
+    /// Something will land on this runway within `seconds`: IFR traffic on
+    /// final, or VFR traffic on base, final or late downwind. With
+    /// `held_extended`, traffic Tower is holding on an extended downwind
+    /// doesn't count: it won't turn in until Tower says so.
+    pub(super) fn landing_within(&self, physical: usize, seconds: f32, held_extended: bool) -> bool {
+        self.aircraft.iter().any(|a| {
+            // Not if Tower's just told it to turn in and the pilot hasn't yet.
+            let held = held_extended
+                && !self.call_pending(a.id)
+                && a.vfr.as_ref().is_some_and(|v| v.extend && !v.turn_base && v.leg == Leg::Downwind);
+            !held && self.time_to_land(a, physical).is_some_and(|t| t < seconds)
+        })
     }
 
     /// Pilots slow down rather than overtake traffic ahead on the same leg.
@@ -599,12 +663,12 @@ impl World {
             .aircraft
             .iter()
             .filter(|b| b.id != ac.id && !b.on_ground && b.vfr.as_ref().is_some_and(|v| v.leg == leg))
-            .filter(|b| {
+            .filter_map(|b| {
                 let rel = b.pos - ac.pos;
                 let d = rel.length();
-                d < CATCH_UP_NM && d > 1e-6 && rel.dot(dir) / d > 0.7
+                (d < CATCH_UP_NM && d > 1e-6 && rel.dot(dir) / d > 0.7)
+                    .then_some(if d < MIN_TRAIL_NM { b.ias - OPEN_GAP_KT } else { b.ias })
             })
-            .map(|b| b.ias)
             .reduce(f32::min);
         if let Some(lead_speed) = slower {
             let ac = &mut self.aircraft[index];
@@ -707,6 +771,23 @@ impl World {
             {
                 Some(Clearance::ContactDeparture)
             }
+            // Departures get priority: downwind traffic extends to make the gap,
+            // and turns in again, one at a time, once the departure is airborne.
+            Leg::Downwind if !ac.on_ground => {
+                let physical = self.surface().runway_of_end[vfr.end];
+                match self.departure_window(physical) {
+                    // Only once it's due a release: no point holding everyone
+                    // out while the departure waits on its interval anyway.
+                    Some(window) if !vfr.extend && !vfr.turn_base && self.time >= self.next_departure_time => self
+                        .time_to_land(ac, physical)
+                        .is_some_and(|t| t < window + EXTEND_MARGIN_S)
+                        .then_some(Clearance::ExtendDownwind),
+                    None if vfr.extend && !self.departure_under_way(physical) => {
+                        self.first_off_extension(ac, vfr, physical).then_some(Clearance::TurnBase)
+                    }
+                    _ => None,
+                }
+            }
             Leg::Base | Leg::Final if vfr.landing.is_none() => {
                 let physical = self.surface().runway_of_end[vfr.end];
                 let mine = self.landing_distance(ac, physical)?;
@@ -727,6 +808,22 @@ impl World {
             }
             _ => None,
         }
+    }
+
+    /// This extended aircraft is the furthest out of those extending, and
+    /// turning base now puts it a safe gap behind anyone already on base or final.
+    fn first_off_extension(&self, ac: &Aircraft, vfr: &Vfr, physical: usize) -> bool {
+        let map = self.surface();
+        let f = Frame::of(&self.airport.runways[vfr.end]);
+        let a = f.a(ac.pos);
+        let room = -a - FOLLOW_GAP_NM;
+        !self.aircraft.iter().filter(|b| b.id != ac.id).any(|b| {
+            let ahead_extending = !b.on_ground
+                && b.vfr.as_ref().is_some_and(|v| {
+                    v.extend && v.leg == Leg::Downwind && map.runway_of_end[v.end] == physical && f.a(b.pos) < a
+                });
+            ahead_extending || self.landing_distance(b, physical).is_some_and(|d| d > room)
+        })
     }
 
     /// VFR traffic on upwind from this runway, which a faster departure would run into.

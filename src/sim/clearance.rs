@@ -13,7 +13,7 @@ pub const MIN_ASSIGNED_ALTITUDE: f32 = 1000.0;
 pub const MAX_ASSIGNED_ALTITUDE: f32 = 17000.0;
 pub const MAX_INTERCEPT_DEG: f32 = 30.0;
 /// Pilot response time range, seconds.
-const PILOT_DELAY: (f32, f32) = (2.0, 6.0);
+pub(super) const PILOT_DELAY: (f32, f32) = (2.0, 6.0);
 /// Below this distance there is no room left to establish and hand to Tower.
 const MIN_APPROACH_CLEARANCE_NM: f32 = 6.0;
 const MAX_APPROACH_CLEARANCE_NM: f32 = 35.0;
