@@ -297,6 +297,20 @@ Apple Silicon and Intel build, add `--target aarch64-apple-darwin` or
 
 On Windows the release build opens without a console window.
 
+### Releases
+
+Pushing a version tag builds Windows and macOS releases on GitHub Actions
+(`.github/workflows/release.yml`) and publishes them on the Releases page:
+
+```sh
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The macOS build is a universal app (Apple Silicon and Intel), signed ad hoc
+but not notarized. To build without publishing, run the workflow by hand from
+the Actions tab and download the zips from the run.
+
 ## Controls
 
 | Input | Action |

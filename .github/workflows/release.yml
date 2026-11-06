@@ -1,0 +1,99 @@
+# Builds the game for Windows and macOS.
+#
+# - Push a tag like v0.2.0 to build both and publish them as a GitHub release.
+# - Or run it by hand from the Actions tab ("Run workflow") to get the builds
+#   as downloadable artifacts without making a release.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --locked
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "atcgame-${{ github.ref_name }}-windows-x64"
+          New-Item -ItemType Directory -Force "dist/$name" | Out-Null
+          Copy-Item target/release/atcgame.exe "dist/$name/Air Traffic Control.exe"
+          Copy-Item README.md, DATA_NOTICE.md "dist/$name/"
+          Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.zip
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-bundle
+        # --locked: a plain install fails to compile one of its dependencies.
+        run: cargo install cargo-bundle --version 0.12.0 --locked
+      - name: Build the app
+        run: cargo bundle --release
+      - name: Make it a universal binary (Apple Silicon and Intel)
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          app="target/release/bundle/osx/Air Traffic Control.app"
+          lipo -create -output "$app/Contents/MacOS/atcgame" \
+            target/aarch64-apple-darwin/release/atcgame \
+            target/x86_64-apple-darwin/release/atcgame
+          lipo -info "$app/Contents/MacOS/atcgame"
+          # Apple Silicon won't run unsigned code: sign it ad hoc (no Apple
+          # Developer ID, so Gatekeeper still asks the first time).
+          codesign --force --deep --sign - "$app"
+          codesign --verify --verbose "$app"
+      - name: Package
+        run: |
+          name="atcgame-${{ github.ref_name }}-macos-universal"
+          mkdir -p "dist/$name"
+          cp -R "target/release/bundle/osx/Air Traffic Control.app" "dist/$name/"
+          cp README.md DATA_NOTICE.md "dist/$name/"
+          # ditto keeps the app's permissions and metadata intact in the zip.
+          ditto -c -k --keepParent "dist/$name" "dist/$name.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/*.zip \
+            --repo "${{ github.repository }}" \
+            --title "Air Traffic Control ${{ github.ref_name }}" \
+            --generate-notes \
+            --notes "Unzip and run. The macOS app isn't notarized: the first time, right-click it and choose Open, or on macOS 15 and later open it once, then allow it under System Settings, Privacy & Security. On Windows, SmartScreen may ask you to confirm (More info, Run anyway)."
