@@ -188,6 +188,8 @@ pub struct Taxi {
     pub holding_short: Option<usize>,
     /// Another aircraft it has stopped for.
     pub blocked_by: Option<u32>,
+    /// The route ends lined up on the departure runway.
+    pub lineup: bool,
 }
 
 impl Taxi {

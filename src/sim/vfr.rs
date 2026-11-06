@@ -5,7 +5,7 @@ use super::aircraft::{Aircraft, Flow, Landing, Lateral, Leg, Phase, STANDARD_TUR
 use super::airspace::Runway;
 use super::performance::{AircraftType, aircraft_type};
 use super::scoring::{GoAroundReason, SimEvent};
-use super::units::{SECONDS_PER_HOUR, heading_for_track, heading_vec, normalize_heading, vec_heading};
+use super::units::{SECONDS_PER_HOUR, heading_diff, heading_for_track, heading_vec, normalize_heading, vec_heading};
 use super::{Speaker, World};
 use glam::Vec2;
 
@@ -43,6 +43,14 @@ const EXIT_NM: f32 = 4.5;
 const AUTO_RELEASE_NM: f32 = 1.5;
 /// Pilots turn base no closer than this behind traffic landing ahead, NM.
 const FOLLOW_GAP_NM: f32 = 1.0;
+/// A pilot doesn't turn base while an IFR arrival on final for a parallel
+/// runway will come abeam the turn within this long, seconds: a wide turn
+/// onto final would swing into its path.
+const PARALLEL_TURN_S: f32 = 90.0;
+/// ... unless it has already passed the base turn point by this much, NM.
+const PARALLEL_PASSED_NM: f32 = 0.5;
+/// An arrival this far either side of a parallel's centerline is on its final, NM.
+const PARALLEL_FINAL_NM: f32 = 1.5;
 /// Pilots slow behind traffic on the same leg closer than this, NM.
 const CATCH_UP_NM: f32 = 0.8;
 /// Closer than this behind traffic on the same leg, pilots slow below its speed
@@ -395,11 +403,37 @@ impl World {
             .iter()
             .filter(|b| b.id != ac.id)
             .any(|b| self.landing_distance(b, physical).is_some_and(|d| d > room));
-        match (behind_leader || cut_in, limit) {
+        let parallel = self.parallel_arrival_near(vfr.end, -a);
+        match (behind_leader || cut_in || parallel, limit) {
             (false, _) => BaseTurn::Turn,
             (true, false) => BaseTurn::Wait,
             (true, true) => BaseTurn::Reenter,
         }
+    }
+
+    /// An IFR arrival on final for a runway parallel to `end` that will come
+    /// abeam a base turn `turn_nm` out within `PARALLEL_TURN_S`, or is abeam it now.
+    fn parallel_arrival_near(&self, end: usize, turn_nm: f32) -> bool {
+        let map = self.surface();
+        let physical = map.runway_of_end[end];
+        let heading = self.airport.runways[end].heading;
+        self.aircraft.iter().any(|b| {
+            if b.vfr.is_some() || b.on_ground || b.flow != Flow::Arrival {
+                return false;
+            }
+            let Some(e) = b.approach_runway else { return false };
+            let runway = &self.airport.runways[e];
+            if map.runway_of_end[e] == physical || heading_diff(runway.heading, heading).abs() > 5.0 {
+                return false;
+            }
+            let side = heading_vec(runway.heading).perp();
+            if (b.pos - runway.threshold()).dot(side).abs() > PARALLEL_FINAL_NM {
+                return false;
+            }
+            let d = runway.along(b.pos);
+            let speed = b.ground_speed().max(60.0) / SECONDS_PER_HOUR;
+            d > turn_nm - PARALLEL_PASSED_NM && d < turn_nm + speed * PARALLEL_TURN_S
+        })
     }
 
     /// One tick of flying the pattern. True if the aircraft left the board.

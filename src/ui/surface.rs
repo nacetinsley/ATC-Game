@@ -215,17 +215,16 @@ fn draw_routes(world: &World, map: &GroundMap, ui: &UiState) {
         polyline(cam, &points, 2.0, ROUTE, false);
     }
     for clearance in &ui.pending.tower {
-        let to = match clearance {
-            Clearance::Taxi { to, .. } => *to,
-            Clearance::LineUpAndWait(e) | Clearance::ClearedForTakeoff(e) => map.lineup_node[*e],
+        let origin = taxi_origin(ac, map);
+        let nodes = match clearance {
+            Clearance::Taxi { to, via } => map.route(origin, *to, via).map(|r| r.nodes),
+            Clearance::LineUpAndWait(e) | Clearance::ClearedForTakeoff(e) => {
+                map.lineup_route(&world.airport.runways, *e, origin, ac.ty.min_runway_ft)
+            }
             _ => continue,
         };
-        let via = match clearance {
-            Clearance::Taxi { via, .. } => via.clone(),
-            _ => Vec::new(),
-        };
-        if let Some(route) = map.route(taxi_origin(ac, map), to, &via) {
-            let points: Vec<glam::Vec2> = route.nodes.iter().map(|&n| map.nodes[n].pos).collect();
+        if let Some(nodes) = nodes {
+            let points: Vec<glam::Vec2> = nodes.iter().map(|&n| map.nodes[n].pos).collect();
             polyline(cam, &points, 2.5, GHOST, true);
         }
     }

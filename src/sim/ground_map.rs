@@ -10,7 +10,7 @@
 //! runway, and anything in the zone occupies it.
 
 use super::airspace::Runway;
-use super::units::{heading_vec, vec_heading};
+use super::units::{FT_PER_NM, heading_vec, vec_heading};
 use glam::Vec2;
 use serde::Deserialize;
 use std::cmp::Ordering;
@@ -415,6 +415,30 @@ impl GroundMap {
             .map(|(i, _)| i)
     }
 
+    /// The way onto a runway end for takeoff, from `origin`. Pilots line up
+    /// where their taxi route first meets the runway, the nearest point that
+    /// leaves at least `min_runway_ft` ahead, rather than taxiing down the
+    /// runway to use all of it. A jet at an intersection too short for it goes
+    /// on to the end's full-length line-up point.
+    pub fn lineup_route(&self, runways: &[Runway], end: usize, origin: usize, min_runway_ft: f32) -> Option<Vec<usize>> {
+        let physical = self.runway_of_end[end];
+        let runway = &runways[end];
+        let ahead_ft = |n: usize| (runway.far_end() - self.nodes[n].pos).dot(heading_vec(runway.heading)) * FT_PER_NM;
+        let length = |nodes: &[usize]| -> f32 {
+            nodes.windows(2).map(|w| self.nodes[w[0]].pos.distance(self.nodes[w[1]].pos)).sum()
+        };
+        let full = self.lineup_node[end];
+        (0..self.nodes.len())
+            .filter(|&n| n == full || (self.nodes[n].runway == Some(physical) && ahead_ft(n) >= min_runway_ft))
+            .filter_map(|n| {
+                let nodes = self.route(origin, n, &[])?.nodes;
+                // Straight onto the runway there, not along it from somewhere else.
+                let first_on = nodes.iter().position(|&m| self.nodes[m].runway == Some(physical))?;
+                (n == full || first_on + 1 == nodes.len()).then_some(nodes)
+            })
+            .min_by(|a, b| length(a).total_cmp(&length(b)))
+    }
+
     /// Runway nodes with a taxiway leading off them, as (runway node, first taxiway node).
     pub fn exits(&self, runway: usize) -> Vec<(usize, usize)> {
         let mut exits = Vec::new();
@@ -423,8 +447,13 @@ impl GroundMap {
                 continue;
             }
             for &e in &self.adjacent[n] {
-                if let EdgeKind::Taxiway(_) = self.edges[e].kind {
-                    exits.push((n, self.edges[e].other(n)));
+                let other = self.edges[e].other(n);
+                // Some taxiway data runs along the centerline for a stretch;
+                // that's still the runway, not a way off it.
+                if let EdgeKind::Taxiway(_) = self.edges[e].kind
+                    && self.nodes[other].runway != Some(runway)
+                {
+                    exits.push((n, other));
                 }
             }
         }

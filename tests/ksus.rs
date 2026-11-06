@@ -511,3 +511,84 @@ fn ground_layout_from_osm_has_holds_at_every_runway_end_and_named_taxi_routes() 
         }
     }
 }
+
+#[test]
+fn departures_line_up_where_the_taxiway_meets_the_runway() {
+    // Rather than turning down the runway to use every foot of it.
+    let a = ksus();
+    let m = a.surface.as_ref().unwrap();
+    for end in 0..a.runways.len() {
+        let physical = m.runway_of_end[end];
+        let hold = m.departure_hold(end).unwrap();
+        let nodes = m.lineup_route(&a.runways, end, hold, 2500.0).unwrap();
+        let on: Vec<usize> = nodes.iter().copied().filter(|&n| m.nodes[n].runway == Some(physical)).collect();
+        assert_eq!(on.len(), 1, "{}: taxis along the runway to line up", a.runways[end].id);
+        assert_eq!(nodes.last(), Some(&on[0]));
+    }
+}
+
+#[test]
+fn an_intersection_too_short_for_a_jet_sends_it_to_the_end() {
+    let a = ksus();
+    let m = a.surface.as_ref().unwrap();
+    let end = a.runway_index("08R").unwrap();
+    let r = &a.runways[end];
+    let physical = m.runway_of_end[end];
+    let along = |n: usize| (m.nodes[n].pos - r.threshold()).dot(heading_vec(r.heading));
+    // A hold line about two thirds of the way down: under 3,000 ft left.
+    let hold = (0..m.nodes.len())
+        .filter(|&n| m.nodes[n].hold == Some(physical))
+        .find(|&n| (0.7..0.9).contains(&along(n)))
+        .expect("an intersection hold");
+    let jet = aircraft_type("B738").unwrap().min_runway_ft;
+    let full = m.lineup_route(&a.runways, end, hold, jet).unwrap();
+    assert_eq!(full.last(), Some(&m.lineup_node[end]), "a jet goes to the full length");
+    let light = m.lineup_route(&a.runways, end, hold, 2500.0).unwrap();
+    let last = *light.last().unwrap();
+    assert_eq!(m.nodes[last].runway, Some(physical));
+    assert!(along(last) > 0.6, "a light aircraft goes from the intersection");
+}
+
+#[test]
+fn arrivals_turn_off_ahead_and_never_double_back() {
+    let airport = ksus();
+    let map = airport.surface.clone().unwrap();
+    let mut checked = 0;
+    for seed in 0..10u64 {
+        let config = WorldConfig {
+            seed,
+            staffing: atcgame::sim::positions::Staffing::NONE,
+            wind: Some(Wind { from: if seed % 2 == 0 { 250.0 } else { 80.0 }, speed: 8.0 }),
+            busyness: Busyness::VeryBusy,
+            vfr: true,
+            ..Default::default()
+        };
+        let mut world = World::new(airport.clone(), config);
+        let mut planned = std::collections::BTreeSet::new();
+        while world.ended.is_none() {
+            world.tick();
+            world.drain_events();
+            for ac in &world.aircraft {
+                if ac.phase != Phase::Rollout || planned.contains(&ac.id) {
+                    continue;
+                }
+                let (Some(taxi), Some(end)) = (&ac.taxi, ac.approach_runway) else { continue };
+                planned.insert(ac.id);
+                checked += 1;
+                let r = &world.airport.runways[end];
+                let dir = heading_vec(r.heading);
+                let s = |p: Vec2| (p - r.threshold()).dot(dir);
+                let i = taxi.path.iter().rposition(|&n| map.nodes[n].runway.is_some()).unwrap();
+                let exit = taxi.path[i];
+                assert!(s(map.nodes[exit].pos) > s(ac.pos), "{} seed {seed}: exit behind", ac.callsign);
+                let off = map.nodes[taxi.path[i + 1]].pos - map.nodes[exit].pos;
+                assert!(
+                    off.normalize().dot(dir) > -0.1,
+                    "{} seed {seed}: exit turns back onto the taxiway",
+                    ac.callsign
+                );
+            }
+        }
+    }
+    assert!(checked > 40, "only {checked} landings");
+}

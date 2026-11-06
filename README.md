@@ -261,7 +261,9 @@ arrival goes around, say), the lesson takes you back and lets you try again.
   follow 14 CFR 47.15, and the occasional foreign business jet.
 - **Surface movement:** aircraft taxi along the real taxiway graph, stop at
   hold lines without a crossing clearance, queue behind traffic, and turn off
-  the runway at the first exit they can stop for.
+  the runway at the first exit ahead they can stop for, never one that
+  doubles back. Departures line up where their taxiway meets the runway, an
+  intersection departure if there's enough runway left for the type.
 - **Runway safety:** a landing needs a clearance by 1 NM final and a clear
   runway. Entering a runway with traffic inside 2 NM or rolling is an
   incursion; two aircraft nose to nose on a taxiway is a deadlock.

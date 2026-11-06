@@ -32,6 +32,9 @@ const AHEAD_COS: f32 = 0.7;
 const CONFLICT_NM: f32 = 0.01;
 /// A departure can't be placed at a hold line with traffic this close, NM.
 const HOLD_CLEAR_NM: f32 = 0.04;
+/// A runway exit turning back more than a right angle by more than this
+/// (cosine of about 95 degrees) is only taken when there's nothing else.
+const EXIT_BACK_COS: f32 = 0.09;
 
 type Pair = (u32, u32);
 
@@ -122,13 +125,26 @@ fn plan_exit(map: &GroundMap, airport: &Airport, ac: &Aircraft, parking: Option<
     let behind = on_runway.iter().copied().rev().find(|&n| s(n) <= here).unwrap_or(on_runway[0]);
 
     let stopping = (ac.ias.powi(2) - EXIT_SPEED.powi(2)).max(0.0) / (2.0 * ROLLOUT_DECEL * SECONDS_PER_HOUR);
-    let mut exits = map.exits(runway);
-    exits.retain(|&(rn, _)| s(rn) > here + stopping);
+    let all = map.exits(runway);
+    // A taxiway leaving at a right angle or angled ahead; not one that doubles back.
+    let direction = heading_vec(airport.runways[end].heading);
+    let forward = |&(rn, first): &(usize, usize)| {
+        (map.nodes[first].pos - map.nodes[rn].pos).normalize_or_zero().dot(direction) > -EXIT_BACK_COS
+    };
+    // The first exit it can slow down for.
+    let mut exits: Vec<(usize, usize)> =
+        all.iter().copied().filter(|e| s(e.0) > here + stopping && forward(e)).collect();
+    exits.sort_by(|a, b| s(a.0).total_cmp(&s(b.0)));
+    if exits.is_empty() {
+        // Too fast for any of them: the last one ahead, braking harder.
+        exits = all.iter().copied().filter(|e| s(e.0) > here && forward(e)).collect();
+        exits.sort_by(|a, b| s(b.0).total_cmp(&s(a.0)));
+    }
     if exits.is_empty() {
         // Rolled past the last exit: take the nearest one, even behind.
-        exits = map.exits(runway);
+        exits = all;
+        exits.sort_by(|a, b| (s(a.0) - here).abs().total_cmp(&(s(b.0) - here).abs()));
     }
-    exits.sort_by(|a, b| (s(a.0) - here).abs().total_cmp(&(s(b.0) - here).abs()));
     let goal = parking.map(|p| map.parking[p].node);
     // Group by turn-off point, nearest first; pick the best side at the first that works.
     let mut index = 0;
@@ -442,7 +458,7 @@ impl World {
 
         let result = if taxi.done() && ac.pos.distance(map.nodes[taxi.node].pos) < AT_NODE_NM {
             let lined_up = ac.flow == Flow::Departure
-                && ac.departure_end.is_some_and(|e| map.lineup_node[e] == taxi.node);
+                && ac.departure_end.is_some_and(|e| taxi.lineup || map.lineup_node[e] == taxi.node);
             let parked = ac.flow == Flow::Arrival && map.parking.iter().any(|p| p.node == taxi.node);
             if lined_up {
                 let end = ac.departure_end.expect("checked");

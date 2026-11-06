@@ -466,6 +466,7 @@ fn set_route(ac: &mut Aircraft, map: &GroundMap, origin: usize, nodes: Vec<usize
     taxi.path = nodes;
     taxi.holding = false;
     taxi.holding_short = None;
+    taxi.lineup = false;
 }
 
 /// A VFR aircraft in the pattern, and the leg it's on.
@@ -628,12 +629,13 @@ fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), 
                 return Err("not ready".into());
             }
             let origin = taxi_origin(ac, map);
-            let route = map
-                .route(origin, map.lineup_node[*end], &[])
+            let nodes = map
+                .lineup_route(&airport.runways, *end, origin, ac.ty.min_runway_ft)
                 .ok_or_else(|| "can't get to that runway".to_string())?;
             let physical = map.runway_of_end[*end];
-            set_route(ac, map, origin, route.nodes);
+            set_route(ac, map, origin, nodes);
             let taxi = ac.taxi.as_mut().expect("just set");
+            taxi.lineup = true;
             if !taxi.cleared.contains(&physical) {
                 taxi.cleared.push(physical);
             }
