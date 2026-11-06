@@ -113,7 +113,12 @@ impl UiState {
             Some(map) => map.nodes.iter().map(|n| n.pos).collect(),
             None => vec![glam::Vec2::ZERO],
         };
-        self.surface = Camera::fit(points, surface);
+        // Full size with the radar inset over a corner: keep the runways clear of it.
+        self.surface = if self.has_inset() && self.main_view == View::Surface {
+            Camera::fit_clear_of(&points, surface, radar)
+        } else {
+            Camera::fit(points, surface)
+        };
     }
 
     /// Swap which view is full size, when both are up.

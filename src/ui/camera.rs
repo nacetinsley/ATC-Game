@@ -14,6 +14,8 @@ const VIEW_MARGIN: f32 = 1.12;
 const INSET_SHARE: f32 = 0.38;
 const INSET_MIN_PX: f32 = 240.0;
 const INSET_MARGIN_PX: f32 = 12.0;
+/// Room left at the top of a view for its status lines, pixels.
+const STATUS_PX: f32 = 64.0;
 
 #[derive(Debug, Clone)]
 pub struct Camera {
@@ -35,6 +37,29 @@ impl Camera {
         let size = (max - min).max_element().max(0.1) * VIEW_MARGIN;
         let side = viewport.w.min(viewport.h);
         Camera { center: (min + max) / 2.0, scale: (side / size).clamp(MIN_SCALE, MAX_SCALE), viewport }
+    }
+
+    /// Frame a set of points in the part of the viewport clear of `inset` and
+    /// the status lines: above the inset or left of it, whichever shows them larger. The camera still
+    /// draws across the whole viewport, so panning reveals the rest.
+    pub fn fit_clear_of(points: &[glam::Vec2], viewport: mq::Rect, inset: mq::Rect) -> Camera {
+        let (mut min, mut max) = (glam::Vec2::splat(f32::MAX), glam::Vec2::splat(f32::MIN));
+        for &p in points {
+            min = min.min(p);
+            max = max.max(p);
+        }
+        let extent = (max - min).max(glam::Vec2::splat(0.1)) * VIEW_MARGIN;
+        let (gap, top) = (INSET_MARGIN_PX, viewport.y + STATUS_PX);
+        let above = mq::Rect::new(viewport.x, top, viewport.w, (inset.y - gap - top).max(1.0));
+        let left = mq::Rect::new(viewport.x, top, (inset.x - gap - viewport.x).max(1.0), viewport.h - STATUS_PX);
+        let scale_in = |r: mq::Rect| (r.w / extent.x).min(r.h / extent.y);
+        let area = if scale_in(above) >= scale_in(left) { above } else { left };
+        let scale = scale_in(area).clamp(MIN_SCALE, MAX_SCALE);
+        // Put the middle of the points at the middle of the clear area.
+        let offset = area.center() - viewport.center();
+        let middle = (min + max) / 2.0;
+        let center = glam::Vec2::new(middle.x - offset.x / scale, middle.y + offset.y / scale);
+        Camera { center, scale, viewport }
     }
 
     /// Frame the whole sector, whatever its size.
