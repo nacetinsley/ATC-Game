@@ -7,7 +7,7 @@ use super::clearance::{AT_NODE_NM, start_roll};
 use super::ground_map::GroundMap;
 use super::positions::Position;
 use super::scoring::{GoAroundReason, SimEvent};
-use super::tower::INCURSION_FINAL_NM;
+use super::tower::{INCURSION_FINAL_NM, VFR_INCURSION_NM};
 use super::units::{SECONDS_PER_HOUR, heading_diff, heading_vec, vec_heading};
 use super::{Speaker, TICK, World};
 use glam::Vec2;
@@ -164,7 +164,10 @@ impl World {
     /// modes, otherwise straight to the hold line with Tower.
     pub(super) fn place_departures(&mut self) {
         let Some(ac) = self.departure_queue.front() else { return };
-        let end = self.departure_runway_for(ac.ty);
+        let end = match &ac.vfr {
+            Some(v) => v.end,
+            None => self.departure_runway_for(ac.ty),
+        };
         let map = self.surface();
         let tower = self.config.staffing.surface_traffic();
         let (node, heading, parking) = if tower {
@@ -208,11 +211,14 @@ impl World {
             ac.phase = Phase::Taxiing;
             ac.surface_freq = Position::Local;
         }
-        let callsign = ac.callsign.clone();
+        let spot = spot_name.unwrap_or_default();
+        let call = match ac.vfr {
+            Some(_) => self.vfr_ready_call(&ac, &spot),
+            None => format!("Ground, {}, at {spot}, ready to taxi.", ac.callsign),
+        };
         self.add_aircraft(ac);
         if tower && self.config.staffing.ground {
-            let spot = spot_name.unwrap_or_default();
-            self.say(Speaker::Pilot, format!("Ground, {callsign}, at {spot}, ready to taxi."));
+            self.say(Speaker::Pilot, call);
         }
     }
 
@@ -310,6 +316,17 @@ impl World {
                     .map(|(_, id)| id)
             });
             blockers.push(blocker);
+        }
+        // Two automated pilots waiting for each other at an angle sort it out
+        // between them too: the one that has been out longest goes first.
+        for i in 0..blockers.len() {
+            let Some(other) = blockers[i] else { continue };
+            let Some(j) = self.aircraft.iter().position(|b| b.id == other) else { continue };
+            let mutual = blockers[j] == Some(self.aircraft[i].id);
+            let both_automated = self.automated(&self.aircraft[i]) && self.automated(&self.aircraft[j]);
+            if mutual && both_automated && self.aircraft[i].id < self.aircraft[j].id {
+                blockers[i] = None;
+            }
         }
         for (ac, blocker) in self.aircraft.iter_mut().zip(blockers) {
             if let Some(taxi) = ac.taxi.as_mut() {
@@ -447,7 +464,7 @@ impl World {
         let ac = &self.aircraft[index];
         let id = ac.id;
         let callsign = ac.callsign.clone();
-        let close = self.arrivals_within(zone, INCURSION_FINAL_NM);
+        let close = self.arrivals_within(zone, INCURSION_FINAL_NM, VFR_INCURSION_NM);
         let map = self.surface();
         let rolling = self.aircraft.iter().any(|a| {
             a.id != id

@@ -63,6 +63,10 @@ class Decoding(unittest.TestCase):
         self.assertAlmostEqual(ends["26L"][0], 38 + 39 / 60 + 42.9923 / 3600, places=6)
         self.assertAlmostEqual(ends["08R"][1], -(90 + 39 / 60 + 35.0903 / 3600), places=6)
 
+    def test_nasr_right_traffic(self):
+        # KSUS 08R has a right-hand pattern; 26L's flag is blank, so left-hand.
+        self.assertEqual(faa.parse_nasr_right_traffic(NASR_26L), {"08R": True, "26L": False})
+
 
 class Fixes(unittest.TestCase):
     def test_dme_only_station_uses_its_dme_position(self):

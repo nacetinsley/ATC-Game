@@ -18,6 +18,7 @@ pub const PENALTY_RUNWAY_SEPARATION: i32 = -300;
 pub const PENALTY_GROUND_CONFLICT: i32 = -200;
 pub const PENALTY_DEADLOCK: i32 = -100;
 pub const PENALTY_MISSED_HANDOFF: i32 = -25;
+pub const POINTS_TOUCH_AND_GO: i32 = 20;
 /// Separation losses a controller can have before being decertified.
 pub const MAX_SEPARATION_LOSSES: u32 = 5;
 
@@ -59,7 +60,10 @@ pub enum SimEvent {
     /// Two aircraft nose to nose with nowhere to go.
     TaxiDeadlock { a: String, b: String },
     MissedHandoff { callsign: String, to: &'static str },
+    /// A VFR departure left without being told it could change frequency.
+    NoFrequencyChange { callsign: String },
     Parked { callsign: String },
+    TouchAndGo { callsign: String },
     ShiftEnded { end: ShiftEnd },
 }
 
@@ -85,6 +89,7 @@ pub struct Score {
     pub go_arounds: u32,
     pub separation_losses: u32,
     pub parked: u32,
+    pub touch_and_goes: u32,
     pub incidents: Vec<Incident>,
 }
 
@@ -219,9 +224,20 @@ impl Score {
                     PENALTY_MISSED_HANDOFF,
                 );
             }
+            SimEvent::NoFrequencyChange { callsign } => {
+                self.incident(
+                    time,
+                    format!("{callsign} left without a frequency change"),
+                    PENALTY_MISSED_HANDOFF,
+                );
+            }
             SimEvent::Parked { .. } => {
                 self.parked += 1;
                 self.points += POINTS_PARKED;
+            }
+            SimEvent::TouchAndGo { .. } => {
+                self.touch_and_goes += 1;
+                self.points += POINTS_TOUCH_AND_GO;
             }
             SimEvent::ConflictAlert { .. } | SimEvent::ShiftEnded { .. } => {}
         }
@@ -246,7 +262,8 @@ impl Score {
         }
         let clean = self.landed as i32 * POINTS_LANDED
             + self.exited as i32 * POINTS_EXITED
-            + self.parked as i32 * POINTS_PARKED;
+            + self.parked as i32 * POINTS_PARKED
+            + self.touch_and_goes as i32 * POINTS_TOUCH_AND_GO;
         if clean == 0 {
             return "No rating - no flights completed";
         }

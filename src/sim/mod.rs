@@ -14,6 +14,7 @@ pub mod ground_map;
 pub mod registration;
 pub mod traffic;
 pub mod units;
+pub mod vfr;
 
 use aircraft::{Aircraft, Flow, Phase};
 use airspace::{Airport, Config};
@@ -32,6 +33,8 @@ const MAX_LOG: usize = 200;
 /// A departure has to leave within this distance of its exit fix.
 const EXIT_TOLERANCE_NM: f32 = 12.0;
 const EXIT_ALTITUDE_TOLERANCE: f32 = 500.0;
+/// The first VFR aircraft turns up this far into a shift, seconds.
+const FIRST_VFR_S: f32 = 20.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Speaker {
@@ -105,6 +108,8 @@ pub struct WorldConfig {
     pub busyness: traffic::Busyness,
     /// The positions the player works. The rest are automated.
     pub staffing: positions::Staffing,
+    /// VFR traffic, on tower positions only.
+    pub vfr: bool,
 }
 
 impl Default for WorldConfig {
@@ -116,6 +121,7 @@ impl Default for WorldConfig {
             shift_seconds: traffic::SHIFT_SECONDS,
             busyness: traffic::Busyness::default(),
             staffing: positions::Staffing::default(),
+            vfr: false,
         }
     }
 }
@@ -140,6 +146,7 @@ pub struct World {
     next_sweep: f32,
     next_spawn_time: f32,
     next_departure_time: f32,
+    next_vfr_time: f32,
     departure_queue: VecDeque<Aircraft>,
 }
 
@@ -170,6 +177,7 @@ impl World {
             next_sweep: 0.0,
             next_spawn_time: 0.0,
             next_departure_time: 0.0,
+            next_vfr_time: FIRST_VFR_S,
             departure_queue: VecDeque::new(),
         };
         let opening = format!(
@@ -281,6 +289,7 @@ impl World {
         self.run_radio();
         if self.config.traffic {
             self.run_traffic();
+            self.run_vfr_traffic();
         }
         self.place_departures();
 
@@ -291,6 +300,7 @@ impl World {
 
         self.run_surface();
         self.run_approaches();
+        self.run_pattern();
         self.run_local();
         self.run_ground();
         self.run_automated_approach();

@@ -121,6 +121,23 @@ def parse_nasr_runway_ends(line):
     return ends
 
 
+# NASR RWY record columns (0-based) of each end's right-traffic flag.
+RIGHT_TRAFFIC_COLUMNS = (86, 308)
+
+
+def parse_nasr_right_traffic(line):
+    """Which ends of one NASR RWY record have right-hand traffic, as {runway id: bool}.
+    A blank flag means the standard left-hand pattern."""
+    base, _, reciprocal = line[16:23].strip().partition("/")
+    flags = {}
+    for runway, column in zip((base, reciprocal), RIGHT_TRAFFIC_COLUMNS):
+        flag = line[column:column + 1]
+        if flag not in ("Y", "N", " ", ""):
+            raise ImportError_(f"bad right traffic flag {flag!r} for runway {runway}")
+        flags[runway] = flag == "Y"
+    return flags
+
+
 # --- Geometry -------------------------------------------------------------
 
 
@@ -329,6 +346,8 @@ def render(data):
         if runway["ils"]:
             out.append(f"glideslope_deg = {fmt(runway['glideslope_deg'])}")
             out.append(f"threshold_crossing_height = {fmt(runway['tch'])}")
+        if runway["right_traffic"]:
+            out.append("right_traffic = true")
     for config in data["configs"]:
         out += ["", "[[configs]]"]
         for key in ("name", "arrival", "departure", "departure_long"):
@@ -369,8 +388,10 @@ def build(lines, nasr_lines, mva_root, overrides, airport_code, cycle, mva_descr
     ils = {i["runway"]: i for i in (parse_ils(r) for r in records if r[12] == "I")}
     runways_raw = [parse_runway(r) for r in records if r[12] == "G"]
     ends = {}
+    right_traffic = {}
     for line in nasr_lines:
         ends.update(parse_nasr_runway_ends(line))
+        right_traffic.update(parse_nasr_right_traffic(line))
 
     runways = []
     reciprocal = {"L": "R", "R": "L", "C": "C", "": ""}
@@ -394,6 +415,7 @@ def build(lines, nasr_lines, mva_root, overrides, airport_code, cycle, mva_descr
             "ils": info is not None,
             "glideslope_deg": info["glideslope_deg"] if info else 0,
             "tch": info["tch"] if info else 0,
+            "right_traffic": right_traffic.get(raw["id"], False),
         })
 
     config_by_transition = {c["star_transition"]: c["name"] for c in overrides["configs"]}

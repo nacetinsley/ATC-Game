@@ -1,11 +1,12 @@
 //! Clearances: what the controller says, who may say it, and how the pilot responds.
 
-use super::aircraft::{Aircraft, Flow, Lateral, Phase, Taxi};
+use super::aircraft::{Aircraft, Flow, Landing, Lateral, Leg, Phase, Taxi, VfrIntent};
 use super::airspace::Airport;
 use super::ground_map::GroundMap;
 use super::positions::{Position, Staffing};
 use super::scoring::{GoAroundReason, SimEvent};
 use super::units::{format_heading, heading_diff, normalize_heading};
+use super::vfr::{compass, landing_for, side_word};
 use super::{Speaker, World};
 
 pub const MIN_ASSIGNED_ALTITUDE: f32 = 1000.0;
@@ -45,6 +46,14 @@ pub enum Clearance {
     ContactGround,
     ContactTower,
     ContactDeparture,
+    /// VFR: enter the downwind for this runway end.
+    EnterDownwind(usize),
+    ExtendDownwind,
+    TurnBase,
+    /// VFR: follow this aircraft, described as the traffic call names it.
+    Follow { id: u32, traffic: String },
+    ClearedTouchAndGo(usize),
+    ClearedOption(usize),
 }
 
 impl Clearance {
@@ -69,7 +78,13 @@ impl Clearance {
             | Clearance::ClearedForTakeoff(_)
             | Clearance::ClearedToLand(_)
             | Clearance::ContactGround
-            | Clearance::ContactDeparture => &[Local],
+            | Clearance::ContactDeparture
+            | Clearance::EnterDownwind(_)
+            | Clearance::ExtendDownwind
+            | Clearance::TurnBase
+            | Clearance::Follow { .. }
+            | Clearance::ClearedTouchAndGo(_)
+            | Clearance::ClearedOption(_) => &[Local],
             Clearance::ContactTower => &[Ground],
         }
     }
@@ -101,7 +116,7 @@ pub(super) struct RadioCall {
     pub logged: bool,
 }
 
-fn thousands(altitude: f32) -> String {
+pub(super) fn thousands(altitude: f32) -> String {
     let a = altitude.round() as i32;
     if a >= 1000 {
         format!("{},{:03}", a / 1000, a % 1000)
@@ -181,14 +196,41 @@ pub fn phrase(clearance: &Clearance, ac: &Aircraft, airport: &Airport) -> String
             format!("runway {}, line up and wait", airport.runways[*e].id)
         }
         Clearance::ClearedForTakeoff(e) => {
-            format!("runway {}, cleared for takeoff", airport.runways[*e].id)
+            let runway = &airport.runways[*e];
+            match ac.vfr.as_ref().map(|v| (v.intent, v.outbound)) {
+                Some((VfrIntent::Closed, _)) => format!(
+                    "runway {}, make {} closed traffic, cleared for takeoff",
+                    runway.id,
+                    side_word(runway)
+                ),
+                Some((VfrIntent::Departure, bearing)) => format!(
+                    "runway {}, {} departure approved, cleared for takeoff",
+                    runway.id,
+                    compass(bearing)
+                ),
+                _ => format!("runway {}, cleared for takeoff", runway.id),
+            }
         }
         Clearance::ClearedToLand(e) => {
             format!("runway {}, cleared to land", airport.runways[*e].id)
         }
         Clearance::ContactGround => "contact ground".into(),
         Clearance::ContactTower => "contact tower".into(),
+        Clearance::ContactDeparture if ac.vfr.is_some() => "frequency change approved".into(),
         Clearance::ContactDeparture => "contact departure".into(),
+        Clearance::EnterDownwind(e) => {
+            let runway = &airport.runways[*e];
+            format!("enter {} downwind runway {}", side_word(runway), runway.id)
+        }
+        Clearance::ExtendDownwind => "extend downwind, I'll call your base".into(),
+        Clearance::TurnBase => "turn base".into(),
+        Clearance::Follow { traffic, .. } => format!("follow the {traffic}"),
+        Clearance::ClearedTouchAndGo(e) => {
+            format!("runway {}, cleared touch-and-go", airport.runways[*e].id)
+        }
+        Clearance::ClearedOption(e) => {
+            format!("runway {}, cleared for the option", airport.runways[*e].id)
+        }
     }
 }
 
@@ -392,9 +434,36 @@ fn set_route(ac: &mut Aircraft, map: &GroundMap, origin: usize, nodes: Vec<usize
     taxi.holding_short = None;
 }
 
+/// A VFR aircraft in the pattern, and the leg it's on.
+fn pattern_leg(ac: &Aircraft) -> Result<Leg, String> {
+    match &ac.vfr {
+        Some(v) if ac.phase == Phase::Pattern && !ac.on_ground => Ok(v.leg),
+        Some(_) => Err("not in the pattern".into()),
+        None => Err("we're IFR".into()),
+    }
+}
+
+/// Clear a VFR aircraft in the pattern to land, touch and go, or for the option.
+fn clear_vfr_landing(ac: &mut Aircraft, end: usize, kind: Landing, airport: &Airport) -> Result<(), String> {
+    let leg = pattern_leg(ac)?;
+    if matches!(leg, Leg::Entry | Leg::Holding | Leg::Departing) {
+        return Err("not in the pattern".into());
+    }
+    let vfr = ac.vfr.as_mut().expect("checked");
+    if vfr.end != end {
+        return Err(format!("we're in the pattern for {}", airport.runways[vfr.end].id));
+    }
+    vfr.landing = Some(landing_for(kind, vfr)?);
+    Ok(())
+}
+
 /// Validate one clearance and carry it out, or explain why not.
 fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), String> {
     let airport = ctx.airport;
+    // Radar vectors don't apply to VFR traffic flying its own pattern.
+    if ac.vfr.is_some() && clearance.issuers() == [Position::Approach] {
+        return Err("we're VFR".into());
+    }
     match clearance {
         Clearance::Heading(h) => {
             if ac.on_ground {
@@ -442,7 +511,8 @@ fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), 
                 ac.phase,
                 Phase::ClearedApproach | Phase::Localizer | Phase::Glideslope | Phase::TowerHandedOff
             );
-            if !on_approach || ac.on_ground {
+            let vfr_landing = pattern_leg(ac).is_ok_and(|l| matches!(l, Leg::Base | Leg::Final));
+            if !(on_approach || vfr_landing) || ac.on_ground {
                 return Err("not on approach".into());
             }
             ac.start_go_around(airport);
@@ -532,6 +602,55 @@ fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), 
             }
             ac.departure_end = Some(*end);
             ac.cleared_takeoff = takeoff;
+        }
+        Clearance::ClearedToLand(end) if ac.vfr.is_some() => {
+            clear_vfr_landing(ac, *end, Landing::FullStop, airport)?;
+        }
+        Clearance::ClearedTouchAndGo(end) => clear_vfr_landing(ac, *end, Landing::TouchAndGo, airport)?,
+        Clearance::ClearedOption(end) => clear_vfr_landing(ac, *end, Landing::Option, airport)?,
+        Clearance::EnterDownwind(end) => {
+            let leg = pattern_leg(ac)?;
+            if !matches!(leg, Leg::Entry | Leg::Holding) {
+                return Err("we're already in the pattern".into());
+            }
+            let vfr = ac.vfr.as_mut().expect("checked");
+            if vfr.end != *end {
+                return Err(format!("we'd like runway {}", airport.runways[vfr.end].id));
+            }
+            vfr.cleared_pattern = true;
+        }
+        Clearance::ExtendDownwind => {
+            let leg = pattern_leg(ac)?;
+            if !matches!(leg, Leg::Entry | Leg::Join | Leg::Upwind | Leg::Crosswind | Leg::Downwind) {
+                return Err("past the downwind".into());
+            }
+            let vfr = ac.vfr.as_mut().expect("checked");
+            vfr.extend = true;
+            vfr.turn_base = false;
+        }
+        Clearance::TurnBase => {
+            let leg = pattern_leg(ac)?;
+            if !matches!(leg, Leg::Join | Leg::Downwind) {
+                return Err("not on downwind".into());
+            }
+            let vfr = ac.vfr.as_mut().expect("checked");
+            vfr.turn_base = true;
+            vfr.extend = false;
+        }
+        Clearance::Follow { id, .. } => {
+            let leg = pattern_leg(ac)?;
+            if *id == ac.id || matches!(leg, Leg::Base | Leg::Final | Leg::Departing) {
+                return Err("unable to follow".into());
+            }
+            ac.vfr.as_mut().expect("checked").follow = Some(*id);
+        }
+        Clearance::ContactDeparture if ac.vfr.is_some() => {
+            let leg = pattern_leg(ac)?;
+            let vfr = ac.vfr.as_mut().expect("checked");
+            if vfr.intent != VfrIntent::Departure || !matches!(leg, Leg::Upwind | Leg::Departing) {
+                return Err("we're staying with you".into());
+            }
+            vfr.released = true;
         }
         Clearance::ClearedToLand(end) => {
             if ac.on_ground || ac.flow != Flow::Arrival {

@@ -64,7 +64,8 @@ pub fn phase_color(ac: &Aircraft) -> Color {
         | Phase::OfferedToCenter
         | Phase::Parked
         | Phase::Taxiing
-        | Phase::LinedUp => STRIP_OTHER,
+        | Phase::LinedUp
+        | Phase::Pattern => STRIP_OTHER,
         Phase::Controlled | Phase::GoAround => {
             if ac.flow == Flow::Departure { STRIP_DEPARTURE } else { STRIP_CONTROLLED }
         }
@@ -257,6 +258,9 @@ fn draw_dashed(a: Vec2, b: Vec2, color: Color) {
 /// Controller's working data on the third line: assigned altitude and intent.
 fn scratchpad(world: &World, ac: &Aircraft) -> String {
     let airport = &world.airport;
+    if let Some(vfr) = &ac.vfr {
+        return format!("VFR {}", crate::sim::vfr::leg_label(vfr));
+    }
     let intent = match ac.phase {
         Phase::ClearedApproach | Phase::Localizer | Phase::Glideslope => {
             format!("I{}", airport.runways[world.arrival_runway()].id)

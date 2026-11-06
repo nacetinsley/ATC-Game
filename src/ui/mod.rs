@@ -49,9 +49,13 @@ const RADAR_CONTROLS: &str =
 const TOWER_CONTROLS: &str =
     "CONTROLS  H hold/continue | X cross | W line up | K takeoff | L land | G go-around | T contact next";
 const COMMON_CONTROLS: &str = "          T handoff | ENTER send | BKSP cancel";
+const VFR_CONTROLS: &str =
+    "VFR       E enter/extend downwind | B base | O option | U touch-and-go | L full stop | Shift-click follow";
+const VFR_BRIEFING: &str =
+    "VFR      Light aircraft fly the pattern on their own. Sequence them, and clear every landing.";
 
 /// What the player is told before a shift, for the positions they work.
-fn briefing(staffing: Staffing) -> Vec<&'static str> {
+fn briefing(staffing: Staffing, vfr: bool) -> Vec<&'static str> {
     let mut lines = vec![match (staffing.approach, staffing.local, staffing.ground) {
         (true, false, false) => "You work Approach radar. Tower, Ground and Center are automated.",
         (false, true, false) => "You work Local Control (Tower): the runways. Ground and Approach are automated.",
@@ -78,6 +82,9 @@ fn briefing(staffing: Staffing) -> Vec<&'static str> {
             lines.push("HANDOFF  Hand departures to Tower (T) when they hold short.");
         }
     }
+    if vfr && staffing.local {
+        lines.push(VFR_BRIEFING);
+    }
     lines
 }
 
@@ -89,6 +96,9 @@ fn controls(staffing: Staffing) -> Vec<&'static str> {
     }
     if staffing.tower() {
         lines.push(TOWER_CONTROLS);
+    }
+    if staffing.local {
+        lines.push(VFR_CONTROLS);
     }
     lines.push(COMMON_CONTROLS);
     lines
@@ -137,11 +147,13 @@ pub struct App {
     busyness: Busyness,
     /// Index into `Staffing::CHOICES`.
     position: usize,
+    /// VFR traffic, when a tower position is chosen.
+    vfr: bool,
 }
 
-fn new_world(airport: &Airport, busyness: Busyness, staffing: Staffing) -> World {
+fn new_world(airport: &Airport, busyness: Busyness, staffing: Staffing, vfr: bool) -> World {
     let seed = macroquad::miniquad::date::now() as u64;
-    World::new(airport.clone(), WorldConfig { seed, busyness, staffing, ..Default::default() })
+    World::new(airport.clone(), WorldConfig { seed, busyness, staffing, vfr, ..Default::default() })
 }
 
 /// Both views, when the player has two: one full size, one inset.
@@ -160,15 +172,32 @@ fn draw_views(world: &World, ui: &mut UiState) {
     }
 }
 
+/// Every font size the UI draws text at.
+const FONT_SIZES: [u16; 11] = [14, 16, 17, 18, 20, 22, 24, 28, 30, 36, 56];
+
+/// Cache every printable ASCII glyph at every size before the first frame.
+/// macroquad grows its glyph atlas on demand, and a resize partway through
+/// drawing can leave every glyph sampling the wrong texture, so text draws as
+/// solid blocks. Growing it once up front avoids that.
+fn warm_font_cache() {
+    let font = get_default_font();
+    let chars: Vec<char> = (' '..='~').collect();
+    let dpi = miniquad::window::dpi_scale();
+    for size in FONT_SIZES {
+        font.populate_font_cache(&chars, (size as f32 * dpi).ceil() as u16);
+    }
+}
+
 impl App {
     pub async fn new() -> App {
+        warm_font_cache();
         let airports: Vec<Airport> = CATALOG
             .iter()
             .map(|&(text, ground)| Airport::load(text, ground).expect("built-in airport data is valid"))
             .collect();
         App {
             screen: Screen::Menu,
-            world: new_world(&airports[0], Busyness::default(), Staffing::default()),
+            world: new_world(&airports[0], Busyness::default(), Staffing::default(), false),
             ui: UiState::new(&airports[0], Staffing::default()),
             sounds: Sounds::load().await,
             accumulator: 0.0,
@@ -176,6 +205,7 @@ impl App {
             choice: 0,
             busyness: Busyness::default(),
             position: 0,
+            vfr: true,
         }
     }
 
@@ -185,7 +215,7 @@ impl App {
 
     fn start_shift(&mut self) {
         let airport = &self.airports[self.choice];
-        self.world = new_world(airport, self.busyness, self.staffing());
+        self.world = new_world(airport, self.busyness, self.staffing(), self.vfr);
         self.ui = UiState::new(airport, self.staffing());
         self.accumulator = 0.0;
         self.screen = Screen::Playing;
@@ -210,7 +240,13 @@ impl App {
                 if is_key_pressed(KeyCode::P) || is_key_pressed(KeyCode::Tab) {
                     self.position = (self.position + 1) % Staffing::CHOICES.len();
                 }
-                let picked = draw_menu(&self.airports, self.choice, self.busyness, self.staffing());
+                if is_key_pressed(KeyCode::V) && self.staffing().tower() {
+                    self.vfr = !self.vfr;
+                }
+                let picked = draw_menu(&self.airports, self.choice, self.busyness, self.staffing(), self.vfr);
+                if picked.vfr {
+                    self.vfr = !self.vfr;
+                }
                 if let Some(level) = picked.busyness {
                     self.busyness = level;
                 }
@@ -375,9 +411,21 @@ fn draw_positions(staffing: Staffing, x: f32, y: f32) -> Option<usize> {
 struct MenuPick {
     busyness: Option<Busyness>,
     position: Option<usize>,
+    /// The VFR toggle was clicked.
+    vfr: bool,
 }
 
-fn draw_menu(airports: &[Airport], choice: usize, busyness: Busyness, staffing: Staffing) -> MenuPick {
+/// The VFR traffic toggle, for tower positions. True if clicked.
+fn draw_vfr_toggle(vfr: bool, x: f32, y: f32) -> bool {
+    draw_text("VFR TRAFFIC  V or click to toggle", x, y, 20.0, DIM);
+    let label = if vfr { "On: pattern traffic, arrivals and departures" } else { "Off" };
+    let rect = Rect::new(x + 330.0, y - 18.0, measure_text(label, None, 20, 1.0).width + 24.0, 26.0);
+    draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, if vfr { TITLE } else { DIM });
+    draw_text(label, rect.x + 12.0, rect.y + 19.0, 20.0, if vfr { TITLE } else { TEXT });
+    is_mouse_button_pressed(MouseButton::Left) && rect.contains(Vec2::from(mouse_position()))
+}
+
+fn draw_menu(airports: &[Airport], choice: usize, busyness: Busyness, staffing: Staffing, vfr: bool) -> MenuPick {
     clear_background(BACKGROUND);
     let x = 60.0;
     draw_text("AIR TRAFFIC CONTROL", x, 80.0, 56.0, TITLE);
@@ -385,8 +433,12 @@ fn draw_menu(airports: &[Airport], choice: usize, busyness: Busyness, staffing: 
 
     let mut y = 156.0;
     let mut pick = MenuPick { position: draw_positions(staffing, x, y), ..Default::default() };
-    y += 72.0;
-    for line in briefing(staffing).iter().chain(&controls(staffing)).chain(std::iter::once(&BRIEFING_VIEW)) {
+    if staffing.tower() {
+        pick.vfr = draw_vfr_toggle(vfr, x, y + 68.0);
+    }
+    y += 100.0;
+    let vfr = vfr && staffing.tower();
+    for line in briefing(staffing, vfr).iter().chain(&controls(staffing)).chain(std::iter::once(&BRIEFING_VIEW)) {
         draw_text(line, x, y, 20.0, TEXT);
         y += 23.0;
     }

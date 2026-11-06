@@ -2,7 +2,7 @@
 
 use super::airspace::Airport;
 use super::autopilot;
-use super::performance::AircraftType;
+use super::performance::{AircraftType, WakeCategory};
 use super::positions::Position;
 use super::units::{SECONDS_PER_HOUR, Wind, heading_diff, heading_vec, normalize_heading, tas_from_ias};
 use glam::Vec2;
@@ -19,6 +19,8 @@ pub const ROLLOUT_DECEL: f32 = 4.0;
 pub const EXIT_SPEED: f32 = 20.0;
 const SPEED_LIMIT_ALTITUDE: f32 = 10000.0;
 const SPEED_LIMIT: f32 = 250.0;
+/// Light aircraft get up to speed quicker than their cruise acceleration suggests.
+const LIGHT_ROLL_ACCEL: f32 = 3.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flow {
@@ -50,6 +52,113 @@ pub enum Phase {
     Taxiing,
     /// On the runway, waiting for a takeoff clearance.
     LinedUp,
+    /// VFR, flying with Tower: in or around the traffic pattern, or leaving.
+    Pattern,
+}
+
+/// Why a VFR aircraft is flying.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VfrIntent {
+    /// Touch-and-goes in the pattern, then a full stop.
+    Closed,
+    Arrival,
+    Departure,
+}
+
+/// Where a VFR aircraft is in or around the pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Leg {
+    /// Inbound to the 45 degree entry.
+    Entry,
+    /// Orbiting outside the airspace, waiting to be told how to enter.
+    Holding,
+    /// On the 45 to the downwind.
+    Join,
+    Upwind,
+    Crosswind,
+    Downwind,
+    Base,
+    Final,
+    /// Leaving the area.
+    Departing,
+}
+
+/// The landing a VFR aircraft is cleared for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Landing {
+    FullStop,
+    TouchAndGo,
+    /// The pilot's choice.
+    Option,
+}
+
+/// What a VFR aircraft is doing and what it has been told.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Vfr {
+    pub intent: VfrIntent,
+    /// The runway end it flies the pattern for.
+    pub end: usize,
+    pub leg: Leg,
+    /// Touch-and-goes still wanted before a full stop.
+    pub circuits: u32,
+    /// Told how to enter the pattern. Closed traffic starts out in it.
+    pub cleared_pattern: bool,
+    /// Told to extend downwind until called.
+    pub extend: bool,
+    /// Told to turn base now.
+    pub turn_base: bool,
+    /// The aircraft it has been told to follow.
+    pub follow: Option<u32>,
+    pub landing: Option<Landing>,
+    /// Departures: true bearing it leaves on.
+    pub outbound: f32,
+    /// Departures: told it may leave the frequency.
+    pub released: bool,
+    /// Made its downwind call this circuit.
+    pub reported: bool,
+}
+
+impl Vfr {
+    pub fn new(intent: VfrIntent, end: usize) -> Vfr {
+        Vfr {
+            intent,
+            end,
+            leg: Leg::Entry,
+            circuits: 0,
+            cleared_pattern: false,
+            extend: false,
+            turn_base: false,
+            follow: None,
+            landing: None,
+            outbound: 0.0,
+            released: false,
+            reported: false,
+        }
+    }
+
+    /// What the pilot would choose, given the option.
+    pub fn wants_full_stop(&self) -> bool {
+        self.intent != VfrIntent::Closed || self.circuits == 0
+    }
+
+    /// Will come to a full stop on this landing.
+    pub fn full_stop(&self) -> bool {
+        match self.landing {
+            Some(Landing::FullStop) => true,
+            Some(Landing::TouchAndGo) => false,
+            _ => self.wants_full_stop(),
+        }
+    }
+
+    /// Back on upwind with this circuit's instructions forgotten.
+    pub fn reset_circuit(&mut self) {
+        self.landing = None;
+        self.extend = false;
+        self.turn_base = false;
+        self.follow = None;
+        self.reported = false;
+        self.leg = Leg::Upwind;
+    }
 }
 
 /// Movement along the taxi graph.
@@ -146,6 +255,8 @@ pub struct Aircraft {
     pub handoff_flagged: bool,
     /// When it started waiting for a handoff the controller hasn't given yet.
     pub waiting_since: Option<f32>,
+    /// VFR aircraft only.
+    pub vfr: Option<Vfr>,
 }
 
 impl Aircraft {
@@ -195,6 +306,7 @@ impl Aircraft {
             freq_since: 0.0,
             handoff_flagged: false,
             waiting_since: None,
+            vfr: None,
         }
     }
 
@@ -217,9 +329,21 @@ impl Aircraft {
             | Phase::Rollout
             | Phase::TowerRelease
             | Phase::LinedUp
-            | Phase::GoAround => Position::Local,
+            | Phase::GoAround
+            | Phase::Pattern => Position::Local,
             Phase::Parked | Phase::Taxiing => self.surface_freq,
         }
+    }
+
+    /// Acceleration on the takeoff roll, knots per second.
+    pub fn roll_accel(&self) -> f32 {
+        let rate = self.ty.accel.max(self.ty.decel);
+        if self.ty.wake == WakeCategory::Small { rate.max(LIGHT_ROLL_ACCEL) } else { rate }
+    }
+
+    /// Seconds from starting the roll to lifting off.
+    pub fn takeoff_roll_seconds(&self) -> f32 {
+        (self.ty.vref + ROTATE_MARGIN) / self.roll_accel()
     }
 
     /// Rolling down a runway for takeoff.
@@ -263,7 +387,7 @@ impl Aircraft {
 
     fn step_ground(&mut self, dt: f32) {
         let (target, rate) = if self.phase == Phase::TowerRelease {
-            (self.target_speed, self.ty.accel.max(self.ty.decel))
+            (self.target_speed, self.roll_accel())
         } else {
             (EXIT_SPEED, ROLLOUT_DECEL)
         };
@@ -336,6 +460,18 @@ impl Aircraft {
 
     /// Abandon the approach: fly runway heading and climb to the published altitude.
     pub fn start_go_around(&mut self, airport: &Airport) {
+        // VFR: climb straight ahead back into the pattern.
+        if let Some(vfr) = self.vfr.as_mut() {
+            let heading = airport.runways[vfr.end].heading;
+            vfr.reset_circuit();
+            self.phase = Phase::Pattern;
+            self.lateral = Lateral::Heading(heading);
+            self.target_altitude = airport.elevation + super::vfr::PATTERN_AGL;
+            self.target_speed = super::vfr::pattern_speed(self.ty);
+            self.approach_runway = None;
+            self.on_glideslope = false;
+            return;
+        }
         let course = self
             .approach_runway
             .map(|r| airport.runways[r].heading)

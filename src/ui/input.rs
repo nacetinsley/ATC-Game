@@ -5,7 +5,7 @@ use super::scope::{self, BLOCK_SIZE};
 use super::surface;
 use crate::sim::World;
 use crate::sim::airspace::Airport;
-use crate::sim::aircraft::{Flow, Phase};
+use crate::sim::aircraft::{Flow, Landing, Leg, Phase};
 use crate::sim::clearance::{Clearance, PendingClearance};
 use crate::sim::positions::{Position, Staffing};
 use crate::sim::units::vec_heading;
@@ -154,7 +154,7 @@ impl UiState {
                 Position::Local => self.pending.add_tower(Clearance::ContactGround),
                 _ => {}
             },
-            (Phase::TowerRelease | Phase::GoAround, _) => {
+            (Phase::TowerRelease | Phase::GoAround | Phase::Pattern, _) => {
                 self.pending.add_tower(Clearance::ContactDeparture)
             }
             (_, Flow::Arrival) => self.pending.handoff_tower = true,
@@ -197,9 +197,59 @@ impl UiState {
     }
 
     pub fn land(&mut self, world: &World) {
+        if self.selected.and_then(|id| world.find(id)).is_some_and(|a| a.vfr.is_some()) {
+            self.vfr_landing(world, Landing::FullStop);
+            return;
+        }
         let Some(ac) = self.selected.and_then(|id| world.find(id)) else { return };
         let end = ac.approach_runway.unwrap_or_else(|| world.arrival_runway());
         self.pending.add_tower(Clearance::ClearedToLand(end));
+    }
+
+    /// Clear a VFR aircraft to land, touch and go, or for the option. One of them only.
+    pub fn vfr_landing(&mut self, world: &World, kind: Landing) {
+        let Some(vfr) = self.selected.and_then(|id| world.find(id)).and_then(|a| a.vfr.as_ref()) else { return };
+        let end = vfr.end;
+        self.pending.tower.retain(|c| {
+            !matches!(c, Clearance::ClearedToLand(_) | Clearance::ClearedTouchAndGo(_) | Clearance::ClearedOption(_))
+        });
+        self.pending.add_tower(match kind {
+            Landing::FullStop => Clearance::ClearedToLand(end),
+            Landing::TouchAndGo => Clearance::ClearedTouchAndGo(end),
+            Landing::Option => Clearance::ClearedOption(end),
+        });
+    }
+
+    /// Enter the downwind, for a VFR arrival outside the pattern; otherwise extend it.
+    pub fn enter_or_extend(&mut self, world: &World) {
+        let Some(vfr) = self.selected.and_then(|id| world.find(id)).and_then(|a| a.vfr.as_ref()) else { return };
+        let clearance = if matches!(vfr.leg, Leg::Entry | Leg::Holding) && !vfr.cleared_pattern {
+            Clearance::EnterDownwind(vfr.end)
+        } else {
+            Clearance::ExtendDownwind
+        };
+        self.pending.tower.retain(|c| !matches!(c, Clearance::TurnBase));
+        self.pending.add_tower(clearance);
+    }
+
+    pub fn turn_base(&mut self, world: &World) {
+        if self.selected.and_then(|id| world.find(id)).is_some_and(|a| a.vfr.is_some()) {
+            self.pending.tower.retain(|c| !matches!(c, Clearance::ExtendDownwind));
+            self.pending.add_tower(Clearance::TurnBase);
+        }
+    }
+
+    /// Shift-click: tell the selected VFR aircraft to follow another. True if it did.
+    fn follow(&mut self, world: &World, leader: u32) -> bool {
+        let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+        let Some(ac) = self.selected.and_then(|id| world.find(id)) else { return false };
+        let Some(lead) = world.find(leader) else { return false };
+        if !shift || ac.vfr.is_none() || ac.on_ground || ac.id == leader {
+            return false;
+        }
+        let traffic = crate::sim::vfr::traffic_description(lead);
+        self.pending.add_tower(Clearance::Follow { id: leader, traffic });
+        true
     }
 
     /// Add a taxiway to the via list, or take it back off if it was the last one.
@@ -324,6 +374,18 @@ impl UiState {
             if is_key_pressed(KeyCode::L) {
                 self.land(world);
             }
+            if is_key_pressed(KeyCode::E) {
+                self.enter_or_extend(world);
+            }
+            if is_key_pressed(KeyCode::B) {
+                self.turn_base(world);
+            }
+            if is_key_pressed(KeyCode::O) {
+                self.vfr_landing(world, Landing::Option);
+            }
+            if is_key_pressed(KeyCode::U) {
+                self.vfr_landing(world, Landing::TouchAndGo);
+            }
         }
         if is_key_pressed(KeyCode::F1) {
             self.show(View::Radar, &world.airport);
@@ -426,7 +488,9 @@ impl UiState {
     fn surface_click(&mut self, world: &World, mouse: Vec2) {
         let Some(map) = world.airport.surface.as_ref() else { return };
         if let Some(id) = surface::aircraft_at(world, &self.surface, mouse) {
-            self.select(Some(id));
+            if !self.follow(world, id) {
+                self.select(Some(id));
+            }
             return;
         }
         let selected = self.selected.and_then(|id| world.find(id)).filter(|a| a.on_ground);
@@ -452,6 +516,9 @@ impl UiState {
         for track in world.radar.iter().rev() {
             let origin = scope::block_origin(self, track.id, track.pos);
             if Rect::new(origin.x, origin.y, BLOCK_SIZE.x, BLOCK_SIZE.y).contains(mouse) {
+                if self.follow(world, track.id) {
+                    return;
+                }
                 self.select(Some(track.id));
                 self.drag = Drag::Block { id: track.id, grab: mouse - origin };
                 return;
@@ -459,6 +526,9 @@ impl UiState {
         }
         for track in world.radar.iter().rev() {
             if self.camera.to_screen(track.pos).distance(mouse) <= TARGET_HIT_PX {
+                if self.follow(world, track.id) {
+                    return;
+                }
                 self.select(Some(track.id));
                 self.drag = Drag::Vector { id: track.id, start: mouse, active: false };
                 return;

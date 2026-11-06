@@ -48,6 +48,7 @@ start_y = -0.2653
 ils = true
 glideslope_deg = 3
 threshold_crossing_height = 55
+right_traffic = true
 
 [[runways]]
 id = "26L"
@@ -70,6 +71,7 @@ length = 0.8229
 start_x = 0.042
 start_y = 0.2914
 ils = false
+right_traffic = true
 
 [[configs]]
 name = "West"

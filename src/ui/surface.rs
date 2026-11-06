@@ -4,7 +4,7 @@
 use super::camera::{Camera, clip};
 use super::input::UiState;
 use crate::sim::World;
-use crate::sim::aircraft::{Aircraft, Flow, Phase};
+use crate::sim::aircraft::{Aircraft, Flow, Landing, Phase};
 use crate::sim::clearance::{Clearance, spoken_runway, taxi_origin};
 use crate::sim::ground_map::{EdgeKind, GroundMap};
 use crate::sim::performance::WakeCategory;
@@ -279,6 +279,18 @@ pub fn status(world: &World, ac: &Aircraft) -> String {
         Phase::LinedUp => format!("LUAW {}", runway(ac.departure_end)),
         Phase::TowerRelease if ac.on_ground => format!("ROLL {}", runway(ac.departure_end)),
         Phase::Rollout => "ROLLOUT".into(),
+        Phase::Pattern => {
+            let Some(vfr) = &ac.vfr else { return String::new() };
+            let mark = match (vfr.landing, vfr.extend, vfr.follow) {
+                (Some(Landing::FullStop), ..) => " FS",
+                (Some(Landing::TouchAndGo), ..) => " TG",
+                (Some(Landing::Option), ..) => " OP",
+                (None, true, _) => " EX",
+                (None, false, Some(_)) => " FL",
+                _ => "",
+            };
+            format!("{} {}{mark}", crate::sim::vfr::leg_label(vfr), runway(Some(vfr.end)))
+        }
         _ if ac.flow == Flow::Arrival && ac.approach_runway.is_some() => {
             let rwy = ac.approach_runway.expect("checked");
             let miles = airport.runways[rwy].along(ac.pos).max(0.0);

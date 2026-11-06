@@ -37,6 +37,26 @@ to, so it happens silently. Without Approach, arrivals turn up established on
 the ILS about 10 miles out. Tower positions get a surface map with a radar
 inset; with all three, F1 and F2 swap which is full size.
 
+### VFR traffic
+
+On any tower position the start menu has a VFR toggle (V), on by default.
+It's set before the shift starts and stays that way until the shift ends. With
+it on, light aircraft share the field with the airliners:
+
+- **Closed traffic** taxis out, departs and flies circuits at 1,000 ft above
+  the field, doing touch-and-goes until it makes a full stop.
+- **VFR arrivals** call from about 9 miles out on the pattern side and hold
+  outside the pattern until you tell them to enter the downwind.
+- **VFR departures** climb out ahead and want a frequency change (T) by 3
+  miles.
+
+Each runway end flies its pattern on the side published in the FAA data (right
+traffic at KSUS on 08R and 26R). Pilots self-space on downwind behind whoever
+they're told to follow, extend if there's no gap, and won't cut in front of
+traffic already on base or final. You sequence them rather than separate
+them, so the only air penalty between VFR aircraft is a near collision. A VFR
+aircraft not cleared by short final goes around and rejoins the pattern.
+
 ## Features
 
 - **STARS-style scope:** position symbols, history trails, timeshared data
@@ -85,7 +105,11 @@ cargo run --release
 | H | Hold position, or continue |
 | X | Cross the runway ahead |
 | W / K | Line up and wait / Cleared for takeoff |
-| L | Cleared to land |
+| L | Cleared to land (a full stop, for VFR) |
+| E | VFR: enter the downwind, or extend it once in the pattern |
+| B | VFR: turn base now |
+| O / U | VFR: cleared for the option / cleared touch-and-go |
+| Shift-click an aircraft | VFR: follow that traffic |
 | F1 / F2 | Radar or surface full size (all three combined) |
 | Enter | Transmit the pending clearance |
 | Backspace | Cancel the pending clearance |

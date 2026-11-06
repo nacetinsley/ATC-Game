@@ -38,6 +38,16 @@ const AUTOMATED_APPROACH_RANGE_NM: f32 = 6.0;
 const PARKING_CROSSING_NM: f32 = 2.0;
 /// Arrivals in tower-only modes appear this far out on final.
 pub const FINAL_SPAWN_NM: f32 = 10.0;
+/// Entering a runway with VFR traffic this close on base or final is an incursion.
+pub const VFR_INCURSION_NM: f32 = 1.0;
+/// Time a crossing takes, with margin, for VFR traffic about to land, seconds.
+const VFR_CROSSING_S: f32 = 75.0;
+/// A departure must be airborne this long before VFR traffic lands, seconds.
+const VFR_TAKEOFF_MARGIN_S: f32 = 30.0;
+/// Time from the hold line to starting the roll, seconds.
+const LINE_UP_S: f32 = 30.0;
+/// Minimum time between a VFR departure and the next, seconds.
+const VFR_DEPARTURE_INTERVAL: f32 = 45.0;
 
 impl World {
     pub(super) fn surface(&self) -> &GroundMap {
@@ -135,7 +145,7 @@ impl World {
         }
     }
 
-    fn touch_down(&mut self, index: usize) {
+    pub(super) fn touch_down(&mut self, index: usize) {
         let now = self.time;
         let elevation = self.airport.elevation;
         let ac = &mut self.aircraft[index];
@@ -147,7 +157,8 @@ impl World {
         if let Some(rwy) = ac.approach_runway {
             ac.heading = self.airport.runways[rwy].heading;
         }
-        let minutes = (now - ac.spawn_time) / 60.0;
+        // Pattern work isn't a delay.
+        let minutes = if ac.vfr.is_some() { 0.0 } else { (now - ac.spawn_time) / 60.0 };
         let callsign = ac.callsign.clone();
         self.emit(SimEvent::Landed { callsign, minutes });
     }
@@ -178,17 +189,14 @@ impl World {
         self.aircraft.iter().any(|a| a.id != except && self.occupies(a, physical))
     }
 
-    /// Airborne arrivals on final to either end of the runway, closer than `nm`.
-    pub(super) fn arrivals_within(&self, physical: usize, nm: f32) -> Vec<usize> {
-        let map = self.surface();
+    /// Airborne aircraft about to land on either end of the runway: IFR
+    /// arrivals closer than `ifr_nm` on final, VFR closer than `vfr_nm`.
+    pub(super) fn arrivals_within(&self, physical: usize, ifr_nm: f32, vfr_nm: f32) -> Vec<usize> {
         (0..self.aircraft.len())
             .filter(|&i| {
                 let a = &self.aircraft[i];
-                !a.on_ground
-                    && a.on_final()
-                    && a.approach_runway.is_some_and(|e| {
-                        map.runway_of_end[e] == physical && self.airport.runways[e].along(a.pos) < nm
-                    })
+                let limit = if a.vfr.is_some() { vfr_nm } else { ifr_nm };
+                self.landing_distance(a, physical).is_some_and(|d| d < limit)
             })
             .collect()
     }
@@ -197,6 +205,10 @@ impl World {
     fn step_departure(&mut self, index: usize) {
         let ac = &self.aircraft[index];
         if ac.on_ground {
+            return;
+        }
+        if ac.vfr.is_some() {
+            self.vfr_airborne(index);
             return;
         }
         let staffing = self.config.staffing;
@@ -275,11 +287,7 @@ impl World {
         let ac = &self.aircraft[index];
         let Some(end) = ac.departure_end else { return };
         let physical = self.surface().runway_of_end[end];
-        let interval = if ac.ty.wake == WakeCategory::Heavy {
-            DEPARTURE_INTERVAL_AFTER_HEAVY
-        } else {
-            DEPARTURE_INTERVAL
-        };
+        let interval = departure_interval(ac);
         self.next_departure_time = self.next_departure_time.max(self.time + interval);
         let (id, callsign) = (ac.id, ac.callsign.clone());
         if self.runway_occupied(physical, id) {
@@ -319,6 +327,9 @@ impl World {
 
     fn local_decision(&self, ac: &Aircraft, launched: bool) -> Option<Clearance> {
         if !ac.on_ground {
+            if let Some(vfr) = &ac.vfr {
+                return self.local_vfr_decision(ac, vfr);
+            }
             let end = ac.approach_runway?;
             let close = self.airport.runways[end].along(ac.pos) < LANDING_CLEARANCE_NM;
             return (ac.phase == Phase::TowerHandedOff && !ac.cleared_to_land && close)
@@ -328,7 +339,8 @@ impl World {
         let taxi = ac.taxi.as_ref().filter(|_| ac.phase == Phase::Taxiing)?;
         if let Some(r) = taxi.holding_short {
             let safe = !self.runway_occupied(r, ac.id)
-                && self.arrivals_within(r, CROSSING_HOLD_NM).is_empty();
+                && self.arrivals_within(r, CROSSING_HOLD_NM, 0.0).is_empty()
+                && !self.vfr_landing_within(r, VFR_CROSSING_S);
             return safe.then_some(Clearance::CrossRunway(r));
         }
         if self.at_departure_hold(ac) {
@@ -337,7 +349,10 @@ impl World {
             let safe = !launched
                 && self.time >= self.next_departure_time
                 && !self.runway_occupied(r, ac.id)
-                && self.arrivals_within(r, SHORT_FINAL_HOLD_NM).is_empty();
+                && self.arrivals_within(r, SHORT_FINAL_HOLD_NM, 0.0).is_empty()
+                && !self.vfr_landing_within(r, LINE_UP_S + ac.takeoff_roll_seconds() + VFR_TAKEOFF_MARGIN_S)
+                // A jet would run up the back of a light aircraft still on upwind.
+                && (ac.vfr.is_some() || !self.upwind_traffic(r));
             return safe.then_some(Clearance::ClearedForTakeoff(end));
         }
         // Clear of the runways: over to Ground, if anyone is working it.
@@ -360,13 +375,13 @@ impl World {
             }
             if let Some(c) = self.local_decision(ac, launched) {
                 launched |= matches!(c, Clearance::ClearedForTakeoff(_));
-                calls.push((ac.id, c));
+                calls.push((ac.id, c, departure_interval(ac)));
             }
         }
-        for (id, clearance) in calls {
+        for (id, clearance, interval) in calls {
             if matches!(clearance, Clearance::ClearedForTakeoff(_)) {
                 // Hold the next release until this one is rolling.
-                self.next_departure_time = self.time + DEPARTURE_INTERVAL;
+                self.next_departure_time = self.time + interval;
             }
             self.issue(id, vec![clearance], Position::Local);
         }
@@ -516,6 +531,17 @@ impl World {
     /// The position the player would speak as for this instruction, if any.
     pub fn issuer(&self, ac: &Aircraft, clearance: &Clearance) -> Option<Position> {
         issuer_for(clearance, ac.frequency(), self.config.staffing)
+    }
+}
+
+/// Time to hold the next departure behind this one.
+fn departure_interval(ac: &Aircraft) -> f32 {
+    if ac.vfr.is_some() {
+        VFR_DEPARTURE_INTERVAL
+    } else if ac.ty.wake == WakeCategory::Heavy {
+        DEPARTURE_INTERVAL_AFTER_HEAVY
+    } else {
+        DEPARTURE_INTERVAL
     }
 }
 

@@ -4,7 +4,7 @@ use super::camera::{PANEL_WIDTH, scope_width};
 use super::input::UiState;
 use super::scope::phase_color;
 use super::surface;
-use crate::sim::aircraft::{Aircraft, Flow, Phase};
+use crate::sim::aircraft::{Aircraft, Flow, Landing, Phase};
 use crate::sim::clearance::phrase;
 use crate::sim::positions::Position;
 use crate::sim::{Speaker, World};
@@ -126,9 +126,12 @@ fn draw_status(world: &World, ui: &UiState, x: f32) {
 /// order: the runways first, then the hold lines, taxiways and gates.
 fn bay(ac: &Aircraft) -> (usize, &'static str) {
     match ac.phase {
-        Phase::TowerHandedOff | Phase::TowerRelease | Phase::Rollout | Phase::LinedUp | Phase::GoAround => {
-            (0, "LOCAL")
-        }
+        Phase::TowerHandedOff
+        | Phase::TowerRelease
+        | Phase::Rollout
+        | Phase::LinedUp
+        | Phase::GoAround
+        | Phase::Pattern => (0, "LOCAL"),
         Phase::Taxiing => {
             let waiting = ac.taxi.as_ref().is_some_and(|t| t.holding_short.is_some() || t.done());
             if waiting { (1, "HOLDING") } else { (2, "TAXI") }
@@ -140,7 +143,11 @@ fn bay(ac: &Aircraft) -> (usize, &'static str) {
 
 /// A tower strip: callsign, type, what it's doing and who it's talking to.
 fn tower_strip_text(world: &World, ac: &Aircraft) -> String {
-    let flow = if ac.flow == Flow::Arrival { "ARR" } else { "DEP" };
+    let flow = match (ac.vfr.is_some(), ac.flow) {
+        (true, _) => "VFR",
+        (false, Flow::Arrival) => "ARR",
+        (false, Flow::Departure) => "DEP",
+    };
     let owner = match ac.frequency() {
         Position::Ground => "GND",
         Position::Local => "TWR",
@@ -170,6 +177,7 @@ fn strip_text(world: &World, ac: &Aircraft) -> String {
         Phase::Parked => "parked",
         Phase::Taxiing => "taxi",
         Phase::LinedUp => "lined up",
+        Phase::Pattern => "vfr",
     };
     let exit = match (ac.flow, ac.exit_fix) {
         (Flow::Departure, Some(fix)) => {
@@ -340,9 +348,26 @@ fn draw_tower_buttons(world: &mut World, ui: &mut UiState, left: f32, top: f32) 
     let w = (PANEL_WIDTH - PADDING * 2.0 - 18.0) / 4.0;
     let col = |i: f32| left + (w + 6.0) * i;
     let y = top + 36.0;
-    label("Click a hold line, gate or junction to taxi there.", left, y + 14.0, 16.0, DIM);
-    let via = if ui.via.is_empty() { "Ctrl-click taxiways to route via them.".to_string() } else { format!("Via {}", ui.via.join(", ")) };
-    label(&via, left, y + 32.0, 16.0, DIM);
+    let in_pattern = ui.selected.and_then(|id| world.find(id)).is_some_and(|a| a.vfr.is_some() && !a.on_ground);
+    if in_pattern {
+        // VFR in the air: pattern instructions where the taxi hints would be.
+        if button("Enter/Ext E", col(0.0), y + 8.0, w, bh) {
+            ui.enter_or_extend(world);
+        }
+        if button("Base B", col(1.0), y + 8.0, w, bh) {
+            ui.turn_base(world);
+        }
+        if button("Option O", col(2.0), y + 8.0, w, bh) {
+            ui.vfr_landing(world, Landing::Option);
+        }
+        if button("T&G U", col(3.0), y + 8.0, w, bh) {
+            ui.vfr_landing(world, Landing::TouchAndGo);
+        }
+    } else {
+        label("Click a hold line, gate or junction to taxi there.", left, y + 14.0, 16.0, DIM);
+        let via = if ui.via.is_empty() { "Ctrl-click taxiways to route via them.".to_string() } else { format!("Via {}", ui.via.join(", ")) };
+        label(&via, left, y + 32.0, 16.0, DIM);
+    }
 
     let y = y + 44.0;
     if button("Hold H", col(0.0), y, w, bh) {

@@ -44,7 +44,7 @@ pub struct AircraftType {
 /// The types an airport with no traffic section draws from. New types go after these.
 pub const DEFAULT_FLEET_SIZE: usize = 6;
 
-pub static TYPES: [AircraftType; 11] = [
+pub static TYPES: [AircraftType; 13] = [
     AircraftType {
         designator: "C208",
         wake: WakeCategory::Small,
@@ -187,6 +187,32 @@ pub static TYPES: [AircraftType; 11] = [
         decel: 1.5,
         arrival_altitude: 14000.0,
         min_runway_ft: 5900.0,
+    },
+    AircraftType {
+        designator: "PA28",
+        wake: WakeCategory::Small,
+        vref: 63.0,
+        min_speed: 75.0,
+        max_speed: 115.0,
+        climb_fpm: 650.0,
+        descent_fpm: 700.0,
+        accel: 1.0,
+        decel: 1.0,
+        arrival_altitude: 6000.0,
+        min_runway_ft: 1800.0,
+    },
+    AircraftType {
+        designator: "SR22",
+        wake: WakeCategory::Small,
+        vref: 78.0,
+        min_speed: 90.0,
+        max_speed: 170.0,
+        climb_fpm: 1000.0,
+        descent_fpm: 1000.0,
+        accel: 1.5,
+        decel: 1.5,
+        arrival_altitude: 8000.0,
+        min_runway_ft: 2000.0,
     },
 ];
 

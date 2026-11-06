@@ -57,6 +57,9 @@ pub struct Runway {
     pub glideslope_deg: f32,
     #[serde(default = "default_crossing_height")]
     pub threshold_crossing_height: f32,
+    /// The traffic pattern is flown to the right of this end, not the usual left.
+    #[serde(default)]
+    pub right_traffic: bool,
 }
 
 fn default_true() -> bool {

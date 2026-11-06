@@ -13,6 +13,9 @@ pub const SEPARATION_NM: f32 = 3.0;
 pub const SEPARATION_FT: f32 = 1000.0;
 pub const NEAR_COLLISION_NM: f32 = 0.5;
 pub const NEAR_COLLISION_FT: f32 = 500.0;
+/// Tower doesn't separate VFR traffic, only sequences it; this close is a near miss.
+pub const VFR_NEAR_COLLISION_NM: f32 = 0.1;
+pub const VFR_NEAR_COLLISION_FT: f32 = 200.0;
 pub const STCA_LOOKAHEAD_S: f32 = 60.0;
 const STCA_STEP_S: f32 = 5.0;
 /// An alert stays up until the pair is this far beyond the limit, to stop it flickering.
@@ -69,6 +72,7 @@ pub fn predicts_conflict(a: &Aircraft, b: &Aircraft) -> bool {
 /// Radar separation is the player's job for this aircraft.
 fn separation_applies(ac: &Aircraft, elevation: f32) -> bool {
     !ac.on_ground
+        && ac.vfr.is_none()
         && ac.altitude - elevation >= SEPARATION_FLOOR_AGL_FT
         && !matches!(ac.phase, Phase::TowerHandedOff | Phase::TowerRelease | Phase::Rollout)
 }
@@ -80,6 +84,7 @@ fn same_final(a: &Aircraft, b: &Aircraft) -> bool {
 /// Is this aircraft low over terrain, on the player's watch?
 pub fn is_below_mva(ac: &Aircraft, airport: &Airport) -> bool {
     !ac.on_ground
+        && ac.vfr.is_none()
         && ac.msaw_armed
         && !ac.on_final()
         && !matches!(ac.phase, Phase::GoAround | Phase::TowerRelease | Phase::Rollout)
@@ -108,7 +113,12 @@ impl World {
                 let vertical = (a.altitude - b.altitude).abs();
                 let pair = pair_key(a.id, b.id);
 
-                if is_near_collision(lateral, vertical) {
+                let near = if a.vfr.is_some() || b.vfr.is_some() {
+                    lateral < VFR_NEAR_COLLISION_NM && vertical < VFR_NEAR_COLLISION_FT
+                } else {
+                    is_near_collision(lateral, vertical)
+                };
+                if near {
                     events.push(SimEvent::NearCollision {
                         a: a.callsign.clone(),
                         b: b.callsign.clone(),
@@ -238,10 +248,7 @@ impl World {
         let ac = &mut self.aircraft[index];
         ac.start_go_around(&self.airport);
         let callsign = ac.callsign.clone();
-        let line = format!(
-            "{callsign} going around, climbing to {:.0}.",
-            self.airport.go_around_altitude
-        );
+        let line = format!("{callsign} going around, climbing to {:.0}.", ac.target_altitude);
         self.say(Speaker::Pilot, line);
         self.emit(SimEvent::GoAround { callsign, reason });
     }
