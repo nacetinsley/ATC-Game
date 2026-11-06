@@ -72,6 +72,9 @@ const ARRIVAL_SPREAD_DEG: f32 = 45.0;
 const DEPARTURE_TURN_DEG: (f32, f32) = (20.0, 70.0);
 /// Arrive at the 45 degree entry this far out from the downwind, NM.
 const ENTRY_NM: f32 = 1.0;
+/// Pilots slow to pattern speed this far from the entry point, so they can
+/// turn onto the downwind without swinging wide, NM.
+const ENTRY_SLOW_NM: f32 = 3.0;
 /// Within this of the entry point it counts as reached, NM.
 const ENTRY_CAPTURE_NM: f32 = 0.4;
 /// Joining traffic aims this far ahead along the downwind, NM.
@@ -506,7 +509,8 @@ impl World {
             Leg::Entry => {
                 ac.lateral = steer(f.entry() - ac.pos, ac);
                 ac.target_altitude = pattern_alt + 500.0;
-                ac.target_speed = ac.ty.max_speed;
+                let near = ac.pos.distance(f.entry()) < ENTRY_SLOW_NM;
+                ac.target_speed = if near { speed } else { ac.ty.max_speed };
             }
             Leg::Holding => {
                 ac.lateral = Lateral::Heading(normalize_heading(ac.heading + 30.0));

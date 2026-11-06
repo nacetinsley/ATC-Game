@@ -7,6 +7,9 @@ code = "XHGT"
 elevation = 0.0
 go_around_altitude = 3000.0
 mva_default = 2000.0
+# A busy airline airport can't give a runway to light aircraft, so VFR traffic
+# shares the departure runway and the jets keep it.
+vfr_runway = "shared"
 
 # Sector boundary.
 sector = [

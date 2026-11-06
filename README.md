@@ -50,9 +50,12 @@ it on, light aircraft share the field with the airliners:
 - **VFR departures** climb out ahead and want a frequency change (T) by 3
   miles.
 
-VFR traffic gets a runway of its own: the parallel normally used for
-departures (26R or 08L at KSUS, as in real life). IFR departures move over to
-share the arrival runway. Each runway end flies its pattern on the side
+VFR traffic flies from the parallel normally used for departures. At KSUS
+(26R or 08L, as in real life) it gets that runway to itself, and IFR
+departures move over to share the arrival runway. Harrowgate is an airline
+airport that can't give up a runway, so the jets keep theirs and the light
+aircraft share it, with Tower slotting them between departures. Each runway
+end flies its pattern on the side
 published in the FAA data (right traffic at KSUS on 08R and 26R), which keeps
 the circuit on the far side from the IFR runway, and VFR departures turn out
 that way too. Pilots self-space on downwind behind whoever

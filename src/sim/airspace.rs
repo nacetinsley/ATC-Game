@@ -172,6 +172,20 @@ pub struct Reference {
     pub y: f32,
 }
 
+/// Which runway VFR traffic gets. Either way it flies from the configured
+/// departure runway.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VfrRunway {
+    /// VFR has the departure runway to itself, and IFR departures move over
+    /// to share the arrival runway, as at a general aviation field.
+    #[default]
+    Own,
+    /// VFR shares the departure runway with IFR departures, which keep it,
+    /// as at an airline airport that can't give up a runway.
+    Shared,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Airport {
     pub name: String,
@@ -189,6 +203,9 @@ pub struct Airport {
     pub references: Vec<Reference>,
     pub go_around_altitude: f32,
     pub mva_default: f32,
+    /// Where VFR traffic flies when it's switched on.
+    #[serde(default)]
+    pub vfr_runway: VfrRunway,
     pub sector: Vec<[f32; 2]>,
     pub mva: Vec<MvaArea>,
     pub runways: Vec<Runway>,

@@ -2,7 +2,7 @@
 //! joining the pattern, landing clearances, and clean automated shifts.
 
 use atcgame::sim::aircraft::{Leg, Phase, VfrIntent};
-use atcgame::sim::airspace::{Airport, KSUS_AIRPORT, KSUS_GROUND};
+use atcgame::sim::airspace::{Airport, KSUS_AIRPORT, KSUS_GROUND, VfrRunway};
 use atcgame::sim::clearance::Clearance;
 use atcgame::sim::positions::Staffing;
 use atcgame::sim::scoring::{GoAroundReason, SimEvent};
@@ -233,18 +233,27 @@ fn automated_shifts_with_vfr_traffic_are_clean() {
 /// With VFR on, the pattern has the configured departure runway to itself and
 /// IFR departures share the arrival runway; with it off, nothing moves.
 #[test]
-fn vfr_traffic_gets_its_own_runway() {
+fn vfr_traffic_gets_the_runway_its_airport_gives_it() {
     for airport in [Airport::default_airport(), ksus()] {
         let code = airport.code.clone();
         let with = world(airport.clone(), 250.0, Staffing::LOCAL_GROUND);
         let ids = |w: &World, end: usize| w.airport.runways[end].id.clone();
-        assert_eq!(with.departure_runway(), with.arrival_runway(), "{code}");
         assert_eq!(ids(&with, with.pattern_runway()), with.config().departure, "{code}");
-        assert_ne!(with.pattern_runway(), with.departure_runway(), "{code}");
+        match airport.vfr_runway {
+            // KSUS: VFR takes the parallel, IFR departures share the arrival runway.
+            VfrRunway::Own => {
+                assert_eq!(with.departure_runway(), with.arrival_runway(), "{code}");
+                assert_ne!(with.pattern_runway(), with.departure_runway(), "{code}");
+            }
+            // Harrowgate: the jets keep their departure runway and VFR shares it.
+            VfrRunway::Shared => assert_eq!(with.pattern_runway(), with.departure_runway(), "{code}"),
+        }
 
         let mut config = WorldConfig { seed: 11, traffic: false, staffing: Staffing::LOCAL_GROUND, ..Default::default() };
         config.wind = Some(Wind { from: 250.0, speed: 5.0 });
         let without = World::new(airport, config);
         assert_eq!(ids(&without, without.departure_runway()), without.config().departure, "{code}");
     }
+    assert_eq!(Airport::default_airport().vfr_runway, VfrRunway::Shared);
+    assert_eq!(ksus().vfr_runway, VfrRunway::Own);
 }

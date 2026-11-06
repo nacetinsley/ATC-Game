@@ -215,11 +215,15 @@ impl World {
         self.airport.runway_index(&self.config().arrival).expect("validated at load")
     }
 
-    /// The runway IFR departures use. With VFR traffic on, the configured
-    /// departure runway is given over to it, and IFR departures share the
-    /// arrival runway instead.
+    /// The runway IFR departures use. With VFR traffic on at an airport that
+    /// gives VFR its own runway, the configured departure runway goes to VFR,
+    /// and IFR departures share the arrival runway instead.
     pub fn departure_runway(&self) -> usize {
-        if self.vfr_enabled() { self.arrival_runway() } else { self.configured_departure_runway() }
+        if self.vfr_enabled() && self.airport.vfr_runway == airspace::VfrRunway::Own {
+            self.arrival_runway()
+        } else {
+            self.configured_departure_runway()
+        }
     }
 
     pub(crate) fn configured_departure_runway(&self) -> usize {
