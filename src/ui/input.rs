@@ -57,6 +57,8 @@ pub struct UiState {
     pub rate: f32,
     /// UTC seconds since the epoch when the shift started, for the scope clock.
     pub clock_start: f64,
+    /// A tutorial lesson rather than a timed shift.
+    pub lesson: bool,
 }
 
 impl UiState {
@@ -76,6 +78,7 @@ impl UiState {
             paused: false,
             rate: 1.0,
             clock_start: macroquad::miniquad::date::now(),
+            lesson: false,
         };
         ui.frame_views(airport);
         ui

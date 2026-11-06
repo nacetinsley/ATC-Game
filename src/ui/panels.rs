@@ -77,7 +77,9 @@ fn draw_status(world: &World, ui: &UiState, x: f32) {
     let rate = if ui.paused { "PAUSED".to_string() } else { format!("x{:.0}", ui.rate) };
 
     label(&world.airport.code, left, 24.0, 24.0, TEXT);
-    label(&format!("{clock} left   {rate}"), left + 80.0, 24.0, 22.0, TEXT);
+    // A lesson has no shift clock to beat.
+    let time = if ui.lesson { "LESSON".to_string() } else { format!("{clock} left") };
+    label(&format!("{time}   {rate}"), left + 80.0, 24.0, 22.0, TEXT);
     label(&format!("Score {}", world.score.points), left + 280.0, 24.0, 22.0, TEXT);
 
     let (arrival, departure, vfr) = world.runway_ids();

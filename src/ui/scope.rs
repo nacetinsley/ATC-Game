@@ -116,9 +116,14 @@ fn track_color(world: &World, ac: &Aircraft) -> Color {
     if world.is_players(ac) { OWNED } else { UNOWNED }
 }
 
+/// Where a data block's top-left corner goes: its offset from the target,
+/// kept inside the view so a block near the edge can still be read and clicked.
 pub fn block_origin(ui: &UiState, id: u32, pos: glam::Vec2) -> Vec2 {
     let offset = ui.block_offsets.get(&id).copied().unwrap_or(DEFAULT_BLOCK_OFFSET);
-    ui.camera.to_screen(pos) + offset
+    let origin = ui.camera.to_screen(pos) + offset;
+    let view = ui.camera.viewport;
+    let max = vec2(view.x + view.w - BLOCK_SIZE.x, view.y + view.h - BLOCK_SIZE.y);
+    vec2(origin.x.clamp(view.x, max.x.max(view.x)), origin.y.clamp(view.y, max.y.max(view.y)))
 }
 
 /// The scope in its camera's viewport. An inset leaves out the status area.

@@ -231,6 +231,7 @@ impl App {
         let tutorial = Tutorial::new(kind);
         self.world = tutorial.world();
         self.ui = UiState::new(&self.world.airport, kind.staffing());
+        self.ui.lesson = true;
         self.tutorial = Some(tutorial);
         self.accumulator = 0.0;
         self.screen = Screen::Playing;
