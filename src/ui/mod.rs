@@ -372,10 +372,9 @@ impl App {
             }
         }
         // Enter on a lesson page turns the page; it doesn't also send a command.
-        let lesson_page = self.tutorial.as_ref().is_some_and(|t| t.finished() || t.current().is_some_and(|s| s.read));
-        if !lesson_page {
-            self.ui.update(&mut self.world);
-        }
+        self.ui.enter_taken =
+            self.tutorial.as_ref().is_some_and(|t| t.finished() || t.current().is_some_and(|s| s.read));
+        self.ui.update(&mut self.world);
 
         if !self.ui.paused {
             self.accumulator += get_frame_time().min(MAX_FRAME_SECONDS) * self.ui.rate;

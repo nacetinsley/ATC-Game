@@ -25,22 +25,31 @@ fn play(kind: LessonKind, max_seconds: f32) -> (Tutorial, atcgame::sim::World) {
     (tutorial, world)
 }
 
+/// "Show me" only ever gives an instruction the pilot can follow.
+fn assert_no_refusals(world: &atcgame::sim::World) {
+    let refused: Vec<_> = world.log.iter().filter(|l| l.text.contains("unable")).map(|l| &l.text).collect();
+    assert!(refused.is_empty(), "{refused:?}");
+}
+
 #[test]
 fn the_approach_lesson_can_be_finished() {
     let (_, world) = play(LessonKind::Approach, 1800.0);
     assert!(world.score.incidents.is_empty(), "{:?}", world.score.incidents);
+    assert_no_refusals(&world);
 }
 
 #[test]
 fn the_local_lesson_can_be_finished() {
     let (_, world) = play(LessonKind::Local, 1800.0);
     assert!(world.score.incidents.is_empty(), "{:?}", world.score.incidents);
+    assert_no_refusals(&world);
 }
 
 #[test]
 fn the_ground_lesson_can_be_finished() {
     let (_, world) = play(LessonKind::Ground, 1800.0);
     assert!(world.score.incidents.is_empty(), "{:?}", world.score.incidents);
+    assert_no_refusals(&world);
 }
 
 #[test]

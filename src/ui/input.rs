@@ -59,6 +59,8 @@ pub struct UiState {
     pub clock_start: f64,
     /// A tutorial lesson rather than a timed shift.
     pub lesson: bool,
+    /// Something else used Enter this frame (turning a lesson page), so it doesn't transmit.
+    pub enter_taken: bool,
 }
 
 impl UiState {
@@ -79,6 +81,7 @@ impl UiState {
             rate: 1.0,
             clock_start: macroquad::miniquad::date::now(),
             lesson: false,
+            enter_taken: false,
         };
         ui.frame_views(airport);
         ui
@@ -404,7 +407,7 @@ impl UiState {
         if is_key_pressed(KeyCode::T) {
             self.handoff(world);
         }
-        if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter) {
+        if (is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter)) && !self.enter_taken {
             self.transmit(world);
         }
         // Escape opens the pause menu, handled by the app.

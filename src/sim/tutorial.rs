@@ -2,7 +2,7 @@
 //! says what to do, and waits until the player has done it. A step that goes
 //! wrong (an arrival goes around, say) starts again from an earlier step.
 
-use super::aircraft::{Aircraft, Flow, Lateral, Phase, Taxi, VfrIntent};
+use super::aircraft::{Aircraft, Flow, Lateral, Leg, Phase, Taxi, VfrIntent};
 use super::airspace::Airport;
 use super::clearance::Clearance;
 use super::ground_map::GroundMap;
@@ -175,6 +175,10 @@ impl Tutorial {
 
     /// Do the current step for the player.
     pub fn show_me(&self, world: &mut World) {
+        // Wait for the last call to be answered, as a controller would.
+        if !world.radio.is_empty() {
+            return;
+        }
         if let Some(step) = self.current() {
             (step.solve)(world);
         }
@@ -432,7 +436,10 @@ fn approach_lesson() -> Vec<Step> {
              about 5 miles out, or it has to go around.",
             |w| w.find(ARRIVAL).is_none_or(|a| a.phase == Phase::TowerHandedOff || a.on_ground),
             |w| {
-                w.transmit(ARRIVAL, vec![Clearance::HandoffTower]);
+                // Tower only takes it once it's on the localizer.
+                if w.find(ARRIVAL).is_some_and(|a| matches!(a.phase, Phase::Localizer | Phase::Glideslope)) {
+                    w.transmit(ARRIVAL, vec![Clearance::HandoffTower]);
+                }
             },
         )
         .fails(|w| w.find(ARRIVAL).is_some_and(|a| a.phase == Phase::GoAround), 1)
@@ -489,7 +496,10 @@ fn local_lesson() -> Vec<Step> {
              a gate.",
             |w| w.find(ARRIVAL).is_none_or(|a| a.on_ground && a.frequency() == Position::Ground),
             |w| {
-                w.transmit(ARRIVAL, vec![Clearance::ContactGround]);
+                // Only once it has turned off: still on the runway, it's Tower's.
+                if w.find(ARRIVAL).is_some_and(|a| a.on_ground && a.phase == Phase::Taxiing) {
+                    w.transmit(ARRIVAL, vec![Clearance::ContactGround]);
+                }
             },
         )
         .fails(|w| w.find(ARRIVAL).is_some_and(|a| a.phase == Phase::GoAround), 1)
@@ -511,7 +521,7 @@ fn local_lesson() -> Vec<Step> {
             "Once it's airborne, hand it to Departure before 3 miles: press T, then Enter.",
             |w| first_departure(w).is_none_or(|a| a.phase == Phase::Controlled),
             |w| {
-                if let Some(id) = first_departure(w).map(|a| a.id) {
+                if let Some(id) = first_departure(w).filter(|a| !a.on_ground).map(|a| a.id) {
                     w.transmit(id, vec![Clearance::ContactDeparture]);
                 }
             },
@@ -522,7 +532,8 @@ fn local_lesson() -> Vec<Step> {
              crosses a runway without you. When it calls, cross it: press X, then Enter.",
             |w| w.find(CARGO).is_some_and(|a| a.taxi.as_ref().is_some_and(|t| t.cleared.contains(&physical(w, "27L")))),
             |w| {
-                if let Some(r) = w.find(CARGO).and_then(|a| a.taxi.as_ref()).and_then(|t| t.holding_short) {
+                let calling = w.find(CARGO).filter(|a| a.frequency() == Position::Local);
+                if let Some(r) = calling.and_then(|a| a.taxi.as_ref()).and_then(|t| t.holding_short) {
                     w.transmit(CARGO, vec![Clearance::CrossRunway(r)]);
                 }
             },
@@ -533,7 +544,9 @@ fn local_lesson() -> Vec<Step> {
             "Once it's across and clear of the runway, send it back to Ground: press T, then Enter.",
             |w| w.find(CARGO).is_none_or(|a| a.frequency() == Position::Ground),
             |w| {
-                w.transmit(CARGO, vec![Clearance::ContactGround]);
+                if w.find(CARGO).is_some_and(|a| a.frequency() == Position::Local) {
+                    w.transmit(CARGO, vec![Clearance::ContactGround]);
+                }
             },
         )
         .highlight(cargo_target),
@@ -556,7 +569,12 @@ fn local_lesson() -> Vec<Step> {
              land: press L, then Enter.",
             |w| vfr_aircraft(w).is_none_or(|a| a.vfr.as_ref().is_some_and(|v| v.landing.is_some()) || a.on_ground),
             |w| {
-                if let Some((id, end)) = vfr_aircraft(w).and_then(|a| a.vfr.as_ref().map(|v| (a.id, v.end))) {
+                // Once it has joined: on the way in it isn't in the pattern yet.
+                let joined = vfr_aircraft(w).filter(|a| {
+                    a.phase == Phase::Pattern
+                        && a.vfr.as_ref().is_some_and(|v| !matches!(v.leg, Leg::Entry | Leg::Holding | Leg::Departing))
+                });
+                if let Some((id, end)) = joined.and_then(|a| a.vfr.as_ref().map(|v| (a.id, v.end))) {
                     w.transmit(id, vec![Clearance::ClearedToLand(end)]);
                 }
             },
@@ -592,7 +610,12 @@ fn ground_lesson() -> Vec<Step> {
             "When it stops at the hold line, hand it to Tower: press T, then Enter.",
             |w| first_departure(w).is_none_or(|a| a.surface_freq == Position::Local),
             |w| {
-                if let Some(id) = first_departure(w).map(|a| a.id) {
+                // As the step says: once it's waiting at the hold line, not before.
+                let hold = hold_27r(w);
+                let waiting = first_departure(w)
+                    .filter(|a| a.taxi.as_ref().is_some_and(|t| t.done() && t.node == hold))
+                    .map(|a| a.id);
+                if let Some(id) = waiting {
                     w.transmit(id, vec![Clearance::ContactTower]);
                 }
             },
