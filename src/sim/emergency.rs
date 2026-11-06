@@ -3,7 +3,7 @@
 
 use super::aircraft::{Aircraft, Flow, Lateral, Leg, Phase, VfrIntent};
 use super::clearance::Clearance;
-use super::performance::WakeCategory;
+use super::performance::{WakeCategory, wake_required_nm};
 use super::scoring::SimEvent;
 use super::tower::FINAL_SPAWN_NM;
 use super::units::{heading_vec, vec_heading};
@@ -53,6 +53,12 @@ const NORDO_SPEED: f32 = 210.0;
 /// A VFR aircraft on base or final keeps landing during a closure only if it
 /// will be down and off the runway this long before the next IFR arrival, s.
 const VFR_RUNWAY_S: f32 = 75.0;
+/// With Approach automated, an emergency is put on this short a final when
+/// there's a gap for it, NM.
+pub const PRIORITY_FINAL_NM: f32 = 6.0;
+/// The gap it needs: wake spacing (at least 3 NM) to whoever is ahead and
+/// behind, plus this for the speeds closing up on final, NM.
+const PRIORITY_MARGIN_NM: f32 = 1.5;
 /// Medical arrivals parked this soon after landing earn Ground a bonus, seconds.
 pub const MEDICAL_PARKING_S: f32 = 240.0;
 
@@ -752,6 +758,42 @@ impl World {
         }
     }
 
+    /// Move an emergency just put on final in to the short final, if the gap
+    /// is there. True if it moved.
+    pub(super) fn priority_final(&self, ac: &mut Aircraft, rwy: usize) -> bool {
+        let runway = &self.airport.runways[rwy];
+        let crowded = self.aircraft.iter().any(|a| {
+            if a.id == ac.id || a.on_ground || a.approach_runway != Some(rwy) {
+                return false;
+            }
+            let d = runway.along(a.pos);
+            // Not behind one that's going to stop on the runway.
+            if a.emergency.as_ref().is_some_and(|e| e.stops_on_runway()) {
+                return true;
+            }
+            let (gap, required) = if d < PRIORITY_FINAL_NM {
+                (
+                    PRIORITY_FINAL_NM - d,
+                    wake_required_nm(a.ty.wake, ac.ty.wake),
+                )
+            } else {
+                (
+                    d - PRIORITY_FINAL_NM,
+                    wake_required_nm(ac.ty.wake, a.ty.wake),
+                )
+            };
+            gap < required + PRIORITY_MARGIN_NM
+        });
+        if crowded {
+            return false;
+        }
+        ac.pos = runway.threshold() - heading_vec(runway.heading) * PRIORITY_FINAL_NM;
+        ac.altitude = self.airport.glideslope_altitude(rwy, PRIORITY_FINAL_NM);
+        ac.target_altitude = ac.altitude;
+        ac.entered_sector = self.airport.in_sector(ac.pos);
+        true
+    }
+
     /// Put a returning aircraft back on final.
     fn spawn_return(&mut self, mut ac: Aircraft) {
         let rwy = self.arrival_runway();
@@ -760,6 +802,11 @@ impl World {
         ac.heading = runway.heading;
         ac.altitude = self.airport.glideslope_altitude(rwy, FINAL_SPAWN_NM);
         ac.target_altitude = ac.altitude;
+        let miles = if self.priority_final(&mut ac, rwy) {
+            PRIORITY_FINAL_NM
+        } else {
+            FINAL_SPAWN_NM
+        };
         ac.ias = ac.ias.min(180.0);
         ac.target_speed = ac.ias;
         ac.phase = Phase::TowerHandedOff;
@@ -773,13 +820,13 @@ impl World {
         if self.config.staffing.local {
             let line = if ac.nordo() {
                 format!(
-                    "Approach: {callsign}, radio failure, {FINAL_SPAWN_NM:.0} mile final runway {}.",
+                    "Approach: {callsign}, radio failure, {miles:.0} mile final runway {}.",
                     runway.id
                 )
             } else {
                 let what = ac.emergency.as_ref().map_or("", |e| e.kind.describe());
                 format!(
-                    "Tower, {callsign}, {FINAL_SPAWN_NM:.0} mile final runway {}, {what}.",
+                    "Tower, {callsign}, {miles:.0} mile final runway {}, {what}.",
                     runway.id
                 )
             };

@@ -137,6 +137,42 @@ pub struct Score {
     pub parked: u32,
     pub touch_and_goes: u32,
     pub incidents: Vec<Incident>,
+    /// Every emergency declared this shift and how it ended, whoever worked it.
+    pub emergencies: Vec<EmergencyRecord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EmergencyOutcome {
+    /// Still flying when the shift ended.
+    Ongoing,
+    Landed { minutes: f32 },
+    Diverted,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EmergencyRecord {
+    pub callsign: String,
+    pub kind: EmergencyKind,
+    pub declared_at: f32,
+    pub go_arounds: u32,
+    pub outcome: EmergencyOutcome,
+}
+
+impl EmergencyRecord {
+    /// "MRD722  medical emergency  landed after 6 min, 1 go-around".
+    pub fn summary(&self) -> String {
+        let outcome = match self.outcome {
+            EmergencyOutcome::Ongoing => "still airborne".to_string(),
+            EmergencyOutcome::Landed { minutes } => format!("landed after {minutes:.0} min"),
+            EmergencyOutcome::Diverted => "diverted".to_string(),
+        };
+        let go_arounds = match self.go_arounds {
+            0 => String::new(),
+            1 => ", 1 go-around".to_string(),
+            n => format!(", {n} go-arounds"),
+        };
+        format!("{}  {}  {outcome}{go_arounds}", self.callsign, self.kind.describe())
+    }
 }
 
 fn delay_penalty(minutes: f32) -> i32 {
@@ -149,7 +185,40 @@ impl Score {
         Score { credit, ..Default::default() }
     }
 
+    /// Keep the emergency list up to date, whatever the credit.
+    fn record_emergency(&mut self, time: f32, event: &SimEvent) {
+        let record = |list: &[EmergencyRecord], name: &str| -> Option<usize> {
+            list.iter().rposition(|r| r.callsign == name && r.outcome == EmergencyOutcome::Ongoing)
+        };
+        match event {
+            SimEvent::EmergencyDeclared { callsign, kind } => self.emergencies.push(EmergencyRecord {
+                callsign: callsign.clone(),
+                kind: *kind,
+                declared_at: time,
+                go_arounds: 0,
+                outcome: EmergencyOutcome::Ongoing,
+            }),
+            SimEvent::EmergencyLanded { callsign, minutes, .. } => {
+                if let Some(i) = record(&self.emergencies, callsign) {
+                    self.emergencies[i].outcome = EmergencyOutcome::Landed { minutes: *minutes };
+                }
+            }
+            SimEvent::EmergencyDiverted { callsign } => {
+                if let Some(i) = record(&self.emergencies, callsign) {
+                    self.emergencies[i].outcome = EmergencyOutcome::Diverted;
+                }
+            }
+            SimEvent::EmergencyGoAround { callsign } => {
+                if let Some(i) = record(&self.emergencies, callsign) {
+                    self.emergencies[i].go_arounds += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn apply(&mut self, time: f32, event: &SimEvent) {
+        self.record_emergency(time, event);
         match event {
             SimEvent::Landed { minutes, .. } => {
                 self.landed += 1;
@@ -363,6 +432,28 @@ impl Score {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_emergency_is_recorded_whoever_gets_the_credit() {
+        let mut s = Score::new(Credit { landings: false, touch_and_goes: false, parking: true });
+        let declared = |name: &str, kind| SimEvent::EmergencyDeclared { callsign: name.into(), kind };
+        s.apply(60.0, &declared("A", EmergencyKind::Medical));
+        s.apply(90.0, &declared("B", EmergencyKind::LowFuel));
+        s.apply(120.0, &declared("C", EmergencyKind::RadioFailure));
+        s.apply(200.0, &SimEvent::EmergencyGoAround { callsign: "A".into() });
+        s.apply(400.0, &SimEvent::EmergencyLanded { callsign: "A".into(), kind: EmergencyKind::Medical, minutes: 5.7 });
+        s.apply(500.0, &SimEvent::EmergencyDiverted { callsign: "B".into() });
+        assert_eq!(s.points, 0);
+        let lines: Vec<String> = s.emergencies.iter().map(|r| r.summary()).collect();
+        assert_eq!(
+            lines,
+            [
+                "A  medical emergency  landed after 6 min, 1 go-around",
+                "B  low fuel  diverted",
+                "C  radio failure  still airborne"
+            ]
+        );
+    }
 
     fn landed(minutes: f32) -> SimEvent {
         SimEvent::Landed { callsign: "A".into(), minutes }

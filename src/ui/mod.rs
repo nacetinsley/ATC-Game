@@ -706,5 +706,24 @@ fn draw_end(world: &World, end: ShiftEnd) {
         draw_text(&line, x, y, 20.0, if incident.points < 0 { BAD } else { DIM });
         y += 22.0;
     }
+
+    // Each emergency and how it ended, in a column to the right.
+    if !score.emergencies.is_empty() {
+        let ex = (screen_width() * 0.55).max(x + 620.0);
+        draw_text("Emergencies", ex, 206.0, 24.0, TEXT);
+        let mut ey = 232.0;
+        let room = ((screen_height() - ey - 70.0) / 22.0).max(0.0) as usize;
+        for record in score.emergencies.iter().take(room) {
+            let line = format!(
+                "{:02}:{:02}  {}",
+                (record.declared_at / 60.0) as i32,
+                (record.declared_at % 60.0) as i32,
+                record.summary()
+            );
+            let bad = matches!(record.outcome, crate::sim::scoring::EmergencyOutcome::Diverted) || record.go_arounds > 0;
+            draw_text(&line, ex, ey, 20.0, if bad { BAD } else { DIM });
+            ey += 22.0;
+        }
+    }
     draw_text("Press ENTER for another shift", x, screen_height() - 30.0, 28.0, TITLE);
 }

@@ -321,7 +321,7 @@ fn draw_target(world: &World, ui: &UiState, ac: &Aircraft, track: &RadarTrack) {
     let emergency = ac.emergency.as_ref().filter(|e| e.declared()).map(|e| e.tag());
     if matches!(ac.phase, Phase::TowerHandedOff | Phase::Rollout) && !selected {
         draw_text(format!("{altitude} {speed}"), p.x + 10.0, p.y - 6.0, BLOCK_FONT, color);
-        if let Some(tag) = emergency {
+        if let Some(tag) = emergency.filter(|_| ui.acknowledged.contains(&ac.id) || flash()) {
             draw_text(tag, p.x + 10.0, p.y - 6.0 - BLOCK_LINE, BLOCK_FONT, CRITICAL);
         }
         return;
@@ -356,8 +356,15 @@ fn draw_target(world: &World, ui: &UiState, ac: &Aircraft, track: &RadarTrack) {
         format!("{altitude} {}", ac.ty.designator)
     };
     text(&second, 1.0, color);
-    // An emergency code timeshares with the scratchpad, in red.
+    // An emergency code blinks in red until the aircraft is selected, then
+    // timeshares with the scratchpad.
+    let acknowledged = ui.acknowledged.contains(&ac.id);
     match emergency {
+        Some(tag) if !acknowledged => {
+            if flash() {
+                text(tag, 2.0, CRITICAL);
+            }
+        }
         Some(tag) if timeshare() => text(tag, 2.0, CRITICAL),
         _ => text(&scratchpad(world, ac), 2.0, color),
     }

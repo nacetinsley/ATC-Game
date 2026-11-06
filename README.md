@@ -104,7 +104,7 @@ Each IFR movement has a chance of an emergency, so busier shifts see more:
 
 The pilot declares on your frequency ("Mayday, mayday, mayday...", or
 "Pan-pan" for a medical), the alert sounds, and the data block shows `EM` in
-red (`RDOF` for a radio failure). The strip reads `EMRG ENG`, `EMRG FUEL` and
+red (`RDOF` for a radio failure), blinking until you select the aircraft. The strip reads `EMRG ENG`, `EMRG FUEL` and
 so on, and moves to the top of the board.
 
 - **Medical:** wants priority, and paramedics at the gate. Ground earns a
@@ -115,6 +115,8 @@ so on, and moves to the top of the board.
   above the field, climbs at a third of its normal rate, and asks to come
   back. It refuses high altitudes and high speeds. With Approach automated, it
   turns up on final again a few minutes later.
+- **Tower-only positions:** the automated Approach puts an emergency on a
+  6-mile final, rather than the usual 10, when there's a gap for it.
 - **Pressurization failure** (Approach only): Center hands it over at 16,000
   or 17,000 ft. Soon after, it descends at 6,000 fpm to 10,000 ft (or the MVA)
   and ignores altitude instructions on the way down. Separation lost during
@@ -132,6 +134,7 @@ so on, and moves to the top of the board.
 Landing an emergency earns 150 points, or 250 within 8 minutes of declaring.
 A go-around costs 150 and a low-fuel diversion 300. The automated Tower holds
 departures while an emergency is within 10 miles of landing on the same runway.
+The end-of-shift screen lists every emergency and how it ended.
 
 ## Tutorials
 

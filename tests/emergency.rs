@@ -249,6 +249,10 @@ fn with_approach_automated_an_engine_failure_returns_on_final() {
     run_until(&mut world, 900.0, &mut events, |w| {
         w.find(id).is_some_and(|a| a.phase == Phase::TowerHandedOff)
     });
+    // With final empty it gets the short final.
+    let back = world.find(id).unwrap();
+    let along = world.airport.runways[back.approach_runway.unwrap()].along(back.pos);
+    assert!((along - 6.0).abs() < 0.2, "{along}");
     run_until(&mut world, 600.0, &mut events, |w| {
         w.find(id).is_none_or(|a| a.on_ground)
     });

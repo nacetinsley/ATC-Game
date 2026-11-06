@@ -10,7 +10,7 @@ use crate::sim::clearance::{Clearance, PendingClearance};
 use crate::sim::positions::{Position, Staffing};
 use crate::sim::units::vec_heading;
 use macroquad::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const TARGET_HIT_PX: f32 = 12.0;
 const FIX_SNAP_PX: f32 = 14.0;
@@ -61,6 +61,8 @@ pub struct UiState {
     pub lesson: bool,
     /// Something else used Enter this frame (turning a lesson page), so it doesn't transmit.
     pub enter_taken: bool,
+    /// Emergencies the player has selected: their EM tag stops blinking.
+    pub acknowledged: HashSet<u32>,
 }
 
 impl UiState {
@@ -82,6 +84,7 @@ impl UiState {
             clock_start: macroquad::miniquad::date::now(),
             lesson: false,
             enter_taken: false,
+            acknowledged: HashSet::new(),
         };
         ui.frame_views(airport);
         ui
@@ -333,6 +336,9 @@ impl UiState {
         }
         self.handle_keys(world);
         self.handle_mouse(world);
+        if let Some(id) = self.selected.filter(|&id| world.find(id).is_some_and(|a| a.in_emergency())) {
+            self.acknowledged.insert(id);
+        }
     }
 
     fn handle_keys(&mut self, world: &mut World) {

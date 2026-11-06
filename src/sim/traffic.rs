@@ -271,6 +271,10 @@ impl World {
         ac.entered_sector = self.airport.in_sector(pos);
         ac.freq_since = self.time;
         self.roll_arrival_emergency(&mut ac, true);
+        // The automated Approach gives an emergency a short final if there's a gap.
+        if ac.emergency.is_some() {
+            self.priority_final(&mut ac, rwy);
+        }
         // Radio failures say nothing, and emergencies make their own call.
         if self.config.staffing.local && ac.emergency.is_none() {
             let line = format!(
