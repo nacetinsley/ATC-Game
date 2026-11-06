@@ -286,7 +286,7 @@ cargo run --release
 To build a double-clickable `Air Traffic Control.app` on a Mac:
 
 ```sh
-cargo install cargo-bundle
+cargo install cargo-bundle --locked
 cargo bundle --release
 ```
 
