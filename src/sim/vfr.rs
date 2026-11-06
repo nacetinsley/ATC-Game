@@ -664,6 +664,11 @@ impl World {
         if toward > 0.0 {
             ac.target_altitude = ac.altitude;
         }
+        // The higher of the two climbs clear; the lower one has the ground
+        // under it. Turning traffic can close faster than a turn opens it up.
+        if ac.altitude >= other_altitude {
+            ac.target_altitude = ac.target_altitude.max(other_altitude + AVOID_CPA_FT);
+        }
     }
 
     /// Seconds until an airborne aircraft needs this physical runway clear,

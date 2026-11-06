@@ -8,6 +8,7 @@ pub mod clearance;
 pub mod conflict;
 pub mod emergency;
 pub mod ground;
+pub mod holding;
 pub mod performance;
 pub mod positions;
 pub mod scoring;
@@ -119,6 +120,9 @@ pub struct WorldConfig {
     pub vfr: bool,
     /// How often emergencies happen.
     pub emergencies: emergency::EmergencyRate,
+    /// UTC at the start of the shift, seconds (only the time of day counts):
+    /// for clock times said on the radio.
+    pub clock_start: f64,
 }
 
 impl Default for WorldConfig {
@@ -132,6 +136,7 @@ impl Default for WorldConfig {
             staffing: positions::Staffing::default(),
             vfr: false,
             emergencies: emergency::EmergencyRate::Off,
+            clock_start: 0.0,
         }
     }
 }
@@ -260,6 +265,21 @@ impl World {
         }
     }
 
+    /// HHMM UTC at a sim time, as said on the radio and written on strips.
+    pub fn utc(&self, time: f32) -> String {
+        let utc = (self.config.clock_start + time as f64).rem_euclid(86_400.0) as u64;
+        format!("{:02}{:02}", utc / 3600, utc / 60 % 60)
+    }
+
+    pub fn clock_start(&self) -> f64 {
+        self.config.clock_start
+    }
+
+    /// Set the UTC clock, seconds into the day at sim time zero.
+    pub fn set_clock_start(&mut self, utc: f64) {
+        self.config.clock_start = utc;
+    }
+
     pub fn shift_seconds(&self) -> f32 {
         self.config.shift_seconds
     }
@@ -353,6 +373,7 @@ impl World {
         self.run_local();
         self.run_ground();
         self.run_automated_approach();
+        self.run_holding();
         self.check_handoffs();
         self.check_sector();
         self.run_safety_net();

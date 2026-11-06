@@ -232,6 +232,9 @@ pub struct Airport {
     pub fixes: Vec<Fix>,
     pub stars: Vec<Star>,
     pub sids: Vec<Sid>,
+    /// Published holding patterns.
+    #[serde(default)]
+    pub holds: Vec<super::holding::HoldData>,
     /// Taxiways, hold lines and parking, for the tower positions.
     pub ground: Option<GroundData>,
     /// `ground` built into a routing graph at load.
@@ -321,6 +324,14 @@ impl Airport {
                 }
             }
         }
+        for hold in &self.holds {
+            if self.fix_index(&hold.fix).is_none() {
+                return Err(format!("hold at unknown fix {}", hold.fix));
+            }
+            if self.holds.iter().filter(|h| h.fix == hold.fix).count() > 1 {
+                return Err(format!("two holds at {}", hold.fix));
+            }
+        }
         if let Some(traffic) = &self.traffic {
             if traffic.fleet.is_empty() || traffic.fleet.len() != traffic.fleet_weights.len() {
                 return Err("traffic fleet and weights must match and not be empty".into());
@@ -335,6 +346,12 @@ impl Airport {
             }
         }
         Ok(())
+    }
+
+    /// The published hold at a fix, if there is one.
+    pub fn published_hold(&self, fix: usize) -> Option<&super::holding::HoldData> {
+        let name = &self.fixes.get(fix)?.name;
+        self.holds.iter().find(|h| &h.fix == name)
     }
 
     pub fn fix_index(&self, name: &str) -> Option<usize> {

@@ -1,12 +1,16 @@
 //! Seeded traffic generation and the difficulty ramp.
 
 use super::aircraft::{Aircraft, Flow, Lateral, Phase};
+use super::holding::{self, HoldState};
 use super::performance::{AircraftType, DEFAULT_FLEET_SIZE, TYPES, WakeCategory, aircraft_type};
 use super::registration;
 use super::tower::{FINAL_SPAWN_NM, queued_departure};
 use super::units::{heading_vec, vec_heading};
 use super::World;
 use glam::Vec2;
+
+/// A held arrival starts this far out on the hold's inbound course, NM.
+const HOLD_SPAWN_NM: f32 = 3.0;
 
 /// The default shift for a `WorldConfig`: what tests and headless runs use.
 /// The game's menu picks its own length, an hour unless changed.
@@ -263,29 +267,46 @@ impl World {
     }
 
     /// With nobody working Approach, arrivals turn up established on the ILS,
-    /// already talking to Tower.
+    /// already talking to Tower. While the runway can't take them, or the
+    /// final is full, the automated Approach holds them instead.
     fn spawn_final_arrival(&mut self) -> bool {
-        if !self.room_on_final() {
-            return false;
+        if self.arrivals_held() || !self.room_on_final() {
+            return self.spawn_holding_arrival();
         }
-        let rwy = self.arrival_runway();
-        let runway = self.airport.runways[rwy].clone();
         let ty = self.pick_type();
         let callsign = self.new_callsign(ty);
+        let id = self.next_id();
+        let time = self.time;
+        self.place_on_final(id, callsign, ty, time, true);
+        true
+    }
+
+    /// Put an arrival on a 10-mile final, talking to Tower.
+    pub(super) fn place_on_final(
+        &mut self,
+        id: u32,
+        callsign: String,
+        ty: &'static AircraftType,
+        spawn_time: f32,
+        roll_emergency: bool,
+    ) {
+        let rwy = self.arrival_runway();
+        let runway = self.airport.runways[rwy].clone();
         let pos = runway.threshold() - heading_vec(runway.heading) * FINAL_SPAWN_NM;
         let altitude = self.airport.glideslope_altitude(rwy, FINAL_SPAWN_NM);
         let speed = ty.max_speed.min(180.0);
-        let id = self.next_id();
         let mut ac = Aircraft::new(id, callsign, Flow::Arrival, ty, pos, runway.heading, altitude, speed);
         ac.phase = Phase::TowerHandedOff;
         ac.lateral = Lateral::Localizer;
         ac.approach_runway = Some(rwy);
         ac.on_glideslope = true;
-        ac.spawn_time = self.time;
+        ac.spawn_time = spawn_time;
         ac.msaw_armed = false;
         ac.entered_sector = self.airport.in_sector(pos);
         ac.freq_since = self.time;
-        self.roll_arrival_emergency(&mut ac, true);
+        if roll_emergency {
+            self.roll_arrival_emergency(&mut ac, true);
+        }
         // The automated Approach gives an emergency a short final if there's a gap.
         if ac.emergency.is_some() {
             self.priority_final(&mut ac, rwy);
@@ -300,6 +321,26 @@ impl World {
             );
             self.say(super::Speaker::Pilot, line);
         }
+        self.add_aircraft(ac);
+    }
+
+    /// A new arrival for the automated Approach to hold: at the bottom free
+    /// level of the least busy published hold it can use.
+    fn spawn_holding_arrival(&mut self) -> bool {
+        let ty = self.pick_type();
+        let Some((fix, altitude)) = self.automated_hold_slot() else { return false };
+        let callsign = self.new_callsign(ty);
+        let id = self.next_id();
+        let spec = self.airport.published_hold(fix).expect("slots are published holds");
+        let inbound = spec.inbound;
+        let pos = self.airport.fixes[fix].pos() - heading_vec(inbound) * HOLD_SPAWN_NM;
+        let speed = holding::max_speed(altitude).min(ty.max_speed);
+        let mut ac = Aircraft::new(id, callsign, Flow::Arrival, ty, pos, inbound, altitude, speed);
+        ac.spawn_time = self.time;
+        ac.entered_sector = true;
+        ac.freq_since = self.time;
+        let spec = self.hold_for(&ac, fix);
+        ac.lateral = Lateral::Hold(HoldState::new(spec));
         self.add_aircraft(ac);
         true
     }

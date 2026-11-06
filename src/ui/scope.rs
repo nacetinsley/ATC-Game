@@ -3,11 +3,12 @@
 //! Targets come from radar returns only.
 
 use super::camera::clip;
-use super::input::{Drag, UiState};
+use super::input::{Drag, UiState, ctrl_down};
 use crate::sim::aircraft::{Aircraft, Flow, Lateral, Phase};
 use crate::sim::airspace::Airport;
+use crate::sim::holding::{self, HoldSpec};
 use crate::sim::positions::Position;
-use crate::sim::units::{format_heading, heading_vec};
+use crate::sim::units::{format_heading, heading_vec, tas_from_ias};
 use crate::sim::{RadarTrack, World};
 use macroquad::prelude::*;
 
@@ -45,6 +46,13 @@ const WARNING: Color = Color::new(1.00, 0.85, 0.10, 1.0);
 const CRITICAL: Color = Color::new(1.00, 0.15, 0.15, 1.0);
 const REFERENCE: Color = Color::new(0.45, 0.45, 0.55, 1.0);
 const GHOST: Color = Color::new(1.00, 0.95, 0.40, 1.0);
+/// Published holds on the map, and brighter while someone is in one.
+const HOLD: Color = Color::new(0.22, 0.22, 0.26, 1.0);
+const HOLD_BUSY: Color = Color::new(0.40, 0.40, 0.55, 1.0);
+/// Published holds without a minimum altitude are drawn as if flown here, feet.
+const HOLD_DRAW_ALTITUDE: f32 = 6000.0;
+/// The scratchpad shows EFC from this long before it, seconds.
+const EFC_WARNING_S: f32 = 120.0;
 
 // Strip colours in the side panel, kept distinct by flow and phase.
 const STRIP_CONTROLLED: Color = Color::new(0.35, 0.95, 0.45, 1.0);
@@ -209,6 +217,18 @@ fn draw_map(airport: &Airport, world: &World, ui: &UiState, inset: bool) {
         draw_text(&fix.name, p.x + 6.0, p.y + 4.0, 14.0, FIX);
     }
 
+    for hold in &airport.holds {
+        let Some(fix) = airport.fix_index(&hold.fix) else { continue };
+        let spec = HoldSpec::published(hold, fix, 0.0);
+        let altitude = hold.altitude.unwrap_or(HOLD_DRAW_ALTITUDE);
+        let busy = world
+            .aircraft
+            .iter()
+            .any(|a| matches!(a.lateral, Lateral::Hold(h) if h.spec.fix == fix));
+        let tas = tas_from_ias(holding::max_speed(altitude), altitude);
+        draw_racetrack(ui, airport, &spec, tas, altitude, if busy { HOLD_BUSY } else { HOLD });
+    }
+
     for reference in &airport.references {
         let p = ui.camera.to_screen(glam::Vec2::new(reference.x, reference.y));
         draw_line(p.x - 5.0, p.y, p.x + 5.0, p.y, 1.5, REFERENCE);
@@ -245,6 +265,18 @@ fn draw_map(airport: &Airport, world: &World, ui: &UiState, inset: bool) {
     draw_text(&runway.id, label.x, label.y, 16.0, CENTERLINE);
 }
 
+/// A holding pattern's racetrack, for an aircraft at `tas` and `altitude`.
+fn draw_racetrack(ui: &UiState, airport: &Airport, spec: &HoldSpec, tas: f32, altitude: f32, color: Color) {
+    let points: Vec<Vec2> = spec
+        .outline(airport.fixes[spec.fix].pos(), tas, altitude)
+        .into_iter()
+        .map(|p| ui.camera.to_screen(p))
+        .collect();
+    for pair in points.windows(2) {
+        draw_line(pair[0].x, pair[0].y, pair[1].x, pair[1].y, 1.0, color);
+    }
+}
+
 fn draw_dashed(a: Vec2, b: Vec2, color: Color) {
     let length = a.distance(b);
     if length < 1.0 {
@@ -265,6 +297,13 @@ fn scratchpad(world: &World, ac: &Aircraft) -> String {
     let airport = &world.airport;
     if let Some(vfr) = &ac.vfr {
         return format!("VFR {}", crate::sim::vfr::leg_label(vfr));
+    }
+    if let Lateral::Hold(state) = ac.lateral {
+        let tag = if world.time >= state.spec.efc - EFC_WARNING_S { "EFC" } else { "HLD" };
+        // Timeshared with the fix, to fit the block.
+        let fix: String = airport.fixes[state.spec.fix].name.chars().take(5).collect();
+        let shown = if timeshare() { tag.to_string() } else { fix };
+        return format!("{:03.0} {shown}", ac.target_altitude / 100.0);
     }
     let intent = match ac.phase {
         Phase::ClearedApproach | Phase::Localizer | Phase::Glideslope => {
@@ -380,6 +419,17 @@ fn draw_pending(world: &World, ui: &UiState) {
     let Some(track) = world.track(id) else { return };
     let start = ui.camera.to_screen(track.pos);
 
+    let Some(ac) = world.find(id) else { return };
+    // Its hold, or the one about to be given.
+    if let Lateral::Hold(state) = ac.lateral {
+        draw_racetrack(ui, &world.airport, &state.spec, ac.tas(), ac.altitude, HOLD_BUSY);
+    }
+    if let Some(spec) = ui.pending.hold {
+        draw_dashed(start, ui.camera.to_screen(world.airport.fixes[spec.fix].pos()), GHOST);
+        let color = if world.hold_fits(ac, spec.fix) { GHOST } else { WARNING };
+        draw_racetrack(ui, &world.airport, &spec, ac.tas(), ac.altitude, color);
+    }
+
     if let Some(fix) = ui.pending.direct {
         draw_dashed(start, ui.camera.to_screen(world.airport.fixes[fix].pos()), GHOST);
     } else if let Some(heading) = ui.pending.heading {
@@ -391,6 +441,16 @@ fn draw_pending(world: &World, ui: &UiState) {
         && drag_id == id {
             let mouse = Vec2::from(mouse_position());
             let (end, label) = match ui.fix_under(world, mouse) {
+                Some(fix) if ctrl_down() => {
+                    // Amber when the hold would take it out of the sector.
+                    let spec = world.hold_for(ac, fix);
+                    let color = if world.hold_fits(ac, fix) { GHOST } else { WARNING };
+                    draw_racetrack(ui, &world.airport, &spec, ac.tas(), ac.altitude, color);
+                    (
+                        ui.camera.to_screen(world.airport.fixes[fix].pos()),
+                        format!("HOLD {}", world.airport.fixes[fix].name),
+                    )
+                }
                 Some(fix) => (
                     ui.camera.to_screen(world.airport.fixes[fix].pos()),
                     format!("DIRECT {}", world.airport.fixes[fix].name),

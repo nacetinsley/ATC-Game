@@ -97,6 +97,37 @@ wind round over a few minutes.
 - **Automated Tower** won't release a departure into the new direction while
   an arrival is still landing the old way.
 
+## Holding
+
+Approach (and Tower, for a missed approach) can hold an arrival at a fix.
+
+- **Giving it:** press H to hold at the fix the aircraft is flying to, or its
+  next route fix; with neither, it holds at the nearest fix within 5 NM.
+  Ctrl-drag (Cmd-drag on a Mac) from the target onto any fix to hold there.
+  The racetrack is previewed on the scope before you transmit.
+- **Wording:** a published hold is "hold northeast of ALDER as published,
+  expect further clearance 1435". At other fixes the pilot is given the
+  course: "hold west of TOPAZ on the 090 course inbound, right turns,
+  1-minute legs, expect further clearance 1435". The EFC is ten minutes on.
+- **Flying it:** the pilot picks a direct, teardrop or parallel entry from
+  the heading it arrives on (AIM 5-3-8), slows to the holding speed (200 kt to
+  6,000 ft, 230 kt to 14,000 ft), and flies 1-minute legs (1.5 minutes above
+  14,000 ft) at a standard-rate turn, correcting for wind. Altitudes are
+  yours to assign, so a stack is just aircraft 1,000 ft apart.
+- **Leaving it:** a heading, a direct or R. R takes it on along its route
+  past the hold fix. Clear it for the approach only after vectoring it out
+  of the hold.
+- **EFC:** the data block reads `HLD` (and `EFC` a couple of minutes before
+  it), and the strip says `EFC` a minute before. At the EFC the pilot asks
+  for further clearance; two minutes past it with nothing new costs points.
+  A new hold instruction gives a new EFC.
+- **Published holds** are drawn faintly on the scope, brighter while
+  someone is in one. Harrowgate has holds at its eight feeder fixes; KSUS has
+  the seven in the FAA CIFP, FTZ's missed-approach hold among them.
+- **Automated Approach:** on Tower positions, when the final is full or the
+  runway can't take arrivals, new arrivals wait in the published holds,
+  stacked from 5,000 ft, and are sent to final lowest first as room opens.
+
 ## Emergencies
 
 The start menu sets how often things go wrong (E steps through the levels).
@@ -176,7 +207,7 @@ Blocks 10 to 18 are set by each facility. This game's facility directive:
 | 10, 11, 12 | Runway, ATIS letter, taxi route |
 | 13 | Ground: `HP` hold position, `HS27L` holding short, `X27L` crossing |
 | 14 | Local: `L` cleared to land and `MA` missed approach (from the order's tables), `T→` takeoff, `LUAW`, `TG`, `OPT`, VFR pattern marks |
-| 15 | Approach: `ILS` cleared for the approach |
+| 15 | Approach: `ILS` cleared for the approach; `H ALDER 35` holding at ALDER, expect further clearance at 35 past the hour |
 | 16 | Time of the block 14 mark |
 | 17 | Handoff: the next position, struck through once it has the aircraft |
 | 18 | What it's waiting for from you |
@@ -326,7 +357,8 @@ the Actions tab and download the zips from the run.
 | G | Go around |
 | Click a hold line, gate or junction | Taxi the selected aircraft there |
 | Ctrl-click a taxiway | Add it to the taxi route ("via") |
-| H | Hold position, or continue |
+| H | On the ground: hold position, or continue. In the air: hold at the fix it's flying to |
+| Ctrl-drag onto a fix (Cmd on a Mac) | Hold at that fix |
 | X | Cross the runway ahead |
 | W / K | Line up and wait / Cleared for takeoff |
 | L | Cleared to land (a full stop, for VFR) |

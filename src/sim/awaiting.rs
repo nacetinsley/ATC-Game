@@ -4,7 +4,7 @@
 //! points.
 
 use super::World;
-use super::aircraft::{Aircraft, Flow, Leg, Phase, VfrIntent};
+use super::aircraft::{Aircraft, Flow, Lateral, Leg, Phase, VfrIntent};
 use super::positions::Position;
 use super::tower::TOWER_HANDOFF_GATE_NM;
 
@@ -17,6 +17,8 @@ const TOWER_HANDOFF_WARNING_NM: f32 = 4.0;
 const CENTER_HANDOFF_NM: f32 = 12.0;
 /// A check-in stays flagged this long if nothing is said, seconds.
 const CHECK_IN_S: f32 = 90.0;
+/// A holding aircraft is flagged this long before its EFC, seconds.
+const EFC_NOTICE_S: f32 = 60.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Awaiting {
@@ -36,6 +38,8 @@ pub enum Awaiting {
     FrequencyChange,
     /// Just called you, and hasn't been told anything yet.
     CheckIn,
+    /// Holding, and its expect-further-clearance time is close or gone.
+    Efc,
 }
 
 impl Awaiting {
@@ -50,12 +54,13 @@ impl Awaiting {
             Awaiting::ReadyToTaxi => "TAXI",
             Awaiting::FrequencyChange => "FREQ",
             Awaiting::CheckIn => "CALL",
+            Awaiting::Efc => "EFC",
         }
     }
 
     /// About to cost points.
     pub fn urgent(self) -> bool {
-        matches!(self, Awaiting::LandingClearance | Awaiting::HandoffDue)
+        matches!(self, Awaiting::LandingClearance | Awaiting::HandoffDue | Awaiting::Efc)
     }
 }
 
@@ -99,6 +104,12 @@ impl World {
 
         if self.handoff_due(ac) {
             return Some(Awaiting::HandoffDue);
+        }
+
+        if let Lateral::Hold(hold) = ac.lateral
+            && self.time >= hold.spec.efc - EFC_NOTICE_S
+        {
+            return Some(Awaiting::Efc);
         }
 
         if ac.on_ground {

@@ -2,6 +2,7 @@
 
 use super::aircraft::{Aircraft, Lateral};
 use super::airspace::{Airport, Runway};
+use super::holding::Flight;
 use super::units::{heading_diff, heading_for_track, vec_heading};
 use glam::Vec2;
 
@@ -11,9 +12,16 @@ const FIX_CAPTURE_NM: f32 = 1.5;
 const LOCALIZER_GAIN: f32 = 25.0;
 const LOCALIZER_MAX_CUT: f32 = 30.0;
 
-pub fn desired_heading(ac: &mut Aircraft, wind: Vec2, airport: &Airport) -> f32 {
+pub fn desired_heading(ac: &mut Aircraft, wind: Vec2, airport: &Airport, dt: f32) -> f32 {
     let tas = ac.tas();
     match ac.lateral {
+        Lateral::Hold(mut state) => {
+            let fix = airport.fixes[state.spec.fix].pos();
+            let flight = Flight { pos: ac.pos, heading: ac.heading, altitude: ac.altitude, tas };
+            let heading = state.steer(flight, wind, fix, dt);
+            ac.lateral = Lateral::Hold(state);
+            heading
+        }
         Lateral::Heading(heading) => heading,
         Lateral::Direct(fix) => {
             let to_fix = airport.fixes[fix].pos() - ac.pos;

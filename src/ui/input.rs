@@ -182,9 +182,17 @@ impl UiState {
         }
     }
 
-    /// Hold position, or continue if already holding.
+    /// H: on the ground, hold position, or continue if already holding. In
+    /// the air, hold at the fix it's flying to, or the nearest one.
     pub fn hold(&mut self, world: &World) {
         let Some(ac) = self.selected.and_then(|id| world.find(id)) else { return };
+        if !ac.on_ground {
+            let fix = self.pending.direct.or_else(|| world.hold_fix_for(ac));
+            if let Some(fix) = fix {
+                self.pending.set_hold(world.hold_for(ac, fix));
+            }
+            return;
+        }
         let holding = ac.taxi.as_ref().is_some_and(|t| t.holding);
         self.pending.add_tower(if holding { Clearance::ContinueTaxi } else { Clearance::HoldPosition });
     }
@@ -529,7 +537,7 @@ impl UiState {
         }
         let selected = self.selected.and_then(|id| world.find(id)).filter(|a| a.on_ground);
         if selected.is_some() {
-            if is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl) {
+            if ctrl_down() {
                 if let Some(name) = surface::taxiway_at(map, &self.surface, mouse) {
                     self.toggle_via(name);
                 }
@@ -587,7 +595,10 @@ impl UiState {
 
     fn finish_vector(&mut self, world: &World, id: u32, mouse: Vec2) {
         if let Some(fix) = self.fix_under(world, mouse) {
-            self.pending.set_direct(fix);
+            match world.find(id).filter(|_| ctrl_down()) {
+                Some(ac) => self.pending.set_hold(world.hold_for(ac, fix)),
+                None => self.pending.set_direct(fix),
+            }
         } else if let Some(heading) = self.drag_heading(world, id, mouse) {
             self.pending.set_heading(heading);
         }
@@ -604,4 +615,12 @@ impl UiState {
         let magnetic = world.airport.to_magnetic(vec_heading(to_mouse));
         Some(world.airport.to_true((magnetic / 5.0).round() * 5.0))
     }
+}
+
+/// Either Control key, or Command on a Mac: Ctrl-drag holds, Ctrl-click
+/// routes via a taxiway.
+pub fn ctrl_down() -> bool {
+    [KeyCode::LeftControl, KeyCode::RightControl, KeyCode::LeftSuper, KeyCode::RightSuper]
+        .into_iter()
+        .any(is_key_down)
 }

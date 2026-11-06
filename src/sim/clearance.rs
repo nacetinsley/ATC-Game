@@ -3,6 +3,7 @@
 use super::aircraft::{Aircraft, Flow, Landing, Lateral, Leg, Phase, StripMark, Taxi, VfrIntent};
 use super::airspace::Airport;
 use super::ground_map::GroundMap;
+use super::holding::{HoldSpec, HoldState};
 use super::positions::{Position, Staffing};
 use super::scoring::{GoAroundReason, SimEvent};
 use super::units::{format_heading, heading_diff, normalize_heading};
@@ -54,6 +55,8 @@ pub enum Clearance {
     Follow { id: u32, traffic: String },
     ClearedTouchAndGo(usize),
     ClearedOption(usize),
+    /// Hold at a fix.
+    Hold(HoldSpec),
 }
 
 impl Clearance {
@@ -86,6 +89,7 @@ impl Clearance {
             | Clearance::ClearedTouchAndGo(_)
             | Clearance::ClearedOption(_) => &[Local],
             Clearance::ContactTower => &[Ground],
+            Clearance::Hold(_) => &[Approach, Local],
         }
     }
 }
@@ -231,6 +235,24 @@ pub fn phrase(clearance: &Clearance, ac: &Aircraft, airport: &Airport) -> String
         Clearance::ClearedOption(e) => {
             format!("runway {}, cleared for the option", airport.runways[*e].id)
         }
+        Clearance::Hold(spec) => hold_phrase(spec, airport),
+    }
+}
+
+/// 7110.65 4-6-4: the hold, then when to expect further clearance.
+fn hold_phrase(spec: &HoldSpec, airport: &Airport) -> String {
+    let fix = &airport.fixes[spec.fix].name;
+    let side = compass(spec.direction());
+    let efc = format!("expect further clearance {:04}", spec.efc_hhmm);
+    if spec.published {
+        format!("hold {side} of {fix} as published, {efc}")
+    } else {
+        format!(
+            "hold {side} of {fix} on the {} course inbound, {} turns, {}, {efc}",
+            format_heading(airport.to_magnetic(spec.inbound)),
+            spec.turns.word(),
+            spec.leg.words()
+        )
     }
 }
 
@@ -533,11 +555,33 @@ fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), 
             ac.lateral = Lateral::Direct(*f);
         }
         Clearance::ResumeRoute => {
+            // Out of a hold at a fix on the route: on to the next one.
+            if let Lateral::Hold(state) = ac.lateral
+                && ac.route.get(ac.route_index) == Some(&state.spec.fix)
+            {
+                ac.route_index += 1;
+            }
             if ac.route_index >= ac.route.len() {
                 return Err("no route remaining".into());
             }
             break_approach(ac);
             ac.lateral = Lateral::Route;
+        }
+        Clearance::Hold(spec) => {
+            if ac.on_ground {
+                return Err("we're on the ground".into());
+            }
+            if ac.vfr.is_some() {
+                return Err("we're VFR".into());
+            }
+            if ac.on_glideslope || matches!(ac.phase, Phase::TowerHandedOff) {
+                return Err("established on the approach".into());
+            }
+            break_approach(ac);
+            ac.lateral = Lateral::Hold(HoldState::new(*spec));
+        }
+        Clearance::ClearedIls(_) if matches!(ac.lateral, Lateral::Hold(_)) => {
+            return Err("in the hold, request vectors".into());
         }
         Clearance::ClearedIls(r) => {
             check_ils(ac, *r, airport, ctx.arrival_runway)?;
@@ -785,6 +829,7 @@ pub struct PendingClearance {
     pub speed: Option<f32>,
     pub direct: Option<usize>,
     pub resume: bool,
+    pub hold: Option<HoldSpec>,
     pub ils: Option<usize>,
     pub go_around: bool,
     pub handoff_tower: bool,
@@ -803,6 +848,7 @@ impl PendingClearance {
         self.heading = Some(normalize_heading(heading));
         self.direct = None;
         self.resume = false;
+        self.hold = None;
     }
 
     pub fn nudge_heading(&mut self, ac: &Aircraft, degrees: f32) {
@@ -829,12 +875,27 @@ impl PendingClearance {
         self.direct = Some(fix);
         self.heading = None;
         self.resume = false;
+        self.hold = None;
     }
 
     pub fn set_resume(&mut self) {
         self.resume = true;
         self.heading = None;
         self.direct = None;
+        self.hold = None;
+    }
+
+    /// Hold at a fix. Replaces any heading, fix or route instruction, and
+    /// pressing it again takes it back.
+    pub fn set_hold(&mut self, spec: HoldSpec) {
+        if self.hold.is_some_and(|h| h.fix == spec.fix) {
+            self.hold = None;
+            return;
+        }
+        self.hold = Some(spec);
+        self.heading = None;
+        self.direct = None;
+        self.resume = false;
     }
 
     /// Add a surface or runway instruction, replacing one of the same kind.
@@ -855,6 +916,9 @@ impl PendingClearance {
         }
         if self.resume {
             out.push(Clearance::ResumeRoute);
+        }
+        if let Some(spec) = self.hold {
+            out.push(Clearance::Hold(spec));
         }
         if let Some(a) = self.altitude {
             out.push(Clearance::Altitude(a));

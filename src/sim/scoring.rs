@@ -15,6 +15,7 @@ pub const PENALTY_LOW_EXIT: i32 = -50;
 pub const PENALTY_LATE_HANDOFF: i32 = -75;
 pub const PENALTY_GO_AROUND: i32 = -25;
 pub const PENALTY_LATE_ACCEPT: i32 = -25;
+pub const PENALTY_MISSED_EFC: i32 = -25;
 pub const POINTS_PARKED: i32 = 50;
 pub const PENALTY_INCURSION: i32 = -400;
 pub const PENALTY_RUNWAY_SEPARATION: i32 = -300;
@@ -62,6 +63,8 @@ pub enum SimEvent {
     LowExit { callsign: String },
     LateAccept { callsign: String },
     LateHandoff { callsign: String },
+    /// Left in a hold past its expect-further-clearance time.
+    MissedEfc { callsign: String },
     /// An aircraft entered a runway with landing traffic close in or a departure rolling.
     RunwayIncursion { callsign: String },
     /// Takeoff begun with the runway still occupied.
@@ -312,6 +315,13 @@ impl Score {
                     time,
                     format!("{callsign} not handed to Tower by 5 NM final"),
                     PENALTY_LATE_HANDOFF,
+                );
+            }
+            SimEvent::MissedEfc { callsign } => {
+                self.incident(
+                    time,
+                    format!("{callsign} left holding past its EFC with no further clearance"),
+                    PENALTY_MISSED_EFC,
                 );
             }
             SimEvent::RunwayIncursion { callsign } => {

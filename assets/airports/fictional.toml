@@ -265,6 +265,50 @@ config = "East"
 fixes = ["MAPLE", "OAKEN", "RENDL"]
 exit_altitude = 15000.0
 
+# Holding patterns at the feeder fixes, on the arrival course from each gate,
+# with the racetrack on the gate side. The gates themselves sit on the sector
+# edge, where any hold would swing outside it.
+
+[[holds]]
+fix = "ALDER"
+inbound = 216.0
+turns = "right"
+
+[[holds]]
+fix = "BRICK"
+inbound = 324.0
+turns = "right"
+
+[[holds]]
+fix = "CEDAR"
+inbound = 120.0
+turns = "right"
+
+[[holds]]
+fix = "DOVER"
+inbound = 60.0
+turns = "right"
+
+[[holds]]
+fix = "GLADE"
+inbound = 240.0
+turns = "right"
+
+[[holds]]
+fix = "HAZEL"
+inbound = 300.0
+turns = "right"
+
+[[holds]]
+fix = "ELMOR"
+inbound = 144.0
+turns = "right"
+
+[[holds]]
+fix = "FINCH"
+inbound = 36.0
+turns = "right"
+
 # Surface layout, for the tower positions. The terminal sits between the runways,
 # with a parallel taxiway for each (A south, B north) and a cargo ramp south of
 # 27L/09R reached by crossing it on E. Hold lines are 600 ft from the centerline.

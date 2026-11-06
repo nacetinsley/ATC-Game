@@ -50,7 +50,7 @@ const GROUND_BRIEFING: [&str; 3] = [
     "SPACING  Keep taxiing traffic apart: two aircraft nose to nose can't pass.",
 ];
 const RADAR_CONTROLS: &str =
-    "CONTROLS  Click/Tab select | Drag: heading, or onto a fix: direct | Arrows hdg, alt | +/- speed | C ILS | R route";
+    "CONTROLS  Click/Tab select | Drag: heading, or onto a fix: direct (Ctrl: hold) | Arrows hdg, alt | +/- speed | C ILS | R route | H hold";
 const TOWER_CONTROLS: &str =
     "CONTROLS  H hold/continue | X cross | W line up | K takeoff | L land | G go-around | T contact next";
 const COMMON_CONTROLS: &str = "          T handoff | ENTER send | BKSP cancel";
@@ -270,6 +270,8 @@ impl App {
         };
         self.world = new_world(airport, choice);
         self.ui = UiState::new(airport, self.staffing());
+        // The sim's clock, for EFC times, reads the same as the strips'.
+        self.world.set_clock_start(self.ui.clock_start);
         self.sounds.reset(&self.world);
         self.tutorial = None;
         self.accumulator = 0.0;
@@ -281,6 +283,7 @@ impl App {
         self.world = tutorial.world();
         self.ui = UiState::new(&self.world.airport, kind.staffing());
         self.ui.lesson = true;
+        self.world.set_clock_start(self.ui.clock_start);
         self.sounds.reset(&self.world);
         self.tutorial = Some(tutorial);
         self.accumulator = 0.0;

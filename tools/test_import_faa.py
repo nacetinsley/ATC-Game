@@ -20,6 +20,9 @@ NASR_26L = (
     "                                                                   461.9V2R  T   MALSR    YN               PIR  50"
     "                 26L258ILS        PIR  G38-39-42.9923N 139182.9923N090-38-02.7554W326282.7554W"
 )
+HM_TIMED = "SUSAP KSUSK3FI08R  I      060FTZ  K3D 0VE  R   HM                     1000T010    + 02400                     "
+HF_DISTANCE = "SUSAP KSUSK3FR08L  AEXESS 010EXESSK3PC0EE AR   HF                     07890040    + 03000     18000           "
+HM_DISTANCE = "SUSAP KSUSK3FR08L  R      080EXESSK3PC0EE  L   HM                     12000050    + 04000                     "
 ORIGIN = faa.parse_airport(AIRPORT)["pos"]
 
 
@@ -57,6 +60,26 @@ class Decoding(unittest.TestCase):
         self.assertEqual(leg["fix"], "EMKAA")
         self.assertEqual(leg["path"], "FM")
         self.assertEqual(leg["course"], "3460")
+
+    def test_timed_hold_converted_to_true(self):
+        hold = faa.parse_hold(HM_TIMED, -1.0)
+        self.assertEqual(hold["fix"], "FTZ")
+        self.assertAlmostEqual(hold["inbound"], 99.0)
+        self.assertEqual(hold["turns"], "right")
+        self.assertEqual(hold["leg_minutes"], 1.0)
+        self.assertNotIn("leg_nm", hold)
+        self.assertEqual(hold["altitude"], 2400)
+
+    def test_distance_hold(self):
+        hold = faa.parse_hold(HF_DISTANCE, 0.0)
+        self.assertAlmostEqual(hold["inbound"], 78.9)
+        self.assertEqual(hold["leg_nm"], 4.0)
+
+    def test_missed_approach_hold_wins_at_a_shared_fix(self):
+        holds = faa.build_holds([HF_DISTANCE, HM_DISTANCE], 0.0)
+        self.assertEqual(len(holds), 1)
+        self.assertEqual(holds[0]["turns"], "left")
+        self.assertEqual(holds[0]["leg_nm"], 5.0)
 
     def test_nasr_physical_ends(self):
         ends = faa.parse_nasr_runway_ends(NASR_26L)

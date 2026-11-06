@@ -137,6 +137,11 @@ x = -23.4273
 y = 18.269
 
 [[fixes]]
+name = "CHADD"
+x = 11.4987
+y = 2.234
+
+[[fixes]]
 name = "CSX"
 x = 13.6376
 y = 5.4377
@@ -167,6 +172,11 @@ x = -2.5324
 y = -4.8385
 
 [[fixes]]
+name = "EAVES"
+x = 4.9014
+y = 0.8482
+
+[[fixes]]
 name = "EERRR"
 x = 26.8627
 y = 24.3648
@@ -180,6 +190,11 @@ y = -4.1878
 name = "ESSAR"
 x = 21.3053
 y = -18.27
+
+[[fixes]]
+name = "EXESS"
+x = -11.4455
+y = -2.1598
 
 [[fixes]]
 name = "FTZ"
@@ -207,9 +222,19 @@ x = 71.7902
 y = 10.8065
 
 [[fixes]]
+name = "JOBRK"
+x = -12.0578
+y = -2.7643
+
+[[fixes]]
 name = "KLAIR"
 x = -23.8078
 y = -15.0545
+
+[[fixes]]
+name = "KORNN"
+x = 10.7782
+y = 2.5505
 
 [[fixes]]
 name = "MMRSN"
@@ -407,6 +432,55 @@ name = "PLESS5"
 config = "East"
 fixes = ["STL", "PLESS"]
 exit_altitude = 10000
+
+[[holds]]
+fix = "CHADD"
+inbound = 258.2
+turns = "right"
+leg_nm = 4
+altitude = 4000
+
+[[holds]]
+fix = "DERDF"
+inbound = 356
+turns = "right"
+leg_nm = 4
+altitude = 3000
+
+[[holds]]
+fix = "EAVES"
+inbound = 258.1
+turns = "left"
+leg_minutes = 1
+altitude = 2000
+
+[[holds]]
+fix = "EXESS"
+inbound = 77.9
+turns = "right"
+leg_nm = 4
+altitude = 3000
+
+[[holds]]
+fix = "FTZ"
+inbound = 99
+turns = "right"
+leg_minutes = 1
+altitude = 2400
+
+[[holds]]
+fix = "JOBRK"
+inbound = 77.9
+turns = "right"
+leg_nm = 4
+altitude = 3000
+
+[[holds]]
+fix = "KORNN"
+inbound = 258.2
+turns = "right"
+leg_nm = 4
+altitude = 4000
 
 [[mva]]
 altitude = 2000

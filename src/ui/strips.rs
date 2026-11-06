@@ -434,6 +434,17 @@ pub fn marks(
                 vectors.iter_mut().for_each(|p| p.struck = true);
                 revision += 1;
             }
+            // The holding fix and the EFC's minutes, as controllers write it.
+            Clearance::Hold(spec) => {
+                let name = world
+                    .airport
+                    .fixes
+                    .get(spec.fix)
+                    .map(|f| f.name.as_str())
+                    .unwrap_or("");
+                directs.push(Pen::hand(format!("H {name} {:02}", spec.efc_hhmm % 100)));
+                vectors.iter_mut().for_each(|p| p.struck = true);
+            }
             Clearance::ResumeRoute => {
                 directs.push(Pen::hand("RTE"));
                 vectors.iter_mut().for_each(|p| p.struck = true);
@@ -776,6 +787,13 @@ fn write_block(pens: &[Pen], x: f32, y: f32, width: f32, size: f32, faded: bool)
         }
         start += 1;
     }
+    // The newest mark always shows, written smaller if it's too long alone.
+    let mut size = size;
+    if start == pens.len() && !pens.is_empty() {
+        start = pens.len() - 1;
+        size *= width / measure(&pens[start].text, size);
+    }
+    let space = size * 0.4;
     let mut cx = x;
     for p in &pens[start..] {
         let mut color = if p.red {
@@ -1339,6 +1357,21 @@ mod tests {
         let b9: Vec<(&str, bool)> = m.b9.iter().map(|p| (p.text.as_str(), p.struck)).collect();
         assert_eq!(b9[..3], [("130", true), ("↓050", true), ("↓040", false)]);
         assert_eq!(m.revision, None, "an altitude isn't a route amendment");
+    }
+
+    #[test]
+    fn a_hold_is_written_with_its_fix_and_efc_minutes() {
+        let w = world();
+        let mut ac = arrival(&w);
+        mark(&mut ac, Position::Approach, Clearance::Heading(180.0));
+        let alder = w.airport.fix_index("ALDER").unwrap();
+        let mut spec = w.hold_for(&ac, alder);
+        spec.efc_hhmm = 1435;
+        mark(&mut ac, Position::Approach, Clearance::Hold(spec));
+        let p = print(&w, &ac, 0.0);
+        let m = marks(&w, &ac, &p, &[], 0.0);
+        assert_eq!(m.b9b[0].text, "H ALDER 35");
+        assert!(m.b9a[0].struck, "the vector is superseded");
     }
 
     #[test]

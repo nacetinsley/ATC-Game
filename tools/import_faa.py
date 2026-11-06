@@ -104,6 +104,45 @@ def parse_leg(line):
     }
 
 
+# Holding legs: missed-approach hold, then hold-in-lieu of a procedure turn
+# to an altitude or a fix. A fix with several keeps the first in this order.
+HOLD_PATHS = ("HM", "HA", "HF")
+
+
+def parse_hold(line, variation):
+    """A holding leg as {fix, inbound (true), turns, leg, altitude}."""
+    course, leg, turn = line[70:74].strip(), line[74:78].strip(), line[43]
+    if not course.isdigit() or turn not in "LR":
+        raise ImportError_(f"can't read hold at {line[29:34].strip()}: {line[40:90]!r}")
+    hold = {
+        "fix": line[29:34].strip(),
+        "region": line[34:36],
+        "section": line[36:38],
+        "procedure": line[13:19].strip(),
+        "inbound": (int(course) / 10 + variation) % 360,
+        "turns": "right" if turn == "R" else "left",
+    }
+    if leg.startswith("T") and leg[1:].isdigit():
+        hold["leg_minutes"] = int(leg[1:]) / 10
+    elif leg.isdigit():
+        hold["leg_nm"] = int(leg) / 10
+    altitude = line[84:89].strip()
+    if altitude.isdigit():
+        hold["altitude"] = float(altitude)
+    return hold
+
+
+def build_holds(records, variation):
+    """One published hold per fix."""
+    legs = [r for r in records if r[47:49] in HOLD_PATHS and r[38] in "01"]
+    legs.sort(key=lambda r: HOLD_PATHS.index(r[47:49]))
+    holds = {}
+    for line in legs:
+        hold = parse_hold(line, variation)
+        holds.setdefault(hold["fix"], hold)
+    return [holds[name] for name in sorted(holds)]
+
+
 def parse_nasr_runway_ends(line):
     """Physical ends of one NASR RWY record, as {runway id: (lat, lon)}."""
     base, _, reciprocal = line[16:23].strip().partition("/")
@@ -367,6 +406,12 @@ def render(data):
         out += ["", "[[sids]]", f'name = "{sid["name"]}"', f'config = "{sid["config"]}"']
         out.append(f"fixes = {toml_names(sid['fixes'])}")
         out.append(f"exit_altitude = {fmt(sid['exit_altitude'])}")
+    for hold in data.get("holds", []):
+        out += ["", "[[holds]]", f'fix = "{hold["fix"]}"', f"inbound = {fmt(hold['inbound'])}"]
+        out.append(f'turns = "{hold["turns"]}"')
+        for key in ("leg_minutes", "leg_nm", "altitude"):
+            if key in hold:
+                out.append(f"{key} = {fmt(hold[key])}")
     for area in data["mva"]:
         out += ["", "[[mva]]", f"altitude = {fmt(area['altitude'])}"]
         out.append(f"polygon = {toml_ring(area['polygon'])}")
@@ -445,6 +490,14 @@ def build(lines, nasr_lines, mva_root, overrides, airport_code, cycle, mva_descr
         for s in sids_raw
     ]
 
+    # Published holds inside the sector, with their fixes.
+    holds = []
+    for hold in build_holds(records, variation):
+        pos = project(resolve(hold, fixes), origin)
+        if in_circle(pos, radius):
+            used[hold["fix"]] = pos
+            holds.append(hold)
+
     # Missed approach altitude: the ILS procedures' published climb.
     missed = [r for r in records if r[12] == "F" and r[13] == "I" and r[47:49] == "HM"]
     if not missed:
@@ -510,6 +563,7 @@ def build(lines, nasr_lines, mva_root, overrides, airport_code, cycle, mva_descr
         "fixes": [{"name": n, "x": p[0], "y": p[1]} for n, p in sorted(used.items())],
         "stars": stars,
         "sids": sids,
+        "holds": holds,
         "mva": mva,
     }
 

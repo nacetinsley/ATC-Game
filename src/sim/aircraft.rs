@@ -10,7 +10,7 @@ use glam::Vec2;
 /// Standard rate turn, degrees per second.
 pub const STANDARD_TURN_RATE: f32 = 3.0;
 /// Turn rate at 25 degrees of bank is this divided by TAS in knots.
-const BANK_LIMIT_FACTOR: f32 = 508.7;
+pub(crate) const BANK_LIMIT_FACTOR: f32 = 508.7;
 /// Departures lift off at Vref plus this.
 const ROTATE_MARGIN: f32 = 15.0;
 /// Braking after touchdown, knots per second.
@@ -213,6 +213,8 @@ pub enum Lateral {
     Direct(usize),
     Route,
     Localizer,
+    /// Holding at a fix.
+    Hold(super::holding::HoldState),
 }
 
 #[derive(Debug, Clone)]
@@ -395,7 +397,7 @@ impl Aircraft {
         }
 
         let air = wind.vector_at(self.altitude);
-        let desired = autopilot::desired_heading(self, air, airport);
+        let desired = autopilot::desired_heading(self, air, airport, dt);
         self.turn_toward(desired, dt);
         self.step_speed(dt, airport);
         self.step_vertical(dt, airport);
@@ -442,6 +444,9 @@ impl Aircraft {
         }
         if self.altitude < SPEED_LIMIT_ALTITUDE {
             speed = speed.min(SPEED_LIMIT);
+        }
+        if let Lateral::Hold(_) = self.lateral {
+            speed = speed.min(super::holding::max_speed(self.altitude));
         }
         if let (Lateral::Localizer, Some(rwy)) = (self.lateral, self.approach_runway) {
             let along = airport.runways[rwy].along(self.pos);

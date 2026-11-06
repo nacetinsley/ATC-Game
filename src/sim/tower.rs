@@ -516,8 +516,10 @@ impl World {
         let mut index = 0;
         while index < self.aircraft.len() {
             let ac = &self.aircraft[index];
+            // Arrivals it's holding stay; anything else this far out is gone.
             let gone = !ac.on_ground
                 && ac.phase == Phase::Controlled
+                && !matches!(ac.lateral, Lateral::Hold(_))
                 && ac.pos.length() > AUTOMATED_APPROACH_RANGE_NM;
             if gone {
                 let ac = self.aircraft.remove(index);
