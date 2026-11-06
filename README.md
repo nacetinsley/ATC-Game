@@ -60,7 +60,8 @@ published in the FAA data (right traffic at KSUS on 08R and 26R), which keeps
 the circuit on the far side from the IFR runway, and VFR departures turn out
 that way too. Pilots self-space on downwind behind whoever
 they're told to follow, extend if there's no gap, and won't cut in front of
-traffic already on base or final. You sequence them rather than separate
+traffic already on base or final. Arrivals join one at a time: the next waits
+in a circle a couple of miles short of the entry point until it's free. You sequence them rather than separate
 them, so the only air penalty between VFR aircraft is a near collision. A VFR
 aircraft not cleared by short final goes around and rejoins the pattern.
 Each airport sets its own VFR rate: KSUS sees about 8 light aircraft an hour

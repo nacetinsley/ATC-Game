@@ -77,6 +77,9 @@ const ENTRY_NM: f32 = 1.0;
 const ENTRY_SLOW_NM: f32 = 3.0;
 /// Within this of the entry point it counts as reached, NM.
 const ENTRY_CAPTURE_NM: f32 = 0.4;
+/// An aircraft whose entry point is taken by an earlier one circles this far
+/// out until it's free, NM.
+const ENTRY_QUEUE_NM: f32 = 2.0;
 /// Joining traffic aims this far ahead along the downwind, NM.
 const JOIN_LEAD_NM: f32 = 0.8;
 /// Within this of the downwind line, a joining aircraft is on the downwind, NM.
@@ -436,6 +439,20 @@ impl World {
                     })
             });
 
+        // One aircraft at a time at the entry point: a later one closer in
+        // than this one, or already there, keeps it circling further out.
+        let to_entry = ac.pos.distance(f.entry());
+        let queued = vfr.leg == Leg::Entry
+            && to_entry < ENTRY_QUEUE_NM
+            && to_entry > ENTRY_CAPTURE_NM * 2.0
+            && self.aircraft.iter().any(|b| {
+                b.id != ac.id
+                    && !b.on_ground
+                    && b.pos.distance(f.entry()) < to_entry
+                    && b.vfr.as_ref().is_some_and(|v| v.leg == Leg::Entry && v.end == vfr.end)
+            });
+        let entry_alt = pattern_alt + 500.0;
+
         // Leg changes.
         let leg = vfr.leg;
         match leg {
@@ -506,14 +523,14 @@ impl World {
         let speed = pattern_speed(ac.ty);
         match vfr.leg {
             // Orbit at the entry point until the downwind is clear to join.
-            Leg::Entry if entry_blocked && ac.pos.distance(f.entry()) < ENTRY_CAPTURE_NM * 2.0 => {
+            Leg::Entry if queued || (entry_blocked && ac.pos.distance(f.entry()) < ENTRY_CAPTURE_NM * 2.0) => {
                 ac.lateral = Lateral::Heading(normalize_heading(ac.heading + 30.0));
-                ac.target_altitude = pattern_alt + 500.0;
+                ac.target_altitude = entry_alt;
                 ac.target_speed = speed;
             }
             Leg::Entry => {
                 ac.lateral = steer(f.entry() - ac.pos, ac);
-                ac.target_altitude = pattern_alt + 500.0;
+                ac.target_altitude = entry_alt;
                 let near = ac.pos.distance(f.entry()) < ENTRY_SLOW_NM;
                 ac.target_speed = if near { speed } else { ac.ty.max_speed };
             }
@@ -566,7 +583,7 @@ impl World {
         for line in lines {
             self.say(Speaker::Pilot, line);
         }
-        if matches!(leg, Leg::Upwind | Leg::Crosswind | Leg::Downwind) {
+        if matches!(leg, Leg::Upwind | Leg::Crosswind | Leg::Downwind | Leg::Base | Leg::Final) {
             self.keep_spacing(index);
         }
         // Outside the pattern, pilots give way to everyone.
@@ -696,7 +713,10 @@ impl World {
                 return;
             }
             let physical = self.surface().runway_of_end[end];
-            if self.runway_occupied(physical, ac.id) {
+            // A departure already rolling ahead will be airborne by the time it lands.
+            let id = ac.id;
+            let occupied = self.aircraft.iter().any(|b| b.id != id && !b.rolling() && self.occupies(b, physical));
+            if occupied {
                 self.go_around(index, GoAroundReason::RunwayOccupied);
                 return;
             }
@@ -804,11 +824,12 @@ impl World {
                     .aircraft
                     .iter()
                     .any(|b| b.id != ac.id && self.landing_distance(b, physical).is_some_and(|d| d < mine));
-                // A departure already rolling will be gone by the time it gets there.
-                let blocked = self
-                    .aircraft
-                    .iter()
-                    .any(|b| b.id != ac.id && !b.rolling() && self.occupies(b, physical));
+                // A departure already rolling will be gone by the time it gets
+                // there, and so will an arrival rolling out ahead: the pilot still
+                // checks the runway is clear before landing.
+                let blocked = self.aircraft.iter().any(|b| {
+                    b.id != ac.id && !b.rolling() && b.phase != Phase::Rollout && self.occupies(b, physical)
+                });
                 (number_one && !blocked).then_some(if vfr.intent == VfrIntent::Closed {
                     Clearance::ClearedOption(vfr.end)
                 } else {

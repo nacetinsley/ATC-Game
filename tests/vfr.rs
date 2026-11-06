@@ -263,3 +263,34 @@ fn harrowgate_sees_half_the_light_aircraft_of_ksus() {
     assert_eq!(ksus().vfr_rate, atcgame::sim::vfr::VFR_RATE);
     assert_eq!(Airport::default_airport().vfr_rate, ksus().vfr_rate / 2.0);
 }
+
+/// Busy and very busy automated shifts with VFR traffic, at both airports:
+/// `cargo test --release --test vfr -- --ignored`.
+#[test]
+#[ignore]
+fn stress_busy_vfr_shifts_are_clean() {
+    use atcgame::sim::traffic::Busyness;
+    let ksus = Airport::load(KSUS_AIRPORT, Some(KSUS_GROUND)).unwrap();
+    let mut bad = Vec::new();
+    for (airport, winds) in [(Airport::default_airport(), [270.0, 90.0]), (ksus, [250.0, 80.0])] {
+        for seed in 1000..1200u64 {
+            let config = WorldConfig {
+                seed,
+                staffing: Staffing::NONE,
+                wind: if seed % 4 == 0 { None } else { Some(Wind { from: winds[seed as usize % 2], speed: 8.0 }) },
+                busyness: if seed % 2 == 0 { Busyness::Busy } else { Busyness::VeryBusy },
+                vfr: true,
+                ..Default::default()
+            };
+            let mut world = World::new(airport.clone(), config);
+            while world.ended.is_none() {
+                world.tick();
+                world.drain_events();
+            }
+            if !world.score.incidents.is_empty() {
+                bad.push(format!("{} seed {seed}: {:?}", airport.code, world.score.incidents));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}
