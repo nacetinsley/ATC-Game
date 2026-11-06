@@ -63,6 +63,10 @@ pub struct UiState {
     pub enter_taken: bool,
     /// Emergencies the player has selected: their EM tag stops blinking.
     pub acknowledged: HashSet<u32>,
+    /// The flight strip bay.
+    pub board: super::strips::Board,
+    /// The aircraft whose strip the mouse is over, pointed out on the scope.
+    pub hovered: Option<u32>,
 }
 
 impl UiState {
@@ -85,6 +89,8 @@ impl UiState {
             lesson: false,
             enter_taken: false,
             acknowledged: HashSet::new(),
+            board: Default::default(),
+            hovered: None,
         };
         ui.frame_views(airport);
         ui
@@ -409,6 +415,9 @@ impl UiState {
         }
         if is_key_pressed(KeyCode::F2) {
             self.show(View::Surface, &world.airport);
+        }
+        if is_key_pressed(KeyCode::F3) {
+            self.board.expanded = !self.board.expanded;
         }
         if is_key_pressed(KeyCode::T) {
             self.handoff(world);

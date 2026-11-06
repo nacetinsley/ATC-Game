@@ -27,6 +27,42 @@ name = "KSTL"
 x = 13.2129
 y = 5.1948
 
+[[city_pairs]]
+bearing = 20
+airports = ["KPWK", "KMDW", "KORD"]
+
+[[city_pairs]]
+bearing = 60
+airports = ["KIND", "KDTW", "KYIP"]
+
+[[city_pairs]]
+bearing = 85
+airports = ["KTEB", "KCMH", "KCVG"]
+
+[[city_pairs]]
+bearing = 125
+airports = ["KBNA", "KPDK", "KCLT"]
+
+[[city_pairs]]
+bearing = 150
+airports = ["KPBI", "KOPF"]
+
+[[city_pairs]]
+bearing = 190
+airports = ["KHOU", "KMSY", "KMEM"]
+
+[[city_pairs]]
+bearing = 230
+airports = ["KDAL", "KADS", "KTUL"]
+
+[[city_pairs]]
+bearing = 280
+airports = ["KAPA", "KMKC", "KMCI"]
+
+[[city_pairs]]
+bearing = 325
+airports = ["KOMA", "KDSM", "KMSP"]
+
 [[runways]]
 id = "08L"
 x = -0.7607

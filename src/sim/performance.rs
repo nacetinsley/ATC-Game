@@ -216,6 +216,31 @@ pub static TYPES: [AircraftType; 13] = [
     },
 ];
 
+impl AircraftType {
+    /// FAA flight plan equipment suffix: `/L` for RVSM with GNSS (the jets),
+    /// `/G` for GNSS without RVSM (turboprops and piston singles).
+    pub fn equipment_suffix(&self) -> char {
+        match self.designator {
+            "C208" | "C172" | "PC12" | "PA28" | "SR22" => 'G',
+            _ => 'L',
+        }
+    }
+
+    /// The altitude it typically files for, hundreds of feet.
+    pub fn filed_altitude(&self) -> u32 {
+        match self.designator {
+            "C172" | "PA28" => 65,
+            "SR22" => 90,
+            "C208" => 120,
+            "PC12" => 260,
+            "C56X" | "CL35" => 410,
+            "GLF6" => 450,
+            "A359" | "B77W" => 370,
+            _ => 350,
+        }
+    }
+}
+
 pub fn aircraft_type(designator: &str) -> Option<&'static AircraftType> {
     TYPES.iter().find(|t| t.designator == designator)
 }

@@ -2,9 +2,8 @@
 
 use super::camera::{PANEL_WIDTH, scope_width};
 use super::input::UiState;
-use super::scope::phase_color;
-use super::surface;
-use crate::sim::aircraft::{Aircraft, Flow, Landing, Phase};
+use super::strips;
+use crate::sim::aircraft::{Landing, Phase};
 use crate::sim::clearance::phrase;
 use crate::sim::positions::Position;
 use crate::sim::{Speaker, World};
@@ -16,19 +15,15 @@ const TEXT: Color = Color::new(0.85, 0.90, 0.88, 1.0);
 const DIM: Color = Color::new(0.55, 0.62, 0.62, 1.0);
 const BUTTON: Color = Color::new(0.16, 0.21, 0.23, 1.0);
 const BUTTON_HOVER: Color = Color::new(0.24, 0.31, 0.34, 1.0);
-const SELECTED_ROW: Color = Color::new(0.20, 0.24, 0.14, 1.0);
 const PILOT: Color = Color::new(0.55, 0.85, 1.00, 1.0);
 const SYSTEM: Color = Color::new(0.95, 0.80, 0.45, 1.0);
 const EMERGENCY: Color = Color::new(1.00, 0.35, 0.30, 1.0);
-const BAY: Color = Color::new(0.40, 0.48, 0.48, 1.0);
-const OTHER_STRIP: Color = Color::new(0.45, 0.52, 0.52, 1.0);
-const TOWER_STRIP: Color = Color::new(0.85, 0.92, 0.88, 1.0);
+const UNABLE: Color = Color::new(1.00, 0.62, 0.20, 1.0);
 
 const PADDING: f32 = 12.0;
 const STATUS_HEIGHT: f32 = 92.0;
 const CLEARANCE_HEIGHT: f32 = 212.0;
 const LOG_HEIGHT: f32 = 230.0;
-const ROW_HEIGHT: f32 = 22.0;
 const LOG_LINE: f32 = 17.0;
 const LOG_FONT: f32 = 16.0;
 /// Approximate width of one character at `LOG_FONT`, for wrapping.
@@ -62,9 +57,14 @@ pub fn draw(world: &mut World, ui: &mut UiState) {
     draw_status(world, ui, x);
     divider(x, STATUS_HEIGHT);
 
+    // F3 gives the strip bay the whole panel.
+    if ui.board.expanded {
+        strips::draw(world, ui, x, STATUS_HEIGHT, height);
+        return;
+    }
     let log_top = height - LOG_HEIGHT;
     let clearance_top = log_top - CLEARANCE_HEIGHT;
-    draw_strips(world, ui, x, STATUS_HEIGHT, clearance_top);
+    strips::draw(world, ui, x, STATUS_HEIGHT, clearance_top);
     divider(x, clearance_top);
     draw_clearance(world, ui, x, clearance_top);
     divider(x, log_top);
@@ -126,147 +126,6 @@ fn draw_status(world: &World, ui: &UiState, x: f32) {
             18.0,
             DIM,
         ),
-    }
-}
-
-/// The strip bay an aircraft's strip sits in on a tower position, in display
-/// order: the runways first, then the hold lines, taxiways and gates.
-fn bay(ac: &Aircraft) -> (usize, &'static str) {
-    match ac.phase {
-        Phase::TowerHandedOff
-        | Phase::TowerRelease
-        | Phase::Rollout
-        | Phase::LinedUp
-        | Phase::GoAround
-        | Phase::Pattern => (0, "LOCAL"),
-        Phase::Taxiing => {
-            let waiting = ac.taxi.as_ref().is_some_and(|t| t.holding_short.is_some() || t.done());
-            if waiting { (1, "HOLDING") } else { (2, "TAXI") }
-        }
-        Phase::Parked => (3, "GATES"),
-        _ => (4, "RADAR"),
-    }
-}
-
-/// A tower strip: callsign, type, what it's doing and who it's talking to.
-fn tower_strip_text(world: &World, ac: &Aircraft) -> String {
-    let flow = match (ac.vfr.is_some(), ac.flow) {
-        (true, _) => "VFR",
-        (false, Flow::Arrival) => "ARR",
-        (false, Flow::Departure) => "DEP",
-    };
-    let owner = match ac.frequency() {
-        Position::Ground => "GND",
-        Position::Local => "TWR",
-        Position::Approach => "APP",
-        Position::Center => "CTR",
-    };
-    format!(
-        "{flow} {:<7}{}/{} {:<12} {owner}",
-        ac.callsign,
-        ac.ty.designator,
-        ac.ty.wake.letter(),
-        surface::status(world, ac)
-    )
-}
-
-fn strip_text(world: &World, ac: &Aircraft) -> String {
-    let flow = if ac.flow == Flow::Arrival { "ARR" } else { "DEP" };
-    let phase = match ac.phase {
-        Phase::Offered => "offered",
-        Phase::Controlled => "radar",
-        Phase::ClearedApproach => "cleared",
-        Phase::Localizer => "loc",
-        Phase::Glideslope => "gs",
-        Phase::TowerHandedOff | Phase::Rollout | Phase::TowerRelease => "tower",
-        Phase::GoAround => "go-around",
-        Phase::OfferedToCenter => "center",
-        Phase::Parked => "parked",
-        Phase::Taxiing => "taxi",
-        Phase::LinedUp => "lined up",
-        Phase::Pattern => "vfr",
-    };
-    let exit = match (ac.flow, ac.exit_fix) {
-        (Flow::Departure, Some(fix)) => {
-            format!(" {} {:.0}", world.airport.fixes[fix].name, ac.exit_altitude / 100.0)
-        }
-        _ => String::new(),
-    };
-    format!(
-        "{flow} {:<7}{}/{} {:03.0}>{:03.0} {phase}{exit}",
-        ac.callsign,
-        ac.ty.designator,
-        ac.ty.wake.letter(),
-        ac.altitude / 100.0,
-        ac.target_altitude / 100.0,
-    )
-}
-
-fn draw_strips(world: &World, ui: &mut UiState, x: f32, top: f32, bottom: f32) {
-    let mouse = Vec2::from(mouse_position());
-    let clicked = is_mouse_button_pressed(MouseButton::Left);
-    let mut y = top + 4.0;
-    let mut hidden = 0;
-    let staffing = world.staffing();
-
-    // Approach sees the airborne picture; a tower position sees bays by stage.
-    let mut rows: Vec<&Aircraft> = if staffing.tower() {
-        let mut rows: Vec<&Aircraft> = world
-            .aircraft
-            .iter()
-            .filter(|a| bay(a).0 < 4 || (staffing.approach && a.phase != Phase::OfferedToCenter))
-            .collect();
-        rows.sort_by_key(|a| bay(a).0);
-        rows
-    } else {
-        let airborne = |a: &&Aircraft| !a.on_ground || a.rolling();
-        let mut rows: Vec<&Aircraft> = world
-            .aircraft
-            .iter()
-            .filter(|a| a.flow == Flow::Arrival)
-            .chain(world.aircraft.iter().filter(|a| a.flow == Flow::Departure))
-            .filter(airborne)
-            .collect();
-        // Emergencies go to the top of the board.
-        rows.sort_by_key(|a| !a.in_emergency());
-        rows
-    };
-    let mut current_bay = None;
-    for ac in rows.drain(..) {
-        if staffing.tower() && current_bay != Some(bay(ac).0) {
-            current_bay = Some(bay(ac).0);
-            if y + ROW_HEIGHT <= bottom {
-                label(bay(ac).1, x + PADDING, y + 15.0, 14.0, BAY);
-                draw_line(x + PADDING + 70.0, y + 10.0, x + PANEL_WIDTH - PADDING, y + 10.0, 1.0, DIVIDER);
-                y += 18.0;
-            }
-        }
-        if y + ROW_HEIGHT > bottom {
-            hidden += 1;
-            continue;
-        }
-        let rect = Rect::new(x, y, PANEL_WIDTH, ROW_HEIGHT);
-        if ui.selected == Some(ac.id) {
-            draw_rectangle(rect.x, rect.y, rect.w, rect.h, SELECTED_ROW);
-        }
-        if clicked && rect.contains(mouse) {
-            ui.select(Some(ac.id));
-        }
-        let (mut text, mut color) = if staffing.tower() && bay(ac).0 < 4 {
-            let color = if world.is_players(ac) { TOWER_STRIP } else { OTHER_STRIP };
-            (tower_strip_text(world, ac), color)
-        } else {
-            (strip_text(world, ac), phase_color(ac))
-        };
-        if let Some(e) = ac.emergency.as_ref().filter(|e| e.declared()) {
-            text = format!("{} {text}", e.strip());
-            color = EMERGENCY;
-        }
-        label(&text, x + PADDING, y + 16.0, 17.0, color);
-        y += ROW_HEIGHT;
-    }
-    if hidden > 0 {
-        label(&format!("+{hidden} more"), x + PANEL_WIDTH - 80.0, bottom - 6.0, 16.0, DIM);
     }
 }
 
@@ -460,6 +319,8 @@ fn draw_log(world: &World, x: f32, top: f32) {
     'entries: for entry in world.log.iter().rev() {
         let color = match entry.speaker {
             Speaker::Controller => TEXT,
+            // A pilot refusing an instruction stands out.
+            Speaker::Pilot if entry.text.contains("unable") => UNABLE,
             Speaker::Pilot => PILOT,
             Speaker::System => SYSTEM,
             Speaker::Emergency => EMERGENCY,

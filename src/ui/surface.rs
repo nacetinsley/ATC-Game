@@ -360,6 +360,10 @@ fn draw_aircraft(world: &World, ui: &UiState, ac: &Aircraft, inset: bool) {
         let r = length * 0.7 + 4.0;
         draw_rectangle_lines(p.x - r, p.y - r, r * 2.0, r * 2.0, 1.0, GHOST);
     }
+    // The mouse is over its strip: point it out.
+    if ui.hovered == Some(ac.id) {
+        draw_circle_lines(p.x, p.y, length + 8.0, 1.5, Color::new(0.98, 0.95, 0.40, 0.9));
+    }
     if inset && !selected {
         return;
     }

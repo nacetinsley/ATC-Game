@@ -28,6 +28,17 @@ pub enum Flow {
     Departure,
 }
 
+/// An instruction the pilot accepted, as a controller would mark it on the
+/// flight progress strip.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StripMark {
+    /// Sim time the pilot read it back.
+    pub time: f32,
+    /// The position that gave it.
+    pub by: Position,
+    pub clearance: super::clearance::Clearance,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     /// Center is offering the aircraft; the player has not accepted it.
@@ -259,6 +270,8 @@ pub struct Aircraft {
     pub vfr: Option<Vfr>,
     /// Something gone wrong: an emergency, declared or still to come.
     pub emergency: Option<super::emergency::Emergency>,
+    /// Every instruction it has accepted, oldest first: the strip's pen marks.
+    pub strip: Vec<StripMark>,
 }
 
 impl Aircraft {
@@ -310,6 +323,7 @@ impl Aircraft {
             waiting_since: None,
             vfr: None,
             emergency: None,
+            strip: Vec::new(),
         }
     }
 

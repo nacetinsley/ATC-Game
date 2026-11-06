@@ -1,6 +1,6 @@
 //! Clearances: what the controller says, who may say it, and how the pilot responds.
 
-use super::aircraft::{Aircraft, Flow, Landing, Lateral, Leg, Phase, Taxi, VfrIntent};
+use super::aircraft::{Aircraft, Flow, Landing, Lateral, Leg, Phase, StripMark, Taxi, VfrIntent};
 use super::airspace::Airport;
 use super::ground_map::GroundMap;
 use super::positions::{Position, Staffing};
@@ -116,7 +116,7 @@ pub(super) struct RadioCall {
     pub logged: bool,
 }
 
-pub(super) fn thousands(altitude: f32) -> String {
+pub fn thousands(altitude: f32) -> String {
     let a = altitude.round() as i32;
     if a >= 1000 {
         format!("{},{:03}", a / 1000, a % 1000)
@@ -357,6 +357,9 @@ impl World {
             match result {
                 Ok(()) => {
                     readback.push(words);
+                    if let Some(by) = *issuer {
+                        ac.strip.push(StripMark { time: ctx.now, by, clearance: clearance.clone() });
+                    }
                     if *clearance == Clearance::GoAround {
                         let callsign = ac.callsign.clone();
                         events.push(SimEvent::GoAround { callsign, reason: GoAroundReason::Ordered });
@@ -407,6 +410,9 @@ impl World {
         });
         let line = if light && ac.phase == Phase::TowerHandedOff {
             ac.cleared_to_land = true;
+            if let Some((c, _)) = call.clearances.iter().find(|(c, _)| matches!(c, Clearance::ClearedToLand(_))) {
+                ac.strip.push(StripMark { time: self.time, by: Position::Local, clearance: c.clone() });
+            }
             format!("Tower: steady green light to {callsign}. It rocks its wings.")
         } else {
             format!("No reply from {callsign}: radio failure.")

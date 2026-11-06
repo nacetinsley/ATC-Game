@@ -338,6 +338,9 @@ def render(data):
     for reference in data["references"]:
         out += ["", "[[references]]", f'name = "{reference["name"]}"']
         out += [f"x = {fmt(reference['x'])}", f"y = {fmt(reference['y'])}"]
+    for pair in data.get("city_pairs", []):
+        out += ["", "[[city_pairs]]", f"bearing = {fmt(pair['bearing'])}"]
+        out.append(f"airports = {toml_names(pair['airports'])}")
     for runway in data["runways"]:
         out += ["", "[[runways]]", f'id = "{runway["id"]}"']
         for key in ("x", "y", "heading", "length", "start_x", "start_y"):
@@ -495,6 +498,10 @@ def build(lines, nasr_lines, mva_root, overrides, airport_code, cycle, mva_descr
         "sector": sector,
         "traffic": overrides["traffic"],
         "references": references,
+        "city_pairs": [
+            {"bearing": float(p["bearing"]), "airports": list(p["airports"])}
+            for p in overrides.get("city_pairs", [])
+        ],
         "runways": runways,
         "configs": [
             {k: c[k] for k in ("name", "arrival", "departure", "departure_long")}

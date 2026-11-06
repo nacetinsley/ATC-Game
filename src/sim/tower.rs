@@ -301,7 +301,7 @@ impl World {
         }
     }
 
-    fn at_departure_hold(&self, ac: &Aircraft) -> bool {
+    pub(super) fn at_departure_hold(&self, ac: &Aircraft) -> bool {
         let (Some(taxi), Some(end)) = (&ac.taxi, ac.departure_end) else { return false };
         let map = self.surface();
         ac.flow == Flow::Departure

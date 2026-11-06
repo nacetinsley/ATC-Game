@@ -105,8 +105,8 @@ Each IFR movement has a chance of an emergency, so busier shifts see more:
 
 The pilot declares on your frequency ("Mayday, mayday, mayday...", or
 "Pan-pan" for a medical), the alert sounds, and the data block shows `EM` in
-red (`RDOF` for a radio failure), blinking until you select the aircraft. The strip reads `EMRG ENG`, `EMRG FUEL` and
-so on, and moves to the top of the board.
+red (`RDOF` for a radio failure), blinking until you select the aircraft. The strip has `EMRG ENG`, `EMRG FUEL` and
+so on written on it in red, and moves to the top of its bay.
 
 - **Medical:** wants priority, and paramedics at the gate. Ground earns a
   bonus for parking it within 4 minutes of landing.
@@ -136,6 +136,101 @@ Landing an emergency earns 150 points, or 250 within 8 minutes of declaring.
 A go-around costs 150 and a low-fuel diversion 300. The automated Tower holds
 departures while an emergency is within 10 miles of landing on the same runway.
 The end-of-shift screen lists every emergency and how it ended.
+
+## Flight strips
+
+The side panel is a strip bay of FAA terminal flight progress strips, laid
+out as in FAA Order JO 7110.65 (paragraph 2-3-3): departure strips (Form
+7230-7.1) and arrival strips (Form 7230-7.2).
+
+```
++--------------+------+---------+--------------------------+----+----+----+
+| 1 NVA101   2 | 6    | 8       | 9                        | 10 | 13 | 16 |
+| 3 H/B744/L   | 7    | 8a      |                          | 11 | 14 | 17 |
+| 4 512  5 2731| 2a   | 8b      |  9a       9b       9c    | 12 | 15 | 18 |
++--------------+------+---------+--------------------------+----+----+----+
+```
+
+| Block | Departure | Arrival |
+|---|---|---|
+| 1, 2, 2a | Callsign, revision number, position it was printed for | same |
+| 3 | Heavy indicator, type, equipment suffix (`H/B77W/L`) | same |
+| 4, 5 | Computer ID, beacon code | same |
+| 6 | Proposed time (`P1432`) | Previous fix (here the origin) |
+| 7 | Requested altitude | Coordination fix |
+| 8 | Departure airport | ETA at the coordination fix |
+| 9 | Route and destination | Altitude and remarks (the STAR) |
+| 9a, 9b | Vectors and speeds; direct-to and route amendments | same |
+
+Blocks 10 to 18 are set by each facility. This game's facility directive:
+
+| Block | Mark |
+|---|---|
+| 10, 11, 12 | Runway, ATIS letter, taxi route |
+| 13 | Ground: `HP` hold position, `HS27L` holding short, `X27L` crossing |
+| 14 | Local: `L` cleared to land and `MA` missed approach (from the order's tables), `T→` takeoff, `LUAW`, `TG`, `OPT`, VFR pattern marks |
+| 15 | Approach: `ILS` cleared for the approach |
+| 16 | Time of the block 14 mark |
+| 17 | Handoff: the next position, struck through once it has the aircraft |
+| 18 | What it's waiting for from you |
+
+What the flight data computer printed is in black and stays put. What
+controllers write afterwards is in blue pen, struck through when superseded:
+a new altitude strikes out the old one. Emergencies are written in red, with
+the 7700 or 7600 squawk beside the printed code. Holders are blue for
+departures, amber for arrivals, green for VFR and red for an emergency.
+Strips on other positions are greyed.
+
+Strips sit in bays in the order a controller works them: INBOUND, ARRIVALS,
+FINAL and DEPARTURES on the radar, and ARRIVING, RUNWAY, HOLD SHORT, TAXI OUT,
+TAXI IN and PENDING in the tower. A strip waiting for you (an arrival to
+accept, a departure ready to taxi or at the hold, a check-in nobody has
+answered) has a blinking holder and a word in block 18, and moves up its bay.
+One about to cost points (no landing clearance inside 4 miles, or a handoff
+due) also gets a blinking amber frame. When the bay is full, other positions'
+strips fold to one line, and the mouse wheel scrolls it. Hover over a strip
+to ring the aircraft on the scope and see what it's doing now. F3 gives the
+strip bay the whole panel.
+
+## Sound
+
+Most sounds copy the equipment a real controller hears: what triggers each,
+how it repeats and how it's silenced.
+
+| Sound | Plays for | Stops |
+|---|---|---|
+| **Conflict Alert** (STARS) | A conflict or loss of separation involving your traffic. A steady pulsed tone, continuous, as the real CA is | When you select either aircraft (STARS: slew the track), or the conflict clears |
+| **Low altitude** (STARS MSAW) | Your aircraft below the minimum vectoring altitude. The same family of tone, modulated differently, as the real ones are | When you select it, or after 10 seconds, when the real aural alarm stops while the LA keeps flashing |
+| **Special code** (STARS) | An aircraft squawking 7700 or 7600 | When you select it |
+| **ASDE-X** | Tower positions: a voice, "Warning, runway two seven left, arrival, runway occupied" (or "departure"), on a runway incursion, a takeoff with the runway occupied, or an arrival inside a mile with the runway occupied | Repeats every 5 seconds while it lasts |
+| **Radio** | Each pilot transmission: the key-up, the carrier and the squelch tail. No roger beep: aviation radios don't have one | |
+
+Sources for the real behaviour: [AVweb](https://avweb.com/flight-safety/computer-generated-safety-alerts/)
+and the [vNAS STARS documentation](https://docs.virtualnas.net/crc/stars/)
+(Conflict Alert continuous until acknowledged; the special-code tone),
+[NTSB safety recommendation A-06-44](https://www.ntsb.gov/safety/safety-recs/RecLetters/A06_44_47.pdf)
+(MSAW modulated differently from the CA; the aural alarm ends while the
+visual alert continues) and [NTSB report AIR-24-01](https://www.ntsb.gov/investigations/AccidentReports/Reports/AIR2401.pdf)
+(ASDE-X's "runway occupied" aural alert). The STARS tones' actual
+frequencies and waveforms aren't published, so those here are stand-ins that
+behave like the real ones. Wake turbulence and taxiway conflicts are shown,
+not sounded, as on the real tools.
+
+STARS makes no sound for a handoff. A few **game cues** help anyway: a soft
+ding when Center offers you an arrival, a quiet double tick when a strip
+starts waiting urgently, and a chime when one of your aircraft lands, parks
+or leaves. The pause menu turns game cues off, and sets the volume.
+
+The ASDE-X words are WAV clips in `assets/sounds/voice`, rendered once with
+the open-source [Piper](https://github.com/OHF-Voice/piper1-gpl) speech
+synthesizer and its `en_US-ljspeech-high` voice, trained on the public-domain
+[LJ Speech](https://keithito.com/LJ-Speech-Dataset/) recordings. The game
+plays them the same on every platform. To render them again:
+
+```sh
+python -m pip install piper-tts
+python tools/make_voice.py
+```
 
 ## Tutorials
 
@@ -201,6 +296,9 @@ cargo run --release
 | O / U | VFR: cleared for the option / cleared touch-and-go |
 | Shift-click an aircraft | VFR: follow that traffic |
 | F1 / F2 | Radar or surface full size (all three combined) |
+| F3 | Strip bay fills the side panel |
+| Click a strip | Select that aircraft, and silence its alarms |
+| Mouse wheel over the strips | Scroll the strip bay |
 | Enter | Transmit the pending clearance |
 | Backspace | Cancel the pending clearance |
 | Space | Pause |
@@ -258,7 +356,7 @@ python tools/import_osm.py --airport KSUS --cycle 261029
 src/sim/      headless simulation: aircraft, autopilot, clearances, positions, ground
               graph and movement, tower, traffic, conflicts, scoring
 src/ui/       macroquad front end: radar scope, surface map, side panel, input, menus, audio
-assets/       airport data files
+assets/       airport data files and the ASDE-X voice clips
 tests/        scenario tests for each airport
 tools/        FAA and OpenStreetMap importers and their tests
 ```

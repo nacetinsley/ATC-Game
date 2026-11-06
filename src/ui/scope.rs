@@ -311,6 +311,10 @@ fn draw_target(world: &World, ui: &UiState, ac: &Aircraft, track: &RadarTrack) {
     let symbol = position_symbol(ac).to_string();
     let size = measure_text(&symbol, None, SYMBOL_FONT as u16, 1.0);
     draw_text(&symbol, p.x - size.width / 2.0, p.y + size.offset_y / 2.0, SYMBOL_FONT, color);
+    // The mouse is over its strip: point it out.
+    if ui.hovered == Some(ac.id) {
+        draw_circle_lines(p.x, p.y, 14.0, 1.5, Color::new(0.98, 0.95, 0.40, 0.9));
+    }
 
     let selected = ui.selected == Some(ac.id);
     let origin = block_origin(ui, ac.id, track.pos);

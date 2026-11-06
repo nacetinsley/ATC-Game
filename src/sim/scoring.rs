@@ -82,6 +82,8 @@ pub enum SimEvent {
     /// A medical arrival reached its gate promptly.
     EmergencyParked { callsign: String },
     ShiftEnded { end: ShiftEnd },
+    /// Center is offering an arrival to the player's Approach.
+    HandoffOffered { callsign: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -390,7 +392,10 @@ impl Score {
                     self.incident(time, format!("{callsign} at the gate for the paramedics"), POINTS_EMERGENCY_PARKED);
                 }
             }
-            SimEvent::ConflictAlert { .. } | SimEvent::EmergencyDeclared { .. } | SimEvent::ShiftEnded { .. } => {}
+            SimEvent::ConflictAlert { .. }
+            | SimEvent::EmergencyDeclared { .. }
+            | SimEvent::ShiftEnded { .. }
+            | SimEvent::HandoffOffered { .. } => {}
         }
     }
 

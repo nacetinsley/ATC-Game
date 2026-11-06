@@ -3,6 +3,7 @@
 pub mod aircraft;
 pub mod airspace;
 pub mod autopilot;
+pub mod awaiting;
 pub mod clearance;
 pub mod conflict;
 pub mod emergency;
@@ -142,6 +143,9 @@ pub struct World {
     pub aircraft: Vec<Aircraft>,
     pub radar: Vec<RadarTrack>,
     pub log: Vec<LogEntry>,
+    /// Lines ever said, including ones the log has since dropped: how the UI
+    /// spots new transmissions.
+    pub said: u64,
     pub score: Score,
     pub alerts: Alerts,
     pub ended: Option<ShiftEnd>,
@@ -179,6 +183,7 @@ impl World {
             aircraft: Vec::new(),
             radar: Vec::new(),
             log: Vec::new(),
+            said: 0,
             score: Score::new(Credit::for_staffing(config.staffing)),
             alerts: Alerts::default(),
             ended: None,
@@ -303,6 +308,7 @@ impl World {
 
     fn say(&mut self, speaker: Speaker, text: String) {
         self.log.push(LogEntry { time: self.time, speaker, text });
+        self.said += 1;
         if self.log.len() > MAX_LOG {
             self.log.remove(0);
         }

@@ -168,6 +168,15 @@ pub struct TrafficProfile {
     pub fleet_weights: Vec<f32>,
 }
 
+/// Airports traffic flies to or from in one direction, for flight plans. The
+/// sim doesn't fly beyond the sector, so these only fill in the strips.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CityPair {
+    /// True bearing from the field, degrees.
+    pub bearing: f32,
+    pub airports: Vec<String>,
+}
+
 /// A map landmark with no simulated traffic.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Reference {
@@ -205,6 +214,9 @@ pub struct Airport {
     pub traffic: Option<TrafficProfile>,
     #[serde(default)]
     pub references: Vec<Reference>,
+    /// Where flights come from and go to, by direction.
+    #[serde(default)]
+    pub city_pairs: Vec<CityPair>,
     pub go_around_altitude: f32,
     pub mva_default: f32,
     /// Where VFR traffic flies when it's switched on.
@@ -228,6 +240,17 @@ pub struct Airport {
 }
 
 impl Airport {
+    /// An airport in the direction of `bearing` (true), chosen by `pick` so
+    /// the same flight always gets the same one.
+    pub fn city_pair(&self, bearing: f32, pick: u32) -> Option<&str> {
+        let nearest = self.city_pairs.iter().min_by(|a, b| {
+            let off = |p: &CityPair| super::units::heading_diff(bearing, p.bearing).abs();
+            off(a).total_cmp(&off(b))
+        })?;
+        let n = nearest.airports.len();
+        (n > 0).then(|| nearest.airports[pick as usize % n].as_str())
+    }
+
     /// Parses and checks airport data, so a bad reference fails at load, not mid-shift.
     pub fn from_toml(text: &str) -> Result<Airport, String> {
         Airport::load(text, None)

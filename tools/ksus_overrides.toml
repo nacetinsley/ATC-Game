@@ -16,6 +16,45 @@ exit_altitude = 10000.0
 [[references]]
 code = "KSTL"
 
+# Where flights come from and go to, for the flight strips only. A judgement
+# call: common business-aviation destinations from St. Louis, grouped by
+# rough true bearing. Not route or traffic data.
+[[city_pairs]]
+bearing = 20.0
+airports = ["KPWK", "KMDW", "KORD"]
+
+[[city_pairs]]
+bearing = 60.0
+airports = ["KIND", "KDTW", "KYIP"]
+
+[[city_pairs]]
+bearing = 85.0
+airports = ["KTEB", "KCMH", "KCVG"]
+
+[[city_pairs]]
+bearing = 125.0
+airports = ["KBNA", "KPDK", "KCLT"]
+
+[[city_pairs]]
+bearing = 150.0
+airports = ["KPBI", "KOPF"]
+
+[[city_pairs]]
+bearing = 190.0
+airports = ["KHOU", "KMSY", "KMEM"]
+
+[[city_pairs]]
+bearing = 230.0
+airports = ["KDAL", "KADS", "KTUL"]
+
+[[city_pairs]]
+bearing = 280.0
+airports = ["KAPA", "KMKC", "KMCI"]
+
+[[city_pairs]]
+bearing = 325.0
+airports = ["KOMA", "KDSM", "KMSP"]
+
 # 26L/08R has the ILS and takes all arrivals plus departures too long for 26R/08L.
 [[configs]]
 name = "West"

@@ -221,6 +221,9 @@ impl World {
         self.roll_arrival_emergency(&mut ac, false);
         let line = format!("Center: offering {} via {}.", ac.callsign, self.airport.fixes[ac.route[0]].name);
         self.say(super::Speaker::System, line);
+        if self.config.staffing.approach {
+            self.emit(super::scoring::SimEvent::HandoffOffered { callsign: ac.callsign.clone() });
+        }
         self.add_aircraft(ac);
         true
     }

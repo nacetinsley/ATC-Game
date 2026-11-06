@@ -69,6 +69,40 @@ name = "East"
 arrival = "09R"
 departure = "09L"
 
+# Where flights come from and go to, for the flight strips. Fictional, like
+# the field. Arrivals from the diagonals, departures out the cardinals.
+[[city_pairs]]
+bearing = 0.0
+airports = ["XNTH", "XKST", "XBRM"]
+
+[[city_pairs]]
+bearing = 45.0
+airports = ["XELS", "XDNE"]
+
+[[city_pairs]]
+bearing = 90.0
+airports = ["XMRS", "XCLV", "XPLM"]
+
+[[city_pairs]]
+bearing = 135.0
+airports = ["XSTV", "XRDG"]
+
+[[city_pairs]]
+bearing = 180.0
+airports = ["XFAR", "XTRN", "XGRN"]
+
+[[city_pairs]]
+bearing = 225.0
+airports = ["XLWN", "XWLD"]
+
+[[city_pairs]]
+bearing = 270.0
+airports = ["XAVN", "XHOL", "XQRY"]
+
+[[city_pairs]]
+bearing = 315.0
+airports = ["XBEL", "XIVE"]
+
 # Arrival gates
 [[fixes]]
 name = "BOLTE"
