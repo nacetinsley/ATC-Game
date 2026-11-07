@@ -14,6 +14,7 @@ pub mod holding;
 pub mod mistakes;
 pub mod performance;
 pub mod positions;
+pub mod ramp;
 pub mod scoring;
 pub mod sky;
 pub mod storms;

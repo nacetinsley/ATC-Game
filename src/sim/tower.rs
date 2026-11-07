@@ -6,10 +6,11 @@ use super::aircraft::{Aircraft, Flow, Lateral, Phase};
 use super::approach::ApproachKind;
 use super::autopilot::should_capture_localizer;
 use super::clearance::{AT_NODE_NM, Clearance, PILOT_DELAY, issuer_for};
-use super::ground_map::GroundMap;
+use super::ground_map::{GroundMap, Parking, StandUse};
 use super::performance::WakeCategory;
 use super::positions::Position;
 use super::scoring::{GoAroundReason, SimEvent};
+use super::traffic::airline_of;
 use super::{Speaker, World};
 
 /// Must be with Tower by this distance on final.
@@ -336,11 +337,11 @@ impl World {
                 Some(runway) => format!("Tower, {}, holding short runway {runway}.", ac.callsign),
                 None => format!("Tower, {}, with you.", ac.callsign),
             },
-            Position::Ground => match ac.parking.map(|p| self.surface().parking[p].name.clone()) {
+            Position::Ground => match self.taxi_in_name(ac) {
                 Some(spot) => format!("Ground, {}, clear of the runway, for {spot}.", ac.callsign),
                 None => format!("Ground, {}, with you.", ac.callsign),
             },
-            Position::Center | Position::Delivery => return,
+            Position::Center | Position::Delivery | Position::Ramp => return,
         };
         self.say(Speaker::Pilot, line);
     }
@@ -510,7 +511,7 @@ impl World {
                 }
                 let goal = match flow {
                     Flow::Departure => map.departure_hold(ac.departure_end?)?,
-                    Flow::Arrival => map.parking[ac.parking?].node,
+                    Flow::Arrival => self.taxi_in_goal(ac)?,
                 };
                 let heading_there = taxi.path.last() == Some(&goal) || taxi.node == goal;
                 (!heading_there).then_some(Clearance::Taxi { to: goal, via: Vec::new() })
@@ -547,23 +548,46 @@ impl World {
                 continue;
             }
             let from = super::clearance::taxi_origin(ac, self.surface());
-            if let Some(spot) = self.free_parking(from) {
+            if let Some(spot) = self.pick_parking(ac, from) {
                 self.aircraft[index].parking = Some(spot);
             }
         }
     }
 
-    /// The closest parking spot by taxi route that nobody is in or bound for.
-    /// Each runway crossing counts as a long way round.
-    pub(super) fn free_parking(&self, from: usize) -> Option<usize> {
+    /// The kind of stand this aircraft parks at: general aviation at an FBO,
+    /// cargo airlines on the ramp, the rest at a gate.
+    pub(super) fn stand_for(&self, ac: &Aircraft) -> StandUse {
+        let Some(airline) = airline_of(&ac.callsign).filter(|_| ac.vfr.is_none()) else {
+            return StandUse::Ga;
+        };
+        let cargo = self.airport.traffic.as_ref().is_some_and(|t| t.cargo_airlines.iter().any(|c| c == airline));
+        if cargo { StandUse::Ramp } else { StandUse::Gate }
+    }
+
+    /// The nearest free parking spot to `from` meant for `stand`; failing
+    /// that, a general aviation aircraft takes a ramp spot, then anyone takes
+    /// whatever is free.
+    pub(super) fn free_parking(&self, from: usize, stand: StandUse) -> Option<usize> {
+        let mut wanted = vec![Some(stand)];
+        if stand == StandUse::Ga {
+            wanted.push(Some(StandUse::Ramp));
+        }
+        wanted.push(None);
+        wanted.into_iter().find_map(|kind| {
+            self.free_parking_where(from, |p| kind.is_none() || p.stand == kind).first().copied()
+        })
+    }
+
+    /// Free parking spots that pass `wanted`, closest first by taxi route from
+    /// `from`: nobody in them or bound for them. Each runway crossing counts as
+    /// a long way round.
+    pub(super) fn free_parking_where(&self, from: usize, wanted: impl Fn(&Parking) -> bool) -> Vec<usize> {
         let map = self.surface();
-        (0..map.parking.len())
+        let mut free: Vec<(f32, usize)> = (0..map.parking.len())
+            .filter(|&p| wanted(&map.parking[p]))
             .filter(|&p| {
                 let at = map.nodes[map.parking[p].node].pos;
-                !self.aircraft.iter().any(|a| {
-                    (a.flow == Flow::Arrival && a.parking == Some(p))
-                        || (a.on_ground && a.pos.distance(at) < 0.02)
-                })
+                !self.aircraft.iter().any(|a| a.parking == Some(p) || (a.on_ground && a.pos.distance(at) < 0.02))
             })
             .filter_map(|p| {
                 let route = map.route(from, map.parking[p].node, &[])?;
@@ -574,8 +598,9 @@ impl World {
                     .sum();
                 Some((length + PARKING_CROSSING_NM * route.runways_entered.len() as f32, p))
             })
-            .min_by(|a, b| a.0.total_cmp(&b.0))
-            .map(|(_, p)| p)
+            .collect();
+        free.sort_by(|a, b| a.0.total_cmp(&b.0));
+        free.into_iter().map(|(_, p)| p).collect()
     }
 
     /// The automated Approach in tower-only modes: departures and go-arounds

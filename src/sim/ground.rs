@@ -6,6 +6,7 @@ use super::airspace::Airport;
 use super::clearance::{AT_NODE_NM, start_roll};
 use super::ground_map::GroundMap;
 use super::positions::Position;
+use super::ramp::Handling;
 use super::scoring::{GoAroundReason, SimEvent};
 use super::tower::{INCURSION_FINAL_NM, VFR_INCURSION_NM};
 use super::units::{SECONDS_PER_HOUR, heading_diff, heading_vec, vec_heading};
@@ -113,8 +114,9 @@ fn next_slowdown(map: &GroundMap, taxi: &Taxi, pos: Vec2, rollout: bool) -> (f32
 }
 
 /// The turn-off for an aircraft rolling out: the first exit it can stop for,
-/// on the side closest to its parking. Returns the node behind it and the path.
-fn plan_exit(map: &GroundMap, airport: &Airport, ac: &Aircraft, parking: Option<usize>) -> Option<(usize, Vec<usize>)> {
+/// on the side closest to `goal` (its stand or ramp spot), if it has one.
+/// Returns the node behind it and the path.
+fn plan_exit(map: &GroundMap, airport: &Airport, ac: &Aircraft, goal: Option<usize>) -> Option<(usize, Vec<usize>)> {
     let end = ac.approach_runway?;
     let runway = map.runway_of_end[end];
     let s = |n: usize| along_runway(airport, end, map.nodes[n].pos);
@@ -145,7 +147,6 @@ fn plan_exit(map: &GroundMap, airport: &Airport, ac: &Aircraft, parking: Option<
         exits = all;
         exits.sort_by(|a, b| (s(a.0) - here).abs().total_cmp(&(s(b.0) - here).abs()));
     }
-    let goal = parking.map(|p| map.parking[p].node);
     // Group by turn-off point, nearest first; pick the best side at the first that works.
     let mut index = 0;
     while index < exits.len() {
@@ -188,7 +189,7 @@ impl World {
         let tower = self.config.staffing.surface_traffic();
         let (node, heading, parking) = if tower {
             let from = map.departure_hold(end).unwrap_or(map.lineup_node[end]);
-            let Some(spot) = self.free_parking(from) else { return };
+            let Some(spot) = self.pick_parking(ac, from) else { return };
             let p = &map.parking[spot];
             (p.node, p.heading, Some(spot))
         } else {
@@ -204,7 +205,9 @@ impl World {
             (hold, toward, None)
         };
         let pos = map.nodes[node].pos;
-        let spot_name = parking.map(|p| map.parking[p].name.clone());
+        let spot_name = parking.map(|p| map.stand_name(p));
+        // The ramp tower brings it out to a spot once it has its clearance.
+        let ramp = self.handling(ac) == Handling::Ramp && self.ramp_spot_for(ac, parking).is_some();
         let Some(mut ac) = self.departure_queue.pop_front() else { return };
         ac.pos = pos;
         ac.heading = heading;
@@ -236,6 +239,12 @@ impl World {
         } else {
             self.clear_automatically(&mut ac);
         }
+        if ramp {
+            ac.parking = parking;
+            if !delivery {
+                ac.surface_freq = Position::Ramp;
+            }
+        }
         let spot = spot_name.unwrap_or_default();
         let call = match (&ac.vfr, &ac.flight_plan) {
             (Some(_), _) => self.vfr_ready_call(&ac, &spot),
@@ -250,7 +259,7 @@ impl World {
             _ => format!("Ground, {}, at {spot}, ready to taxi.", ac.callsign),
         };
         self.add_aircraft(ac);
-        if delivery || (tower && self.config.staffing.ground) {
+        if delivery || (tower && self.config.staffing.ground && !ramp) {
             self.say(Speaker::Pilot, call);
         }
     }
@@ -287,9 +296,14 @@ impl World {
         }
         for &index in parked.iter().rev() {
             let ac = self.aircraft.remove(index);
+            // Handed to the ramp at its spot: already counted there.
+            if ac.surface_freq == Position::Ramp {
+                continue;
+            }
             self.emergency_parked(&ac);
             self.emit(SimEvent::Parked { callsign: ac.callsign });
         }
+        self.run_ramp();
         self.check_ground_conflicts();
         self.remove_cleared_arrivals();
     }
@@ -305,9 +319,14 @@ impl World {
             if ac.emergency.as_ref().is_some_and(|e| e.stops_on_runway()) {
                 continue;
             }
-            let parking = if self.config.staffing.surface_traffic() { self.free_parking(self.surface().nearest_node(ac.pos)) } else { None };
+            let parking = if self.config.staffing.surface_traffic() {
+                self.pick_parking(ac, self.surface().nearest_node(ac.pos))
+            } else {
+                None
+            };
+            let goal = self.taxi_in_goal_for(ac, parking);
             let map = self.surface();
-            let Some((behind, path)) = plan_exit(map, &self.airport, ac, parking) else { continue };
+            let Some((behind, path)) = plan_exit(map, &self.airport, ac, goal) else { continue };
             let runway = map.runway_of_end[ac.approach_runway.expect("planned an exit")];
             let now = self.time;
             let ac = &mut self.aircraft[index];

@@ -167,13 +167,9 @@ impl World {
                 && ac.flow == Flow::Arrival
                 && stopped
                 && clear_of_runway
-                && ac.parking.is_none_or(|p| {
-                    self.airport.surface.as_ref().is_some_and(|m| {
-                        ac.taxi
-                            .as_ref()
-                            .is_some_and(|t| t.node != m.parking[p].node)
-                    })
-                });
+                && self
+                    .taxi_in_goal(ac)
+                    .is_none_or(|goal| ac.taxi.as_ref().is_some_and(|t| t.node != goal));
             // Stopped short of the runway, off its route: a wrong turn.
             let lost_departure = super::mistakes::lost(ac) && clear_of_runway && !self.at_departure_hold(ac);
             if staffing.ground && (parked_departure || arrival_waiting || lost_departure) {

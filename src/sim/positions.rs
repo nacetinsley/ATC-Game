@@ -13,6 +13,8 @@ pub enum Position {
     Ground,
     /// Clearance Delivery: IFR clearances for departures at the gate.
     Delivery,
+    /// An airline's ramp tower, or a pilot parking at an FBO: off ATC frequencies.
+    Ramp,
 }
 
 impl Position {
@@ -23,6 +25,7 @@ impl Position {
             Position::Local => "Tower",
             Position::Ground => "Ground",
             Position::Delivery => "Clearance",
+            Position::Ramp => "Ramp",
         }
     }
 }
@@ -73,6 +76,7 @@ impl Staffing {
             Position::Local => self.local,
             Position::Ground => self.ground,
             Position::Delivery => self.delivery,
+            Position::Ramp => false,
         }
     }
 

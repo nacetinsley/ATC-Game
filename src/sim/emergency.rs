@@ -640,6 +640,7 @@ impl World {
                 super::positions::Position::Ground => "Ground",
                 super::positions::Position::Delivery => "Clearance",
                 super::positions::Position::Center => "Center",
+                super::positions::Position::Ramp => "Ramp",
             };
             let call = if kind == EmergencyKind::Medical {
                 "Pan-pan, pan-pan, pan-pan"

@@ -179,6 +179,8 @@ fn taxi_phrase(to: usize, via: &[String], ac: &Aircraft, airport: &Airport) -> S
     let Some(map) = airport.surface.as_ref() else { return "taxi".into() };
     let target = if let Some(spot) = map.parking.iter().find(|p| p.node == to) {
         format!("taxi to {}", spot.name)
+    } else if let Some(spot) = map.spots.iter().find(|s| s.node == to) {
+        format!("taxi to {}", spot.spoken())
     } else if let Some(end) = (0..airport.runways.len()).find(|&e| map.departure_hold(e) == Some(to))
     {
         format!("runway {}, taxi", airport.runways[end].id)
@@ -568,7 +570,7 @@ fn surface<'a>(ac: &Aircraft, airport: &'a Airport) -> Result<&'a GroundMap, Str
 }
 
 /// Replace an aircraft's taxi route, starting from `origin`.
-fn set_route(ac: &mut Aircraft, map: &GroundMap, origin: usize, nodes: Vec<usize>) {
+pub(super) fn set_route(ac: &mut Aircraft, map: &GroundMap, origin: usize, nodes: Vec<usize>) {
     let at_origin = map.nodes[origin].pos.distance(ac.pos) < AT_NODE_NM;
     let taxi = ac.taxi.get_or_insert_with(|| Taxi::at(origin));
     if at_origin {

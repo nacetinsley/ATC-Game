@@ -1,0 +1,127 @@
+# Hand-set values for KMEM: everything FAA data doesn't supply. These are game
+# choices, not published facts.
+
+name = "Memphis International"
+# The TRACON whose MVA chart is used: Memphis.
+tracon = "M03"
+
+# The real Memphis TRACON boundary isn't published, so this is a game-defined
+# circle. STARs are trimmed to start at their first fix inside it.
+sector_radius_nm = 50
+sector_sides = 24
+
+# The MEM VOR sits on the field. Procedures that start there (ELVIS SID,
+# some RNAV transitions) would have aircraft fly over the airport, so fixes
+# this close are left out.
+field_nm = 3.0
+
+# SID initial climb and Center's handoff altitude aren't in the CIFP.
+departure_initial_altitude = 5000.0
+exit_altitude = 12000.0
+
+# An airline and cargo hub: VFR traffic shares a runway with IFR departures,
+# and there isn't much of it.
+vfr_runway = "shared"
+vfr_rate = 2.0
+
+# Nearby fields shown on the scope for orientation. Their traffic isn't simulated.
+[[references]]
+code = "KOLV"
+
+[[references]]
+code = "KNQA"
+
+# Where flights come from and go to, for the flight strips only. A judgement
+# call: FedEx and airline destinations from Memphis, grouped by rough true
+# bearing. Not route or traffic data.
+[[city_pairs]]
+bearing = 10.0
+airports = ["KORD", "KMSP", "KMKE", "KSTL"]
+
+[[city_pairs]]
+bearing = 45.0
+airports = ["KIND", "KDTW", "KCVG", "KCMH"]
+
+[[city_pairs]]
+bearing = 70.0
+airports = ["KBNA", "KEWR", "KJFK", "KBOS"]
+
+[[city_pairs]]
+bearing = 95.0
+airports = ["KCLT", "KRDU", "KIAD", "KPHL"]
+
+[[city_pairs]]
+bearing = 125.0
+airports = ["KATL", "KMCO", "KMIA", "KTPA"]
+
+[[city_pairs]]
+bearing = 170.0
+airports = ["KMSY", "KJAN", "MMMX"]
+
+[[city_pairs]]
+bearing = 215.0
+airports = ["KIAH", "KHOU", "KAUS"]
+
+[[city_pairs]]
+bearing = 245.0
+airports = ["KDFW", "KSAT", "KELP"]
+
+[[city_pairs]]
+bearing = 270.0
+airports = ["KPHX", "KLAX", "KONT", "KLAS"]
+
+[[city_pairs]]
+bearing = 290.0
+airports = ["KDEN", "KSLC", "KOAK", "KSFO"]
+
+[[city_pairs]]
+bearing = 320.0
+airports = ["KMCI", "KOMA", "KSEA", "PANC"]
+
+# South and north flow. Arrivals land the outer parallels, 18L/18R or
+# 36L/36R, and departures use the long centre runway, 18C/36C. The game
+# configuration names one landing runway; the other parallel is offered on
+# the approach (C) as a second landing runway.
+[[configs]]
+name = "South"
+arrival = "18L"
+departure = "18C"
+departure_long = "18C"
+star_transition = "RW18B"
+
+[[configs]]
+name = "North"
+arrival = "36R"
+departure = "36C"
+departure_long = "36C"
+star_transition = "RW36B"
+
+# FedEx runs its own ramp tower: Ground hands its aircraft over at a ramp
+# spot, and the ramp picks the stand and brings departures out.
+[ramp_control]
+name = "FedEx Ramp"
+airlines = ["FDX", "MTN"]
+
+[traffic]
+# ESTIMATE, in movements per hour. MEM handles roughly 220,000 operations a
+# year, about 600 a day, well over half of them FedEx. Daytime runs about 25
+# an hour; the FedEx night banks are far busier. The ramp from 25 to 50 stands
+# in for the build into a bank. No hourly IFR count was available.
+start_rate = 25.0
+end_rate = 50.0
+arrival_share = 0.5
+# Used only for types without their own airlines below.
+callsign_prefixes = ["FDX", "DAL", "SWA", "AAL"]
+# The FedEx hub fleet (777F, MD-11F, 767F, A300F, 757F and Cessna Caravan
+# feeders) and the passenger airlines. Shares are a judgement call from
+# FedEx's fleet and the airlines serving MEM, not movement counts.
+fleet = ["B77L", "MD11", "B763", "A306", "B752", "C208", "A320", "B738", "E175", "CRJ9"]
+fleet_weights = [8.0, 12.0, 15.0, 10.0, 10.0, 8.0, 10.0, 10.0, 8.0, 9.0]
+# Who flies each type here: FedEx, its Caravan feeder operator Mountain Air
+# Cargo, Delta, Allegiant, Southwest, American, Envoy, SkyWest and Endeavor.
+fleet_airlines = [
+    ["FDX"], ["FDX"], ["FDX"], ["FDX"], ["FDX"], ["MTN"],
+    ["DAL", "AAY"], ["SWA", "AAL"], ["ENY", "SKW"], ["EDV"],
+]
+# These park on the cargo ramps; the rest at the terminal gates.
+cargo_airlines = ["FDX", "MTN"]

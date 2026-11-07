@@ -35,6 +35,14 @@ const GENERAL_AVIATION: &str = "N";
 const INTERNATIONAL_SHARE: f32 = 0.04;
 const INTERNATIONAL_MIN_KT: f32 = 250.0;
 
+/// The airline of a flight-number callsign ("FDX123" is FDX), or None for a
+/// registration such as N175FT.
+pub fn airline_of(callsign: &str) -> Option<&str> {
+    let b = callsign.as_bytes();
+    let airline = b.len() > 3 && b[..3].iter().all(u8::is_ascii_uppercase) && b[3..].iter().all(u8::is_ascii_digit);
+    airline.then(|| &callsign[..3])
+}
+
 /// How busy the airspace is, as a multiple of the airport's normal rate.
 /// The middle level is the airport's own rate: the real-world estimate for
 /// data-backed airports, the designed ramp for fictional ones.
@@ -170,7 +178,17 @@ impl World {
     fn new_callsign(&mut self, ty: &AircraftType) -> String {
         loop {
             let airline = match &self.airport.traffic {
-                Some(t) => t.callsign_prefixes[self.rng.usize(0..t.callsign_prefixes.len())].clone(),
+                Some(t) => {
+                    // The type's own operators where the airport lists them.
+                    let own = t
+                        .fleet
+                        .iter()
+                        .position(|name| name == ty.designator)
+                        .and_then(|i| t.fleet_airlines.get(i))
+                        .filter(|list| !list.is_empty());
+                    let prefixes = own.unwrap_or(&t.callsign_prefixes);
+                    prefixes[self.rng.usize(0..prefixes.len())].clone()
+                }
                 None => AIRLINES[self.rng.usize(0..AIRLINES.len())].to_string(),
             };
             // "N" in the data means a privately registered aircraft, not an airline.
@@ -421,6 +439,15 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn airline_of_tells_flight_numbers_from_registrations() {
+        assert_eq!(airline_of("FDX1234"), Some("FDX"));
+        assert_eq!(airline_of("N175FT"), None);
+        assert_eq!(airline_of("N12345"), None);
+        assert_eq!(airline_of("CGABC"), None);
+        assert_eq!(airline_of("FDX"), None);
+    }
 
     #[test]
     fn registration_callsigns_are_mostly_n_numbers_with_a_few_foreign_jets() {

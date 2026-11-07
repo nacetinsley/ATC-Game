@@ -13,9 +13,14 @@ from import_osm import (
     HOLD_FT_WIDE,
     Centerline,
     find_parking,
+    find_spots,
+    is_movement,
+    join_gaps,
     insert_holds,
+    mapped_parking,
     physical_runways,
     snap_to_runways,
+    stand_use,
 )
 
 
@@ -79,6 +84,97 @@ class Parking(unittest.TestCase):
         spots = find_parking(lanes, [apron], [runway])
         self.assertEqual([(s["name"], s["at"]) for s in spots], [("P1", (0.0, 0.8))])
         self.assertAlmostEqual(spots[0]["heading"], 0.0, places=6)
+
+    def test_a_mapped_stand_joins_the_taxilane_and_parks_at_its_far_end(self):
+        runway = east_west_runway(HOLD_FT_WIDE)
+        lane = taxiway("", (-0.5, 0.5), (0.5, 0.5))
+        # Drawn from the gate out to the lane, ending 50 ft short of it.
+        stand = {"name": "12", "osm": 7, "points": [(0.1, 0.6), (0.1, 0.5 + 50 / FT_PER_NM)]}
+        spots, lead_ins = mapped_parking([stand], [lane], [runway])
+        self.assertEqual([(s["name"], s["at"]) for s in spots], [("12", (0.1, 0.6))])
+        self.assertAlmostEqual(spots[0]["heading"], 0.0, places=6)
+        rounded = lambda pts: [(round(x, 9), round(y, 9)) for x, y in pts]
+        self.assertIn((0.1, 0.5), rounded(lane["points"]), "the lane gets a vertex where the lead-in leaves")
+        self.assertEqual(rounded(lead_ins[0]["points"])[0], (0.1, 0.5))
+
+    def test_stands_far_from_a_taxiway_or_by_a_runway_are_left_out_and_repeats_renamed(self):
+        runway = east_west_runway(HOLD_FT_WIDE)
+        lane = taxiway("", (-0.5, 0.5), (0.5, 0.5), (0.5, 0.05))
+        stands = [
+            {"name": "", "osm": 1, "points": [(-0.2, 0.5), (-0.2, 0.6)]},
+            {"name": "", "osm": 2, "points": [(0.0, 0.5), (0.0, 0.6)]},
+            {"name": "", "osm": 3, "points": [(0.2, 0.7), (0.2, 0.8)]},    # 0.2 NM from the lane
+            {"name": "", "osm": 4, "points": [(0.5, 0.05), (0.55, 0.05)]},  # inside the runway's hold line
+        ]
+        spots, _ = mapped_parking(stands, [lane], [runway])
+        self.assertEqual([(s["name"], s["at"]) for s in spots], [("P1", (-0.2, 0.6)), ("P2", (0.0, 0.6))])
+
+
+    def test_stands_are_gates_at_a_bridge_or_terminal_ga_on_an_fbo_apron_and_ramps_otherwise(self):
+        context = {
+            "fbo": [[(2.0, 0.0), (3.0, 0.0), (3.0, 1.0), (2.0, 1.0), (2.0, 0.0)]],
+            "bridges": [[(0.0, 0.0), (0.0, 0.01)]],
+            "terminals": [[(0.5, 0.5), (0.6, 0.5), (0.6, 0.6), (0.5, 0.6), (0.5, 0.5)]],
+        }
+        self.assertEqual(stand_use([(0.0, 0.02), (0.0, 0.08)], context), "gate")
+        self.assertEqual(stand_use([(0.55, 0.65), (0.55, 0.7)], context), "gate")
+        self.assertEqual(stand_use([(2.5, 0.5), (2.5, 0.6)], context), "ga")
+        self.assertEqual(stand_use([(1.0, 1.0), (1.0, 1.1)], context), "ramp")
+
+    def test_a_stand_past_a_runway_end_is_kept(self):
+        runway = east_west_runway(HOLD_FT_WIDE)
+        # On the extended centerline, half a mile beyond the end.
+        lane = taxiway("", (1.5, -0.2), (1.5, 0.2))
+        stand = {"name": "1", "osm": 1, "points": [(1.6, 0.0), (1.52, 0.0)]}
+        spots, _ = mapped_parking([stand], [lane], [runway])
+        self.assertEqual(len(spots), 1)
+
+
+class Ramps(unittest.TestCase):
+    def test_a_small_gap_straight_ahead_is_joined(self):
+        main = taxiway("A", (0.0, 0.0), (1.0, 0.0))
+        # Stops 40 ft short of A, pointing at it.
+        lane = taxiway("", (0.5, 0.3), (0.5, 40 / FT_PER_NM))
+        self.assertEqual(join_gaps([main, lane]), 1)
+        self.assertEqual(lane["points"][-1], (0.5, 0.0))
+        self.assertIn((0.5, 0.0), main["points"])
+
+    def test_a_line_passing_alongside_or_far_off_is_not_joined(self):
+        main = taxiway("A", (0.0, 0.0), (1.0, 0.0))
+        # Ends 40 ft from A but runs parallel to it.
+        alongside = taxiway("", (0.2, 40 / FT_PER_NM), (0.4, 40 / FT_PER_NM))
+        far = taxiway("", (0.7, 0.3), (0.7, 0.1))
+        self.assertEqual(join_gaps([main, alongside, far]), 0)
+
+    def test_movement_area_is_faa_named_taxiways_off_the_aprons(self):
+        apron = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]
+        self.assertTrue(is_movement(taxiway("M5", (2.0, 0.0), (3.0, 0.0)), [apron]))
+        self.assertFalse(is_movement(taxiway("CL", (0.2, 0.5), (0.8, 0.5)), [apron]))
+        self.assertFalse(is_movement(taxiway("Southeast", (2.0, 0.0), (3.0, 0.0)), [apron]))
+        self.assertFalse(is_movement(taxiway("", (2.0, 0.0), (3.0, 0.0)), [apron]))
+
+    def test_stands_share_a_spot_where_their_ramp_meets_the_movement_area(self):
+        apron = [(-1.0, 0.1), (1.0, 0.1), (1.0, 1.0), (-1.0, 1.0), (-1.0, 0.1)]
+        fbo = [(2.0, 0.1), (3.0, 0.1), (3.0, 1.0), (2.0, 1.0), (2.0, 0.1)]
+        lines = [
+            taxiway("A", (-1.0, 0.0), (0.0, 0.0), (2.5, 0.0), (3.0, 0.0)),
+            taxiway("Ramp", (0.0, 0.0), (0.0, 0.4), (0.0, 0.5)),  # a ramp lane off A
+            taxiway("", (0.0, 0.5), (0.1, 0.5)),            # stand lead-ins
+            taxiway("", (0.0, 0.4), (-0.1, 0.4)),
+            taxiway("", (2.5, 0.0), (2.5, 0.3)),            # into the FBO
+        ]
+        parking = [
+            {"name": "1", "at": (0.1, 0.5), "use": "ramp"},
+            {"name": "2", "at": (-0.1, 0.4), "use": "ramp"},
+            {"name": "G1", "at": (2.5, 0.3), "use": "ga"},
+            {"name": "B1", "at": (0.0, 0.0), "use": "gate"},
+        ]
+        context = {"fbo": [fbo], "fbo_names": ["Wilson Air"]}
+        spots = find_spots(lines, parking, [apron, fbo], context)
+        self.assertEqual([(s["name"], s["at"]) for s in spots], [("1", (0.0, 0.0)), ("Wilson Air", (2.5, 0.0))])
+        self.assertEqual([p.get("spot") for p in parking], ["1", "1", "Wilson Air", None])
+        # The ramp's own lanes are flagged; A, Ground's, isn't.
+        self.assertEqual([bool(t.get("ramp")) for t in lines], [False, True, True, True, True])
 
 
 class Runways(unittest.TestCase):

@@ -12,9 +12,15 @@ pub const DEFAULT_AIRPORT: &str = include_str!("../../assets/airports/fictional.
 pub const KSUS_AIRPORT: &str = include_str!("../../assets/airports/ksus.toml");
 /// Generated from OpenStreetMap by `tools/import_osm.py`. ODbL, kept in its own file.
 pub const KSUS_GROUND: &str = include_str!("../../assets/airports/ksus_ground.toml");
+/// Memphis, generated the same way as KSUS.
+pub const KMEM_AIRPORT: &str = include_str!("../../assets/airports/kmem.toml");
+pub const KMEM_GROUND: &str = include_str!("../../assets/airports/kmem_ground.toml");
 /// Every playable airport in menu order, with any separate ground layout.
-pub const CATALOG: [(&str, Option<&str>); 2] =
-    [(DEFAULT_AIRPORT, None), (KSUS_AIRPORT, Some(KSUS_GROUND))];
+pub const CATALOG: [(&str, Option<&str>); 3] = [
+    (DEFAULT_AIRPORT, None),
+    (KSUS_AIRPORT, Some(KSUS_GROUND)),
+    (KMEM_AIRPORT, Some(KMEM_GROUND)),
+];
 
 /// A ground layout file on its own.
 #[derive(Deserialize)]
@@ -195,6 +201,23 @@ pub struct TrafficProfile {
     pub callsign_prefixes: Vec<String>,
     pub fleet: Vec<String>,
     pub fleet_weights: Vec<f32>,
+    /// Who flies each fleet type, by callsign prefix. Empty, or one list per
+    /// type; a type with an empty list uses `callsign_prefixes`.
+    #[serde(default)]
+    pub fleet_airlines: Vec<Vec<String>>,
+    /// Callsign prefixes that park on the cargo ramp rather than at a gate.
+    #[serde(default)]
+    pub cargo_airlines: Vec<String>,
+}
+
+/// An airline's ramp tower: Ground hands its aircraft over at a ramp spot,
+/// and it picks their stands and brings departures out.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RampControl {
+    /// As spoken: "over to FedEx Ramp".
+    pub name: String,
+    /// Callsign prefixes it handles.
+    pub airlines: Vec<String>,
 }
 
 /// Airports traffic flies to or from in one direction, for flight plans. The
@@ -241,6 +264,8 @@ pub struct Airport {
     #[serde(default = "default_initial_altitude")]
     pub departure_initial_altitude: f32,
     pub traffic: Option<TrafficProfile>,
+    /// An airline ramp tower running part of the apron, if there is one.
+    pub ramp_control: Option<RampControl>,
     #[serde(default)]
     pub references: Vec<Reference>,
     /// Where flights come from and go to, by direction.
@@ -388,6 +413,9 @@ impl Airport {
         if let Some(traffic) = &self.traffic {
             if traffic.fleet.is_empty() || traffic.fleet.len() != traffic.fleet_weights.len() {
                 return Err("traffic fleet and weights must match and not be empty".into());
+            }
+            if !traffic.fleet_airlines.is_empty() && traffic.fleet_airlines.len() != traffic.fleet.len() {
+                return Err("traffic fleet_airlines needs one list per fleet type".into());
             }
             if traffic.callsign_prefixes.is_empty() {
                 return Err("traffic needs at least one callsign prefix".into());

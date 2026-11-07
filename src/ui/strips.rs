@@ -642,10 +642,14 @@ pub fn marks(
 fn gate(world: &World, ac: &Aircraft) -> Option<String> {
     let map = world.airport.surface.as_ref()?;
     match ac.flow {
-        Flow::Arrival => ac.parking.and_then(|p| map.parking.get(p)).map(|p| p.name.clone()),
+        Flow::Arrival => match world.ramp_spot(ac) {
+            Some(spot) => Some(map.spots[spot].short()),
+            None => ac.parking.and_then(|p| map.parking.get(p)).map(|p| p.name.clone()),
+        },
         Flow::Departure if ac.phase == Phase::Parked => {
             let node = ac.taxi.as_ref()?.node;
-            map.parking.iter().find(|p| p.node == node).map(|p| p.name.clone())
+            let stand = map.parking.iter().position(|p| p.node == node).map(|p| map.stand_name(p));
+            stand.or_else(|| map.spots.iter().find(|s| s.node == node).map(|s| s.short()))
         }
         Flow::Departure => None,
     }
@@ -700,6 +704,10 @@ impl Bay {
 
 /// Where the strip sits for this position, if it has one at all.
 pub fn bay(world: &World, ac: &Aircraft) -> Option<Bay> {
+    // With an airline's ramp tower or parking at the FBO: off ATC's board.
+    if ac.on_ground && ac.frequency() == Position::Ramp {
+        return None;
+    }
     let staffing = world.staffing();
     let tower = staffing.tower();
     let radar = staffing.approach;
@@ -1358,7 +1366,7 @@ fn field_tip(world: &World, ac: &Aircraft, printed: &Printed, m: &Marks, field: 
         Field::B9c => (
             "Block 9c: gate",
             reading(&m.b9c),
-            "Where an arrival will park (known once it lands), or the gate a departure is waiting at.",
+            "Where an arrival will park (known once it lands), or the gate a departure is waiting at. S6 is ramp spot 6: taxi there and the ramp takes over.",
         ),
         Field::Grid(i) => {
             let pens = &m.grid[i];

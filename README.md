@@ -17,6 +17,8 @@ reply "unable", and the scope shows only what radar sees on each sweep.
 |---|---|
 | **XHGT** Harrowgate International | Fictional. Two parallel runways, airline traffic that builds through the shift. |
 | **KSUS** Spirit of St. Louis | Real runways, STARs, SIDs, ILS and RNAV (GPS) approaches and minimum vectoring altitudes from FAA data. Business jets and general aviation at an estimated real-world rate. |
+| **KMEM** Memphis International | The FedEx superhub, from the same FAA data: four runways with an ILS at every end, nine STARs, RNAV approaches, the Memphis TRACON MVA chart, and the 242 gates and stands mapped in OpenStreetMap: airlines park at the terminal gates, FedEx on its ramps, and general aviation at the FBO. FedEx runs its own ramp tower: Ground taxis freighters to a ramp spot and hands them over (see [Ramp control](#ramp-control)).
+ South flow lands 18L/18R and departs 18C; north flow the reverse. FedEx freighters (777F, MD-11F, 767F, A300F, 757F and Caravan feeders) alongside the passenger airlines, at an estimated rate building into a bank. |
 
 Choose the airport and your position on the start screen. Press D (or click
 the Difficulty box) to set how hard the shift is:
@@ -84,7 +86,8 @@ in a circle a couple of miles short of the entry point until it's free. You sequ
 them, so the only air penalty between VFR aircraft is a near collision. A VFR
 aircraft not cleared by short final goes around and rejoins the pattern.
 Each airport sets its own VFR rate: KSUS sees about 8 light aircraft an hour
-at Normal traffic, busy Harrowgate about 4.
+at Normal traffic, busy Harrowgate about 4, and Memphis, which shares its
+departure runway like Harrowgate, about 2.
 
 ## Reading the scope
 
@@ -168,6 +171,29 @@ B738 TAXI 27L   line 2: type, then the status, timeshared with the ground
 The status reads, for example, `TAXI 27L`, `HOLD 27L` (holding short), `RDY 27L` (at the
 hold line), `LUAW 27L`, `ROLL 27L`, `ROLLOUT`, `WAIT` (held up by traffic),
 or an arrival's runway and distance out.
+
+### Ramp control
+
+At Memphis, FedEx runs its own ramp tower, so Ground doesn't taxi freighters
+to a stand. The ramp spots, white boxes labelled `S1` to `S20`, are where its
+ramps meet the taxiways.
+- **On the map:** the FedEx and FBO ramps are labelled by name (`FEDEX RAMP`,
+  `WILSON AIR`) instead of showing each stand. Their lanes are drawn fainter
+  and aren't lettered, since Ground doesn't taxi anyone on them. Only the
+  terminal gates are still drawn.
+- **FedEx arrivals:**
+  - They ask for a spot: "Ground, FDX429, clear of the runway, for spot 6".
+  - Taxi them there (click the spot). At the spot they go over to FedEx Ramp, which counts as parked.
+  - The ramp then picks the stand and brings them in. Ramp traffic is drawn without a data block.
+- **FedEx departures:**
+  - They call Delivery from the stand as usual, then the ramp pushes them.
+  - They call you from a spot, "Ground, FDX218, at spot 6, ready to taxi", and you taxi them as usual.
+- **Private aircraft:** go to the FBO ("for Wilson Air"). Taxi them to its spot and the pilots park themselves. Departing, they call "at Wilson Air, ready to taxi".
+- **Unchanged:** passenger airlines still taxi to a terminal gate. KSUS and Harrowgate have no ramp control.
+
+The spots are found from OpenStreetMap: the point where a stand's way out
+first reaches a lettered taxiway off the aprons. They aren't Memphis's
+published spot numbers.
 
 **Safety logic alerts.** ASDE-X alerts on:
 - an arrival within 1.5 NM of an occupied or closed runway;
@@ -276,9 +302,9 @@ and otherwise 2 miles.
 
 | Spacing | Treated as |
 |---|---|
-| Under 2,500 ft | One final, for wake spacing and ATPA. |
+| Under 2,500 ft (KMEM 18L/18C) | One final, for wake spacing and ATPA. |
 | 2,500 to 4,300 ft (KSUS 26L/26R) | Dependent. Aircraft established on each final need 1.5 miles diagonally. |
-| 4,300 ft or more (XHGT, 7,300 ft) | Independent. No separation is needed between aircraft established on each. |
+| 4,300 ft or more (XHGT, 7,300 ft; KMEM 18L/18R, 4,320 ft) | Independent. No separation is needed between aircraft established on each. |
 
 **ILS outages:** on Variable or Low IFR weather the landing runway's ILS
 sometimes fails for 20 to 40 minutes. A new ATIS reports it, and the status
@@ -313,7 +339,8 @@ Approach (and Tower, for a missed approach) can hold an arrival at a fix.
   A new hold instruction gives a new EFC.
 - **Published holds** are drawn faintly on the scope, brighter while
   someone is in one. Harrowgate has holds at its eight feeder fixes; KSUS has
-  the seven in the FAA CIFP, FTZ's missed-approach hold among them.
+  the seven in the FAA CIFP, FTZ's missed-approach hold among them, and KMEM
+its thirteen.
 - **Automated Approach:** on Tower positions, when the final is full or the
   runway can't take arrivals, new arrivals wait in the published holds,
   stacked from 5,000 ft, and are sent to final lowest first as room opens.
@@ -624,7 +651,7 @@ arrival goes around, say), the lesson takes you back and lets you try again.
 - **Safety net:** conflict alerts 60 seconds ahead, loss of separation (3 NM or
   1,000 ft), ATPA wake spacing on final, and low-altitude warnings
   against the MVA.
-- **Real procedures at KSUS:** headings are shown and spoken in magnetic,
+- **Real procedures at KSUS and KMEM:** headings are shown and spoken in magnetic,
   departures pick a runway by aircraft type, and arrivals and departures share
   the runway.
 - **Realistic callsigns:** airline flight numbers, U.S. registrations that
@@ -710,7 +737,7 @@ but not notarized.
 | R | Resume the published route |
 | T | Accept a handoff, or hand off to the next controller |
 | G | Go around. On a takeoff roll: stop immediately |
-| Click a hold line, gate or junction | Taxi the selected aircraft there |
+| Click a hold line, gate, ramp spot or junction | Taxi the selected aircraft there |
 | Ctrl-click a taxiway | Add it to the taxi route ("via") |
 | H | On the ground: hold position, or continue. In the air: hold at the fix it's flying to |
 | Ctrl-drag onto a fix (Cmd on a Mac) | Hold at that fix |
@@ -767,26 +794,29 @@ cargo test --release --test emergency -- --ignored
 Each of `delivery`, `mistakes` and `visibility` has an ignored long run too,
 of 100 shifts or more.
 
-## Updating the KSUS data
+## Updating the KSUS and KMEM data
 
-`assets/airports/ksus.toml` is generated; don't edit it by hand. To rebuild it
-from a newer FAA cycle:
+`assets/airports/ksus.toml` and `kmem.toml` are generated; don't edit them by
+hand. To rebuild them from a newer FAA cycle:
 
 ```sh
 python tools/import_faa.py --cycle 261029 --nasr 2026-10-29 --airport KSUS --tracon T75
+python tools/import_faa.py --cycle 261029 --nasr 2026-10-29 --airport KMEM --tracon M03
 ```
 
 The script uses only the Python standard library and caches downloads in
 `tools/.cache`. Values that real data can't supply, such as the sector
 boundary, handoff altitudes and traffic rate, live in
-`tools/ksus_overrides.toml`.
+`tools/ksus_overrides.toml` and `tools/kmem_overrides.toml`.
 
-The taxiway layout in `assets/airports/ksus_ground.toml` comes from
-OpenStreetMap. Run it after the FAA import, which supplies the runways and map
-origin:
+The taxiway layouts in `assets/airports/ksus_ground.toml` and
+`kmem_ground.toml` come from OpenStreetMap. Run the import after the FAA
+import, which supplies the runways and map origin. Memphis needs a bigger box
+to take in the whole field:
 
 ```sh
 python tools/import_osm.py --airport KSUS --cycle 261029
+python tools/import_osm.py --airport KMEM --cycle 261029 --box 0.035
 ```
 
 ## Project layout
@@ -802,10 +832,11 @@ tools/        FAA and OpenStreetMap importers and their tests
 
 ## Data notice
 
-**Not for navigation.** KSUS data is derived from FAA CIFP, NASR and MVA
+**Not for navigation.** KSUS and KMEM data is derived from FAA CIFP, NASR and MVA
 products, simplified for a game and not kept current. See
 [DATA_NOTICE.md](DATA_NOTICE.md) for sources and the FAA's required
 disclaimers.
 
-KSUS taxiway data © OpenStreetMap contributors, available under the
+KSUS and KMEM taxiway data © OpenStreetMap
+ contributors, available under the
 [ODbL](https://opendatacommons.org/licenses/odbl/).

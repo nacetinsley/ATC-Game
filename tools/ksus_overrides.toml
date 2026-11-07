@@ -2,6 +2,8 @@
 # choices, not published facts.
 
 name = "Spirit of St. Louis"
+# The TRACON whose MVA chart is used: St. Louis.
+tracon = "T75"
 
 # The real St. Louis TRACON boundary isn't published, so this is a game-defined circle
 # large enough to hold every STAR entry fix (BUUDD, the farthest, is 56 NM out).

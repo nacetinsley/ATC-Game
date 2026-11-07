@@ -34,6 +34,16 @@ pub struct GroundData {
     pub holds: Vec<HoldData>,
     #[serde(default)]
     pub parking: Vec<ParkingData>,
+    #[serde(default)]
+    pub spots: Vec<SpotData>,
+}
+
+/// A ramp spot: where a ramp meets the taxiways Ground controls.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SpotData {
+    /// A number for a cargo ramp ("6"), or the FBO's name.
+    pub name: String,
+    pub at: [f32; 2],
 }
 
 /// A taxiway centerline. An empty name is an apron taxilane, never named in clearances.
@@ -42,6 +52,9 @@ pub struct TaxiwayData {
     #[serde(default)]
     pub name: String,
     pub points: Vec<[f32; 2]>,
+    /// A lane on a ramp Ground hands off at: the ramp's, so not labelled.
+    #[serde(default)]
+    pub ramp: bool,
 }
 
 /// A runway holding position. `runway` is either end's id.
@@ -57,6 +70,24 @@ pub struct ParkingData {
     pub at: [f32; 2],
     /// True heading when parked.
     pub heading: f32,
+    /// Who parks here, where the map says. Without it, anyone.
+    #[serde(default, rename = "use")]
+    pub stand: Option<StandUse>,
+    /// The ramp spot this stand is reached through, for ramps Ground hands off at.
+    #[serde(default)]
+    pub spot: Option<String>,
+}
+
+/// What a parking spot is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StandUse {
+    /// A terminal gate: passenger airlines.
+    Gate,
+    /// A cargo or remote ramp.
+    Ramp,
+    /// An FBO apron: general aviation.
+    Ga,
 }
 
 /// Both ends of one strip of pavement.
@@ -85,6 +116,8 @@ pub struct Edge {
     pub b: usize,
     pub kind: EdgeKind,
     pub length: f32,
+    /// On a ramp Ground hands off at.
+    pub ramp: bool,
 }
 
 impl Edge {
@@ -116,6 +149,39 @@ pub struct Parking {
     pub name: String,
     pub node: usize,
     pub heading: f32,
+    pub stand: Option<StandUse>,
+    /// Index into `GroundMap::spots`.
+    pub spot: Option<usize>,
+}
+
+/// Where to write a ramp's name on the map: the middle of a group of stands
+/// behind ramp spots.
+#[derive(Debug, Clone)]
+pub struct RampLabel {
+    /// An FBO's name; None for the airline ramp tower's stands.
+    pub fbo: Option<String>,
+    pub pos: Vec2,
+}
+
+/// Stands this close together, NM, are one ramp on the map.
+const RAMP_GROUP_NM: f32 = 0.15;
+
+#[derive(Debug, Clone)]
+pub struct Spot {
+    pub name: String,
+    pub node: usize,
+}
+
+impl Spot {
+    /// As said on frequency: "spot 6", or an FBO's name.
+    pub fn spoken(&self) -> String {
+        if self.name.chars().all(|c| c.is_ascii_digit()) { format!("spot {}", self.name) } else { self.name.clone() }
+    }
+
+    /// Short form for strips and data blocks: "S6", or the FBO's name.
+    pub fn short(&self) -> String {
+        if self.name.chars().all(|c| c.is_ascii_digit()) { format!("S{}", self.name) } else { self.name.clone() }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +196,8 @@ pub struct GroundMap {
     /// Node where each runway end's takeoff roll starts.
     pub lineup_node: Vec<usize>,
     pub parking: Vec<Parking>,
+    pub spots: Vec<Spot>,
+    pub ramp_labels: Vec<RampLabel>,
 }
 
 /// A taxi route and what a controller would say about it.
@@ -232,6 +300,8 @@ impl GroundMap {
             runway_of_end,
             lineup_node: Vec::new(),
             parking: Vec::new(),
+            spots: Vec::new(),
+            ramp_labels: Vec::new(),
         };
 
         // Taxiway vertices and edges.
@@ -242,7 +312,7 @@ impl GroundMap {
             let ids: Vec<usize> = taxiway.points.iter().map(|&p| map.node_at(pos(p))).collect();
             for pair in ids.windows(2) {
                 if pair[0] != pair[1] {
-                    map.add_edge(pair[0], pair[1], EdgeKind::Taxiway(taxiway.name.clone()));
+                    map.add_edge(pair[0], pair[1], EdgeKind::Taxiway(taxiway.name.clone()), taxiway.ramp);
                 }
             }
         }
@@ -267,7 +337,7 @@ impl GroundMap {
                 map.nodes[n].runway = Some(index);
             }
             for pair in on.windows(2) {
-                map.add_edge(pair[0].1, pair[1].1, EdgeKind::Runway(index));
+                map.add_edge(pair[0].1, pair[1].1, EdgeKind::Runway(index), false);
             }
         }
 
@@ -282,16 +352,90 @@ impl GroundMap {
             map.nodes[node].hold = Some(map.runway_of_end[end]);
         }
 
+        for spot in &data.spots {
+            let node = map
+                .node_for_marker(pos(spot.at))
+                .ok_or_else(|| format!("spot {} is not on a taxiway", spot.name))?;
+            map.spots.push(Spot { name: spot.name.clone(), node });
+        }
         for spot in &data.parking {
             let node = map
                 .node_for_marker(pos(spot.at))
                 .ok_or_else(|| format!("parking {} is not on a taxiway", spot.name))?;
-            map.parking.push(Parking { name: spot.name.clone(), node, heading: spot.heading });
+            let ramp = match &spot.spot {
+                Some(name) => Some(
+                    map.spots
+                        .iter()
+                        .position(|s| &s.name == name)
+                        .ok_or_else(|| format!("parking {} references unknown spot {name}", spot.name))?,
+                ),
+                None => None,
+            };
+            map.parking.push(Parking { name: spot.name.clone(), node, heading: spot.heading, stand: spot.stand, spot: ramp });
         }
 
+        map.ramp_labels = map.group_ramps();
         map.build_zones()?;
         map.validate()?;
         Ok(map)
+    }
+
+    /// What a stand is called on the radio and the map: an FBO stand by the
+    /// FBO's name, since its stands aren't drawn; any other by its own.
+    pub fn stand_name(&self, parking: usize) -> String {
+        let p = &self.parking[parking];
+        match p.spot.map(|s| &self.spots[s]) {
+            Some(spot) if !spot.name.chars().all(|c| c.is_ascii_digit()) => spot.name.clone(),
+            _ => p.name.clone(),
+        }
+    }
+
+    /// One label per group of stands behind ramp spots: stands within
+    /// RAMP_GROUP_NM of each other, of the same FBO or the airline ramp.
+    fn group_ramps(&self) -> Vec<RampLabel> {
+        let owner = |p: &Parking| {
+            let spot = &self.spots[p.spot?];
+            Some((!spot.name.chars().all(|c| c.is_ascii_digit())).then(|| spot.name.clone()))
+        };
+        let stands: Vec<(Option<String>, Vec2)> = self
+            .parking
+            .iter()
+            .filter_map(|p| Some((owner(p)?, self.nodes[p.node].pos)))
+            .collect();
+        let mut group: Vec<usize> = (0..stands.len()).collect();
+        fn root(group: &mut [usize], mut i: usize) -> usize {
+            while group[i] != i {
+                group[i] = group[group[i]];
+                i = group[i];
+            }
+            i
+        }
+        for i in 0..stands.len() {
+            for j in i + 1..stands.len() {
+                if stands[i].0 == stands[j].0 && stands[i].1.distance(stands[j].1) < RAMP_GROUP_NM {
+                    let (a, b) = (root(&mut group, i), root(&mut group, j));
+                    group[a] = b;
+                }
+            }
+        }
+        let mut labels: Vec<(usize, RampLabel, usize)> = Vec::new();
+        for (i, (fbo, pos)) in stands.iter().enumerate() {
+            let r = root(&mut group, i);
+            match labels.iter_mut().find(|l| l.0 == r) {
+                Some(l) => {
+                    l.1.pos += *pos;
+                    l.2 += 1;
+                }
+                None => labels.push((r, RampLabel { fbo: fbo.clone(), pos: *pos }, 1)),
+            }
+        }
+        labels
+            .into_iter()
+            .map(|(_, mut label, n)| {
+                label.pos /= n as f32;
+                label
+            })
+            .collect()
     }
 
     fn find_node(&self, p: Vec2) -> Option<usize> {
@@ -314,13 +458,13 @@ impl GroundMap {
         self.nodes.len() - 1
     }
 
-    fn add_edge(&mut self, a: usize, b: usize, kind: EdgeKind) {
+    fn add_edge(&mut self, a: usize, b: usize, kind: EdgeKind, ramp: bool) {
         let exists = self.adjacent[a].iter().any(|&e| self.edges[e].other(a) == b);
         if exists {
             return;
         }
         let length = self.nodes[a].pos.distance(self.nodes[b].pos);
-        self.edges.push(Edge { a, b, kind, length });
+        self.edges.push(Edge { a, b, kind, length, ramp });
         let id = self.edges.len() - 1;
         self.adjacent[a].push(id);
         self.adjacent[b].push(id);
@@ -695,8 +839,8 @@ mod tests {
     fn unreachable_parking_is_rejected() {
         let a = harrowgate();
         let mut data = a.ground.clone().unwrap();
-        data.taxiways.push(TaxiwayData { name: String::new(), points: vec![[5.0, 5.0], [5.1, 5.0]] });
-        data.parking.push(ParkingData { name: "X".into(), at: [5.1, 5.0], heading: 0.0 });
+        data.taxiways.push(TaxiwayData { name: String::new(), points: vec![[5.0, 5.0], [5.1, 5.0]], ramp: false });
+        data.parking.push(ParkingData { name: "X".into(), at: [5.1, 5.0], heading: 0.0, stand: None, spot: None });
         let err = GroundMap::build(&data, &a.runways).unwrap_err();
         assert!(err.contains("parking X"), "{err}");
     }

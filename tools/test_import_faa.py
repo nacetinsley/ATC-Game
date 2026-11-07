@@ -139,8 +139,47 @@ class Procedures(unittest.TestCase):
         self.assertAlmostEqual(star["final_heading"], 345.0)
 
     def test_missing_star_transition_fails(self):
+        legs = [self.leg("5", "", 10, "AAA"), self.leg("6", "RW08B", 10, "BBB")]
         with self.assertRaises(faa.ImportError_):
-            faa.build_stars([self.leg("5", "", 10, "AAA")], {"RW26B": "West"}, 0.0)
+            faa.build_stars(legs, {"RW26B": "West"}, 0.0)
+
+    def test_a_star_with_only_a_common_route_serves_every_runway(self):
+        legs = [self.leg("5", "ALL", 10, "AAA"), self.leg("5", "ALL", 20, "BBB")]
+        stars = faa.build_stars(legs, {"RW26B": "West", "RW08B": "East"}, 0.0)
+        self.assertEqual([(s["config"], [l["fix"] for l in s["legs"]]) for s in stars],
+                         [("West", ["AAA", "BBB"]), ("East", ["AAA", "BBB"])])
+
+    def test_without_a_common_route_each_enroute_transition_is_a_star(self):
+        airport = dict(self.leg("3", "RW18B", 30, "KMEM", "VM", "1120"), section="PA")
+        legs = [
+            self.leg("1", "ARG", 10, "ARG"),
+            self.leg("1", "ARG", 20, "DAWGG"),
+            self.leg("1", "RZC", 10, "RZC"),
+            self.leg("1", "RZC", 20, "DAWGG"),
+            self.leg("3", "RW18B", 10, "DAWGG"),
+            self.leg("3", "RW18B", 20, "FNCHR"),
+            airport,
+        ]
+        stars = faa.build_stars(legs, {"RW18B": "South"}, 0.0)
+        self.assertEqual([[l["fix"] for l in s["legs"]] for s in stars],
+                         [["ARG", "DAWGG", "DAWGG", "FNCHR"], ["RZC", "DAWGG", "DAWGG", "FNCHR"]])
+        # The leg to the airport itself is dropped, but its heading is kept.
+        self.assertAlmostEqual(stars[0]["final_heading"], 112.0)
+
+    def test_stars_start_inside_the_sector_and_merge_when_they_then_match(self):
+        fixes = {
+            ("EA", "FAR1", "K3"): (0.0, 3.0),   # 180 NM
+            ("EA", "FAR2", "K3"): (3.0, 0.0),
+            ("EA", "NEAR", "K3"): (0.0, 0.5),   # 30 NM
+        }
+        legs = [
+            self.leg("4", "ONE", 10, "FAR1"),
+            self.leg("4", "ONE", 20, "NEAR"),
+            self.leg("4", "TWO", 10, "FAR2"),
+            self.leg("4", "TWO", 20, "NEAR"),
+        ]
+        stars = faa.build_stars(legs, {"RW18B": "South"}, 0.0, fixes, (0.0, 0.0), 60)
+        self.assertEqual([[l["fix"] for l in s["legs"]] for s in stars], [["NEAR"]])
 
     def test_sids_clip_at_sector_and_merge_identical_results(self):
         origin = (0.0, 0.0)
@@ -159,6 +198,25 @@ class Procedures(unittest.TestCase):
         sids = faa.build_sids(legs, fixes, origin, 60)
         self.assertEqual(len(sids), 1)
         self.assertEqual([l["fix"] for l in sids[0]["legs"]], ["NEAR", "FAR"])
+
+    def test_sids_start_with_the_departure_runways_transition(self):
+        origin = (0.0, 0.0)
+        fixes = {
+            ("EA", "FIELD", "K3"): (0.0, 0.01),  # 0.6 NM: on the airport
+            ("EA", "WEST", "K3"): (0.0, -0.3),
+            ("EA", "EAST", "K3"): (0.0, 0.3),
+            ("EA", "EXIT", "K3"): (0.5, 0.0),
+        }
+        legs = [
+            self.leg("4", "RW18C", 10, ""),
+            self.leg("4", "RW18C", 20, "FIELD"),
+            self.leg("4", "RW18C", 30, "WEST"),
+            self.leg("4", "RW36C", 10, "EAST"),
+            self.leg("6", "OUT", 10, "EXIT"),
+        ]
+        sids = faa.build_sids(legs, fixes, origin, 60, "18C", field_nm=3.0)
+        self.assertEqual([l["fix"] for l in sids[0]["legs"]], ["WEST", "EXIT"])
+        self.assertEqual(faa.build_sids(legs, fixes, origin, 60, "27", field_nm=3.0), [])
 
 
 R26L = [

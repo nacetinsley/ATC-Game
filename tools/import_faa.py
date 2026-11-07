@@ -25,10 +25,18 @@ USER_AGENT = "Mozilla/5.0 (compatible; atcgame-import)"
 FT_PER_NM = 6076.12
 CIFP_MEMBER = "FAACIFP18"
 
-STAR_COMMON = "5"
-STAR_RUNWAY_TRANSITION = "6"
-SID_COMMON = "2"
-SID_TRANSITION = "3"
+# ARINC 424 route types. STARs: enroute transitions, the common route, then
+# runway transitions; conventional, RNAV and RNP ("1"/"2"/"3" are RNAV,
+# "4"/"5"/"6" conventional, "7"/"8"/"9" RNP).
+STAR_ENROUTE = "147"
+STAR_COMMON = "258"
+STAR_RUNWAY_TRANSITION = "369"
+# SIDs run the other way: runway transitions, common route, enroute transitions.
+SID_RUNWAY_TRANSITION = "14"
+SID_COMMON = "25"
+SID_TRANSITION = "36"
+# Legs that end a route on a heading for vectors.
+VECTOR_PATHS = ("FM", "VM")
 
 
 class ImportError_(Exception):
@@ -149,7 +157,8 @@ def parse_nasr_runway_ends(line):
     """Physical ends of one NASR RWY record, as {runway id: (lat, lon)}."""
     base, _, reciprocal = line[16:23].strip().partition("/")
     coord = re.compile(r"(\d\d-\d\d-\d\d\.\d{4}[NS])\s*\S*?(\d{3}-\d\d-\d\d\.\d{4}[EW])")
-    split = re.search(re.escape(reciprocal) + r"\d{3}", line[60:])
+    # The id is padded to three characters: "27 272", "26L258".
+    split = re.search(re.escape(reciprocal.ljust(3)) + r"\d{3}", line[60:])
     if not base or not reciprocal or not split:
         raise ImportError_(f"can't read NASR runway {line[16:30]!r}")
     middle = 60 + split.start()
@@ -241,31 +250,65 @@ def legs_for(records, kind):
     return sorted(legs, key=lambda l: (l["procedure"], l["route_type"], l["transition"], l["sequence"]))
 
 
-def build_stars(legs, config_by_transition, variation):
-    """One route per STAR and runway direction: common part plus runway transition."""
-    stars = []
+def is_airport_leg(leg):
+    """A leg to the airport reference point: 'expect vectors', not a fix to fly to."""
+    return leg["section"] == "PA"
+
+
+def star_entries(mine):
+    """Where a STAR starts: its common route, or with none, each enroute transition."""
+    common = [l for l in mine if l["route_type"] in STAR_COMMON]
+    if common:
+        return [common]
+    entries = []
+    for transition in dict.fromkeys(l["transition"] for l in mine if l["route_type"] in STAR_ENROUTE):
+        entries.append([l for l in mine if l["route_type"] in STAR_ENROUTE and l["transition"] == transition])
+    return entries
+
+
+def trim_to_sector(legs, fixes, origin, radius):
+    """Start at the first fix inside the sector: arrivals are spawned before it."""
+    for i, leg in enumerate(legs):
+        pos = fixes.get((leg["section"], leg["fix"], leg["region"]))
+        if pos is not None and in_circle(project(pos, origin), radius):
+            return legs[i:]
+    return legs[-1:]
+
+
+def build_stars(legs, config_by_transition, variation, fixes=None, origin=None, radius=None):
+    """Routes for each STAR and runway direction: where it starts (the common
+    route, or each enroute transition when there's none) plus the runway
+    transition, if the STAR has any. With `fixes`, routes start at the sector."""
+    stars, seen = [], set()
     for name in dict.fromkeys(l["procedure"] for l in legs):
-        common = [l for l in legs if l["procedure"] == name and l["route_type"] == STAR_COMMON]
+        mine = [l for l in legs if l["procedure"] == name]
+        has_runway = any(l["route_type"] in STAR_RUNWAY_TRANSITION for l in mine)
+        entries = star_entries(mine)
         for transition, config in config_by_transition.items():
             part = [
-                l
-                for l in legs
-                if l["procedure"] == name
-                and l["route_type"] == STAR_RUNWAY_TRANSITION
-                and l["transition"] == transition
+                l for l in mine
+                if l["route_type"] in STAR_RUNWAY_TRANSITION and l["transition"] == transition
             ]
-            if not common or not part:
+            if not entries or (has_runway and not part):
                 raise ImportError_(f"{name}: missing common route or {transition} transition")
-            route = common + part
-            final = [l for l in route if l["path"] == "FM"]
-            heading = None
-            if final and final[-1]["course"]:
-                heading = (int(final[-1]["course"]) / 10 + variation) % 360
-            stars.append({"name": name, "config": config, "legs": route, "final_heading": heading})
+            for entry in entries:
+                route = entry + part
+                final = [l for l in route if l["path"] in VECTOR_PATHS]
+                heading = None
+                if final and final[-1]["course"]:
+                    heading = (int(final[-1]["course"]) / 10 + variation) % 360
+                route = [l for l in route if not is_airport_leg(l)]
+                if fixes is not None:
+                    route = trim_to_sector(route, fixes, origin, radius)
+                key = (config, tuple(dedupe_consecutive(l["fix"] for l in route)))
+                if key in seen:
+                    continue
+                seen.add(key)
+                stars.append({"name": name, "config": config, "legs": route, "final_heading": heading})
     return stars
 
 
-def build_approaches(legs, fixes, origin, radius):
+def build_approaches(legs, fixes, origin, radius, field_nm=0.0):
     """RNAV (GPS) approaches: the final segment from the intermediate fix to
     the runway, with each fix's at-or-above altitude and the glidepath, and
     the transitions from initial approach fixes inside the sector."""
@@ -295,7 +338,10 @@ def build_approaches(legs, fixes, origin, radius):
             # A hold in lieu of a procedure turn at the intermediate fix is no route.
             if len(names) < 2 or names[-1] != intermediate:
                 continue
-            if not in_circle(project(resolve(route[0], fixes), origin), radius):
+            iaf = project(resolve(route[0], fixes), origin)
+            # Out of the sector, or a navaid on the field: flying it means
+            # crossing the airport, which no controller would ask for.
+            if not in_circle(iaf, radius) or in_circle(iaf, field_nm):
                 continue
             transitions.append(route)
         approaches.append({
@@ -319,25 +365,42 @@ def clip_to_sector(legs, fixes, origin, radius):
     return kept
 
 
-def build_sids(legs, fixes, origin, radius):
-    """Every SID transition, clipped at the sector and with duplicates removed."""
+def runway_transition_names(runway):
+    """CIFP names for a runway's transition: its own, then the one for all its
+    parallels ("RW18B")."""
+    if not runway:
+        return []
+    return [f"RW{runway}", f"RW{runway[:2]}B"]
+
+
+def build_sids(legs, fixes, origin, radius, runway=None, field_nm=0.0):
+    """Every SID transition from `runway`, clipped at the sector and with
+    duplicates removed. A SID with runway transitions but none for this runway
+    is left out. Fixes on the field (`field_nm`) are dropped from the start."""
     sids, seen = [], set()
     for name in dict.fromkeys(l["procedure"] for l in legs):
-        common = [l for l in legs if l["procedure"] == name and l["route_type"] == SID_COMMON]
-        transitions = dict.fromkeys(
-            l["transition"]
-            for l in legs
-            if l["procedure"] == name and l["route_type"] == SID_TRANSITION
-        )
+        mine = [l for l in legs if l["procedure"] == name]
+        start = []
+        if any(l["route_type"] in SID_RUNWAY_TRANSITION for l in mine):
+            for wanted in runway_transition_names(runway):
+                start = [l for l in mine if l["route_type"] in SID_RUNWAY_TRANSITION and l["transition"] == wanted]
+                if start:
+                    break
+            if not start:
+                continue
+        common = [l for l in mine if l["route_type"] in SID_COMMON]
+        transitions = dict.fromkeys(l["transition"] for l in mine if l["route_type"] in SID_TRANSITION)
         for transition in transitions or [""]:
-            part = [
-                l
-                for l in legs
-                if l["procedure"] == name
-                and l["route_type"] == SID_TRANSITION
-                and l["transition"] == transition
-            ]
-            route = clip_to_sector(common + part, fixes, origin, radius)
+            part = [l for l in mine if l["route_type"] in SID_TRANSITION and l["transition"] == transition]
+            # Climbs and headings with no fix aren't flown here: the game
+            # starts its own climb.
+            route = [l for l in start + common + part if l["fix"]]
+            while route and field_nm and in_circle(project(resolve(route[0], fixes), origin), field_nm):
+                route = route[1:]
+            if not route:
+                continue
+            route = clip_to_sector(route, fixes, origin, radius)
+
             names = tuple(dedupe_consecutive(l["fix"] for l in route))
             if names not in seen:
                 seen.add(names)
@@ -408,8 +471,12 @@ def render(data):
     for key in ("elevation", "magnetic_variation", "go_around_altitude", "mva_default",
                 "departure_initial_altitude"):
         out.append(f"{key} = {fmt(data[key])}")
+    if data.get("vfr_runway"):
+        out.append(f'vfr_runway = "{data["vfr_runway"]}"')
+    if data.get("vfr_rate") is not None:
+        out.append(f"vfr_rate = {fmt(data['vfr_rate'])}")
     out.append("")
-    out.append("# Game-defined sector: the real T75 boundary isn't published.")
+    out.append(f"# Game-defined sector: the real {data['tracon']} boundary isn't published.")
     out.append(f"sector = {toml_ring(data['sector'])}")
     out.append("")
     out.append("[traffic]")
@@ -420,6 +487,13 @@ def render(data):
     out.append(f"callsign_prefixes = {toml_names(traffic['callsign_prefixes'])}")
     out.append(f"fleet = {toml_names(traffic['fleet'])}")
     out.append(f"fleet_weights = [{', '.join(fmt(w) for w in traffic['fleet_weights'])}]")
+    if "fleet_airlines" in traffic:
+        out.append("fleet_airlines = [" + ", ".join(toml_names(a) for a in traffic["fleet_airlines"]) + "]")
+    if "cargo_airlines" in traffic:
+        out.append(f"cargo_airlines = {toml_names(traffic['cargo_airlines'])}")
+    if data.get("ramp_control"):
+        ramp = data["ramp_control"]
+        out += ["", "[ramp_control]", f'name = "{ramp["name"]}"', f"airlines = {toml_names(ramp['airlines'])}"]
     for reference in data["references"]:
         out += ["", "[[references]]", f'name = "{reference["name"]}"']
         out += [f"x = {fmt(reference['x'])}", f"y = {fmt(reference['y'])}"]
@@ -520,8 +594,14 @@ def build(lines, nasr_lines, mva_root, overrides, airport_code, cycle, mva_descr
         })
 
     config_by_transition = {c["star_transition"]: c["name"] for c in overrides["configs"]}
-    stars_raw = build_stars(legs_for(records, "E"), config_by_transition, variation)
-    sids_raw = build_sids(legs_for(records, "D"), fixes, origin, radius)
+    stars_raw = build_stars(legs_for(records, "E"), config_by_transition, variation, fixes, origin, radius)
+    # Navaids on the field start some procedures; nobody flies over the airport.
+    field_nm = overrides.get("field_nm", 0.0)
+    sid_legs = legs_for(records, "D")
+    sids_by_config = {
+        c["name"]: build_sids(sid_legs, fixes, origin, radius, c["departure"], field_nm)
+        for c in overrides["configs"]
+    }
 
     used = {}
     def use(legs):
@@ -540,14 +620,17 @@ def build(lines, nasr_lines, mva_root, overrides, airport_code, cycle, mva_descr
         {"name": s["name"], "config": c["name"], "fixes": use(s["legs"]),
          "exit_altitude": overrides["exit_altitude"]}
         for c in overrides["configs"]
-        for s in sids_raw
+        for s in sids_by_config[c["name"]]
     ]
+    for c in overrides["configs"]:
+        if not any(s["config"] == c["name"] for s in sids):
+            raise ImportError_(f"no SID from runway {c['departure']}")
 
     approaches = [
         {"runway": a["runway"], "name": a["name"], "fixes": use(a["legs"]),
          "altitudes": a["altitudes"], "glidepath_deg": a["glidepath_deg"],
          "transitions": [use(t) for t in a["transitions"]]}
-        for a in build_approaches(legs_for(records, "F"), fixes, origin, radius)
+        for a in build_approaches(legs_for(records, "F"), fixes, origin, radius, field_nm)
     ]
 
     # Published holds inside the sector, with their fixes.
@@ -602,6 +685,8 @@ def build(lines, nasr_lines, mva_root, overrides, airport_code, cycle, mva_descr
         ],
         "name": overrides["name"],
         "code": airport_code,
+        "tracon": overrides.get("tracon", "TRACON"),
+
         "data_source": f"FAA data cycle {cycle} - NOT FOR NAVIGATION",
         "elevation": airport["elevation"],
         "magnetic_variation": variation,
@@ -610,6 +695,9 @@ def build(lines, nasr_lines, mva_root, overrides, airport_code, cycle, mva_descr
         "departure_initial_altitude": overrides["departure_initial_altitude"],
         "sector": sector,
         "traffic": overrides["traffic"],
+        "ramp_control": overrides.get("ramp_control"),
+        "vfr_runway": overrides.get("vfr_runway"),
+        "vfr_rate": overrides.get("vfr_rate"),
         "references": references,
         "city_pairs": [
             {"bearing": float(p["bearing"]), "airports": list(p["airports"])}

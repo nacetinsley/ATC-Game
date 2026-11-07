@@ -47,7 +47,7 @@ pub struct AircraftType {
 /// The types an airport with no traffic section draws from. New types go after these.
 pub const DEFAULT_FLEET_SIZE: usize = 6;
 
-pub static TYPES: [AircraftType; 13] = [
+pub static TYPES: [AircraftType; 19] = [
     AircraftType {
         designator: "C208",
         wake: WakeCategory::Small,
@@ -230,6 +230,91 @@ pub static TYPES: [AircraftType; 13] = [
         min_runway_ft: 2000.0,
         cat3: false,
     },
+    // Memphis: the FedEx hub fleet and regional jets.
+    AircraftType {
+        designator: "B77L",
+        wake: WakeCategory::Heavy,
+        vref: 150.0,
+        min_speed: 170.0,
+        max_speed: 320.0,
+        climb_fpm: 2000.0,
+        descent_fpm: 2200.0,
+        accel: 2.0,
+        decel: 1.2,
+        arrival_altitude: 14000.0,
+        min_runway_ft: 9000.0,
+        cat3: true,
+    },
+    AircraftType {
+        designator: "MD11",
+        wake: WakeCategory::Heavy,
+        vref: 155.0,
+        min_speed: 175.0,
+        max_speed: 320.0,
+        climb_fpm: 1800.0,
+        descent_fpm: 2200.0,
+        accel: 1.8,
+        decel: 1.1,
+        arrival_altitude: 14000.0,
+        min_runway_ft: 9500.0,
+        cat3: true,
+    },
+    AircraftType {
+        designator: "B763",
+        wake: WakeCategory::Heavy,
+        vref: 140.0,
+        min_speed: 165.0,
+        max_speed: 320.0,
+        climb_fpm: 2200.0,
+        descent_fpm: 2200.0,
+        accel: 2.0,
+        decel: 1.2,
+        arrival_altitude: 14000.0,
+        min_runway_ft: 8000.0,
+        cat3: true,
+    },
+    AircraftType {
+        designator: "A306",
+        wake: WakeCategory::Heavy,
+        vref: 140.0,
+        min_speed: 165.0,
+        max_speed: 310.0,
+        climb_fpm: 2000.0,
+        descent_fpm: 2000.0,
+        accel: 2.0,
+        decel: 1.2,
+        arrival_altitude: 14000.0,
+        min_runway_ft: 8000.0,
+        cat3: true,
+    },
+    AircraftType {
+        designator: "B752",
+        wake: WakeCategory::Large,
+        vref: 135.0,
+        min_speed: 160.0,
+        max_speed: 320.0,
+        climb_fpm: 3000.0,
+        descent_fpm: 2400.0,
+        accel: 2.5,
+        decel: 1.5,
+        arrival_altitude: 13000.0,
+        min_runway_ft: 6500.0,
+        cat3: true,
+    },
+    AircraftType {
+        designator: "CRJ9",
+        wake: WakeCategory::Large,
+        vref: 135.0,
+        min_speed: 150.0,
+        max_speed: 300.0,
+        climb_fpm: 2500.0,
+        descent_fpm: 2000.0,
+        accel: 2.5,
+        decel: 1.5,
+        arrival_altitude: 13000.0,
+        min_runway_ft: 6500.0,
+        cat3: false,
+    },
 ];
 
 impl AircraftType {
@@ -252,6 +337,7 @@ impl AircraftType {
             "C56X" | "CL35" => 410,
             "GLF6" => 450,
             "A359" | "B77W" => 370,
+            "B77L" | "MD11" | "B763" | "A306" => 330,
             _ => 350,
         }
     }

@@ -1,11 +1,12 @@
 # Data notice
 
-`assets/airports/ksus.toml` is generated from United States Federal Aviation
-Administration (FAA) data by `tools/import_faa.py`:
+`assets/airports/ksus.toml` and `assets/airports/kmem.toml` are generated from
+United States Federal Aviation Administration (FAA) data by `tools/import_faa.py`:
 
 - Coded Instrument Flight Procedures (CIFP), cycle 2611
 - National Airspace System Resource (NASR) airport data, 2026-10-29
-- Minimum Vectoring Altitude chart `T75_MVA_FUS3_2024_v1`
+- Minimum Vectoring Altitude charts `T75_MVA_FUS3_2024_v1` (KSUS) and
+  `M03_MVA_FUS3_2024` (KMEM)
 
 **NOT FOR NAVIGATION.** This is a game. Its data is simplified, is not kept current,
 and must never be used for flight planning or navigation.
@@ -26,23 +27,36 @@ The FAA requires the following warranty disclaimers:
   the United States Federal Aviation Administration. The user's sole and exclusive remedy
   is to stop using the CIFP product.
 
-Values marked as game choices in `tools/ksus_overrides.toml`, including the sector
+Values marked as game choices in `tools/ksus_overrides.toml` and
+`tools/kmem_overrides.toml`, including the sector
 boundary, handoff altitudes, traffic rate and fleet, are not FAA data.
 
 ## OpenStreetMap
 
-`assets/airports/ksus_ground.toml` (taxiways and aprons) is generated from
-OpenStreetMap by `tools/import_osm.py`.
+`assets/airports/ksus_ground.toml` and `assets/airports/kmem_ground.toml`
+(taxiways, aprons and stands) are generated from OpenStreetMap by
+`tools/import_osm.py`.
 
-**© OpenStreetMap contributors.** That file is made available under the
+**© OpenStreetMap contributors.** Those files are made available under the
 [Open Database License (ODbL) 1.0](https://opendatacommons.org/licenses/odbl/).
-Any changes to it must be shared under the same licence.
+Any changes to them must be shared under the same licence.
 See <https://www.openstreetmap.org/copyright>.
 
 OSM had no hold lines or parking positions mapped at KSUS, so the importer derives
 them: hold lines at the FAA design-standard distance from each runway centerline
 (250 ft for runways 45 m or wider, 200 ft otherwise), and parking at taxilane dead
 ends inside apron areas. These are estimates, not surveyed positions.
+
+At KMEM, OSM maps the gates and stands as parking positions, so those are
+used, each joined to the nearest taxiway; hold lines are derived as for KSUS.
+Ramp spots are derived too: where each stand's way out first reaches a lettered
+taxiway off the aprons. They are not the airport's published spot numbers. Where
+two taxilane ends stop within 75 ft of each other, pointing at each other, the
+importer joins them.
+
+The KMEM layout was checked by eye against USGS/USDA NAIP aerial imagery, which
+is in the public domain. No data in these files was taken from the imagery.
+
 
 ## Voice clips
 

@@ -9,6 +9,7 @@ use crate::sim::aircraft::{Aircraft, Flow, Landing, Phase};
 use crate::sim::clearance::{Clearance, spoken_runway, taxi_origin};
 use crate::sim::ground_map::{EdgeKind, GroundMap};
 use crate::sim::performance::WakeCategory;
+use crate::sim::positions::Position;
 use crate::sim::units::heading_vec;
 use macroquad::prelude::*;
 use super::gfx::{draw_circle, draw_circle_lines, draw_line, draw_rectangle, draw_rectangle_lines, draw_text, draw_triangle, measure_text, mouse_position};
@@ -22,6 +23,10 @@ const RUNWAY: Color = Color::new(0.0, 0.0, 0.0, 1.0);
 const RUNWAY_OCCUPIED: Color = Color::new(0.32, 0.05, 0.05, 1.0);
 const RUNWAY_MARK: Color = Color::new(0.90, 0.90, 0.90, 1.0);
 const TAXIWAY: Color = Color::new(0.20, 0.20, 0.20, 1.0);
+/// Lanes on a ramp Ground hands off at: the ramp's, so drawn fainter.
+const RAMP_LANE: Color = Color::new(0.14, 0.24, 0.29, 1.0);
+/// A ramp's name, written across it.
+const RAMP_LABEL: Color = Color::new(0.80, 0.85, 0.88, 1.0);
 const TAXIWAY_LABEL: Color = Color::new(0.95, 0.80, 0.25, 1.0);
 /// Hold bars on a runway no one is landing on or departing from: ASDE-X
 /// doesn't draw these, so they're kept faint, just to show where to click.
@@ -34,6 +39,7 @@ const CLOSED_X: Color = Color::new(0.95, 0.95, 0.95, 1.0);
 const ALERT_BOX: Color = Color::new(0.0, 0.0, 0.0, 0.85);
 /// Gates, cyan as in ASDE-X.
 const PARKING: Color = Color::new(0.20, 0.85, 0.95, 1.0);
+const SPOT: Color = Color::new(0.95, 0.95, 0.95, 1.0);
 const INSET_BORDER: Color = Color::new(0.40, 0.40, 0.40, 1.0);
 const TARGET: Color = Color::new(0.95, 0.95, 0.95, 1.0);
 const TARGET_HEAVY: Color = Color::new(1.00, 0.55, 0.10, 1.0);
@@ -130,10 +136,16 @@ fn draw_layout(world: &World, map: &GroundMap, cam: &Camera) {
     for edge in &map.edges {
         if let EdgeKind::Taxiway(_) = edge.kind {
             let (a, b) = (to_screen(cam, map.nodes[edge.a].pos), to_screen(cam, map.nodes[edge.b].pos));
-            draw_line(a.x, a.y, b.x, b.y, width, TAXIWAY);
-            draw_circle(a.x, a.y, width / 2.0, TAXIWAY);
-            draw_circle(b.x, b.y, width / 2.0, TAXIWAY);
+            let color = if edge.ramp { RAMP_LANE } else { TAXIWAY };
+            draw_line(a.x, a.y, b.x, b.y, width, color);
+            draw_circle(a.x, a.y, width / 2.0, color);
+            draw_circle(b.x, b.y, width / 2.0, color);
         }
+    }
+    // Movement-area taxiways on top where they meet the ramps.
+    for edge in map.edges.iter().filter(|e| !e.ramp && matches!(e.kind, EdgeKind::Taxiway(_))) {
+        let (a, b) = (to_screen(cam, map.nodes[edge.a].pos), to_screen(cam, map.nodes[edge.b].pos));
+        draw_line(a.x, a.y, b.x, b.y, width, TAXIWAY);
     }
 
     for (index, runway) in map.runways.iter().enumerate() {
@@ -200,7 +212,9 @@ fn draw_layout(world: &World, map: &GroundMap, cam: &Camera) {
         draw_line(a.x, a.y, b.x, b.y, w, if lit { HOLD_ACTIVE } else { HOLD });
     }
 
-    for spot in &map.parking {
+    // Stands behind a ramp spot are the ramp's to hand out: the ramp's name
+    // stands in for them.
+    for spot in map.parking.iter().filter(|p| p.spot.is_none()) {
         let p = to_screen(cam, map.nodes[spot.node].pos);
         draw_circle_lines(p.x, p.y, 4.0, 1.0, PARKING);
         if cam.scale > LABEL_MIN_SCALE {
@@ -208,16 +222,52 @@ fn draw_layout(world: &World, map: &GroundMap, cam: &Camera) {
         }
     }
 
+    // Labels placed so far, so later ones can step around them.
+    let mut placed: Vec<Rect> = Vec::new();
     if cam.scale > LABEL_MIN_SCALE {
-        draw_taxiway_labels(map, cam);
+        placed = draw_taxiway_labels(map, cam);
+    }
+
+    // Ramp spots, where Ground hands aircraft to the ramp: always labelled,
+    // since they're taxi destinations.
+    let boxes: Vec<Vec2> = map.spots.iter().map(|s| to_screen(cam, map.nodes[s.node].pos)).collect();
+    placed.extend(boxes.iter().map(|p| Rect::new(p.x - 5.0, p.y - 5.0, 10.0, 10.0)));
+    for (spot, &p) in map.spots.iter().zip(&boxes) {
+        draw_rectangle(p.x - 5.0, p.y - 5.0, 10.0, 10.0, LABEL_BOX);
+        draw_rectangle_lines(p.x - 5.0, p.y - 5.0, 10.0, 10.0, 1.5, SPOT);
+        let label = spot.short();
+        let (w, h) = (measure_text(&label, None, 14, 1.0).width + 6.0, 16.0);
+        // Right of the box, else left, above or below.
+        let tries = [vec2(7.0, -8.0), vec2(-7.0 - w, -8.0), vec2(-w / 2.0, -8.0 - h), vec2(-w / 2.0, 8.0)];
+        let r = place(&placed, tries.map(|t| Rect::new(p.x + t.x, p.y + t.y, w, h)));
+        placed.push(r);
+        draw_rectangle(r.x, r.y, r.w, r.h, LABEL_BOX);
+        draw_text(&label, r.x + 3.0, r.y + 12.0, 14.0, SPOT);
+    }
+
+    // Each ramp's name across its stands, stepped clear of other labels.
+    let ramp = world.airport.ramp_control.as_ref().map(|r| r.name.as_str()).unwrap_or("Ramp");
+    for label in &map.ramp_labels {
+        let name = label.fbo.as_deref().unwrap_or(ramp).to_uppercase();
+        let p = to_screen(cam, label.pos);
+        let (w, h) = (measure_text(&name, None, 15, 1.0).width, 15.0);
+        let tries = [0.0, 1.0, -1.0, 2.0, -2.0, 3.0, -3.0].map(|k| Rect::new(p.x - w / 2.0, p.y - h / 2.0 + k * (h + 3.0), w, h));
+        let r = place(&placed, tries);
+        placed.push(r);
+        draw_text(&name, r.x, r.y + h - 3.0, 15.0, RAMP_LABEL);
     }
 }
 
-/// One letter per taxiway, on its longest stretch.
-fn draw_taxiway_labels(map: &GroundMap, cam: &Camera) {
+/// The first of `tries` clear of every placed label, else the first.
+fn place<const N: usize>(placed: &[Rect], tries: [Rect; N]) -> Rect {
+    tries.iter().copied().find(|r| !placed.iter().any(|q| q.overlaps(r))).unwrap_or(tries[0])
+}
+
+/// One letter per taxiway, on its longest stretch. Returns where they went.
+fn draw_taxiway_labels(map: &GroundMap, cam: &Camera) -> Vec<Rect> {
     let mut best: Vec<(&str, f32, glam::Vec2)> = Vec::new();
     for edge in &map.edges {
-        let Some(name) = edge.taxiway().filter(|n| !n.is_empty()) else { continue };
+        let Some(name) = edge.taxiway().filter(|n| !n.is_empty() && !edge.ramp) else { continue };
         let mid = (map.nodes[edge.a].pos + map.nodes[edge.b].pos) / 2.0;
         match best.iter_mut().find(|b| b.0 == name) {
             Some(b) if b.1 < edge.length => *b = (name, edge.length, mid),
@@ -225,12 +275,16 @@ fn draw_taxiway_labels(map: &GroundMap, cam: &Camera) {
             None => best.push((name, edge.length, mid)),
         }
     }
+    let mut placed = Vec::new();
     for (name, _, mid) in best {
         let p = to_screen(cam, mid);
         let size = measure_text(name, None, 16, 1.0);
-        draw_rectangle(p.x - size.width / 2.0 - 3.0, p.y - size.height / 2.0 - 3.0, size.width + 6.0, size.height + 6.0, LABEL_BOX);
+        let r = Rect::new(p.x - size.width / 2.0 - 3.0, p.y - size.height / 2.0 - 3.0, size.width + 6.0, size.height + 6.0);
+        draw_rectangle(r.x, r.y, r.w, r.h, LABEL_BOX);
         draw_text(name, p.x - size.width / 2.0, p.y + size.height / 2.0, 16.0, TAXIWAY_LABEL);
+        placed.push(r);
     }
+    placed
 }
 
 fn polyline(cam: &Camera, points: &[glam::Vec2], width: f32, color: Color, dashed: bool) {
@@ -466,10 +520,15 @@ pub fn status(world: &World, ac: &Aircraft) -> String {
         return "DISABLED".into();
     }
     match ac.phase {
-        Phase::Parked => match ac.taxi.as_ref().and_then(|t| map.parking.iter().find(|p| p.node == t.node)) {
-            Some(spot) => format!("{} {}", spot.name, runway(ac.departure_end)),
-            None => "PARKED".into(),
-        },
+        Phase::Parked => {
+            let node = ac.taxi.as_ref().map(|t| t.node);
+            let stand = map.parking.iter().position(|p| Some(p.node) == node).map(|p| map.stand_name(p));
+            let spot = map.spots.iter().find(|s| Some(s.node) == node).map(|s| s.short());
+            match stand.or(spot) {
+                Some(name) => format!("{name} {}", runway(ac.departure_end)),
+                None => "PARKED".into(),
+            }
+        }
         Phase::Taxiing => {
             let Some(taxi) = &ac.taxi else { return "TAXI".into() };
             if let Some(r) = taxi.holding_short {
@@ -496,9 +555,11 @@ pub fn status(world: &World, ac: &Aircraft) -> String {
             }
             match ac.flow {
                 Flow::Departure => format!("TAXI {}", runway(ac.departure_end)),
-                Flow::Arrival => match ac.parking {
-                    Some(p) => format!("TAXI {}", map.parking[p].name),
-                    None => "TAXI".into(),
+                Flow::Arrival => match (world.ramp_spot(ac), ac.parking) {
+                    _ if ac.frequency() == Position::Ramp => "RAMP".into(),
+                    (Some(s), _) => format!("TAXI {}", map.spots[s].short()),
+                    (None, Some(p)) => format!("TAXI {}", map.parking[p].name),
+                    (None, None) => "TAXI".into(),
                 },
             }
         }
@@ -613,6 +674,10 @@ fn draw_block(world: &World, ui: &UiState, ac: &Aircraft, alerts: &[SafetyAlert]
     }
     let selected = ui.selected == Some(ac.id);
     let alerting = involved(alerts, ac.id);
+    // The ramp's traffic, not ATC's: a target without a tag.
+    if ac.on_ground && ac.frequency() == Position::Ramp && !alerting {
+        return;
+    }
     if inset && !selected && !alerting {
         return;
     }
@@ -765,7 +830,7 @@ pub fn aircraft_at(world: &World, cam: &Camera, mouse: Vec2) -> Option<u32> {
         .map(|(_, id)| id)
 }
 
-/// A taxi destination under the cursor: a parking spot or hold line first, then any node.
+/// A taxi destination under the cursor: a gate, ramp spot or hold line first, then any node.
 pub fn node_at(map: &GroundMap, cam: &Camera, mouse: Vec2) -> Option<usize> {
     let near = |n: usize, px: f32| {
         let d = cam.to_screen(map.nodes[n].pos).distance(mouse);
@@ -774,7 +839,9 @@ pub fn node_at(map: &GroundMap, cam: &Camera, mouse: Vec2) -> Option<usize> {
     let preferred = map
         .parking
         .iter()
+        .filter(|p| p.spot.is_none())
         .map(|p| p.node)
+        .chain(map.spots.iter().map(|s| s.node))
         .chain((0..map.nodes.len()).filter(|&n| map.nodes[n].hold.is_some()))
         .filter_map(|n| near(n, PARKING_HIT_PX).map(|d| (d, n)))
         .min_by(|a, b| a.0.total_cmp(&b.0));

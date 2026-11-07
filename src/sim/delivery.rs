@@ -435,6 +435,16 @@ impl World {
             if on_delivery {
                 // Combined with Ground: the same controller, so the pilot just
                 // calls for taxi once it has the clearance.
+                // A ramp departure goes to the ramp tower instead, which brings it out.
+                let ramp = self.handling(ac) == super::ramp::Handling::Ramp && self.ramp_spot(ac).is_some();
+                if ramp && staffing.ground && self.time - cleared.time >= READY_TO_TAXI_S {
+                    let now = self.time;
+                    let ac = &mut self.aircraft[index];
+                    ac.surface_freq = Position::Ramp;
+                    ac.freq_since = now;
+                    self.score_clearance(index);
+                    continue;
+                }
                 if staffing.ground && self.time - cleared.time >= READY_TO_TAXI_S && !self.call_pending(ac.id) {
                     let spot = self.gate_name(ac);
                     let line = format!("Ground, {}, at {spot}, ready to taxi.", ac.callsign);
