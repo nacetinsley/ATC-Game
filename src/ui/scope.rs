@@ -12,6 +12,7 @@ use crate::sim::positions::Position;
 use crate::sim::units::{format_heading, heading_vec, tas_from_ias};
 use crate::sim::{RadarTrack, World};
 use macroquad::prelude::*;
+use super::gfx::{draw_circle, draw_circle_lines, draw_line, draw_rectangle, draw_rectangle_lines, draw_text, draw_triangle_lines, measure_text, mouse_position};
 
 pub const BLOCK_SIZE: Vec2 = vec2(112.0, 46.0);
 const DEFAULT_BLOCK_OFFSET: Vec2 = vec2(18.0, -50.0);

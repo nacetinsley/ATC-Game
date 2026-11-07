@@ -122,17 +122,17 @@ impl Camera {
     }
 
     pub fn contains_mouse(&self) -> bool {
-        self.viewport.contains(mq::Vec2::from(mq::mouse_position()))
+        self.viewport.contains(mq::Vec2::from(super::gfx::mouse_position()))
     }
 }
 
 pub fn scope_width() -> f32 {
-    (mq::screen_width() - PANEL_WIDTH).max(100.0)
+    (super::gfx::screen_width() - PANEL_WIDTH).max(100.0)
 }
 
 /// Everything left of the side panel.
 pub fn scope_area() -> mq::Rect {
-    mq::Rect::new(0.0, 0.0, scope_width(), mq::screen_height())
+    mq::Rect::new(0.0, 0.0, scope_width(), super::gfx::screen_height())
 }
 
 /// A square in the bottom-right corner of the scope area.
@@ -148,7 +148,7 @@ pub fn inset_area() -> mq::Rect {
 }
 
 pub fn mouse_in_scope() -> bool {
-    mq::mouse_position().0 < scope_width()
+    super::gfx::mouse_position().0 < scope_width()
 }
 
 /// Limit drawing to a rectangle, or lift the limit with `None`.
@@ -157,7 +157,8 @@ pub fn clip(rect: Option<mq::Rect>) {
     // between frames' draw calls, which is where all drawing happens.
     let mut gl = unsafe { macroquad::window::get_internal_gl() };
     gl.flush();
-    let dpi = macroquad::window::screen_dpi_scale();
+    // Logical pixels to the window's physical ones.
+    let dpi = macroquad::window::screen_dpi_scale() * super::gfx::scale();
     gl.quad_gl.scissor(rect.map(|r| {
         (
             (r.x * dpi) as i32,

@@ -6,6 +6,7 @@ use crate::sim::mistakes::{PilotMistakes, step};
 use crate::sim::traffic::Busyness;
 use crate::sim::weather::WeatherKind;
 use macroquad::prelude::*;
+use super::gfx::{clear_background, draw_rectangle_lines, draw_text, measure_text, mouse_position};
 
 /// Everything on the Difficulty screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,7 +18,7 @@ pub struct Difficulty {
 }
 
 /// Named settings, one click away.
-pub const PRESETS: [(&str, Difficulty); 3] = [
+pub const PRESETS: [(&str, Difficulty); 4] = [
     (
         "Relaxed",
         Difficulty {
@@ -25,6 +26,17 @@ pub const PRESETS: [(&str, Difficulty); 3] = [
             emergencies: EmergencyRate::Off,
             mistakes: PilotMistakes::Off,
             weather: WeatherKind::Good,
+        },
+    ),
+    // As the real job is: the airport's normal traffic, and emergencies and
+    // pilot mistakes at real-world rates.
+    (
+        "Realistic",
+        Difficulty {
+            busyness: Busyness::RealWorld,
+            emergencies: EmergencyRate::Realistic,
+            mistakes: PilotMistakes::Realistic,
+            weather: WeatherKind::Variable,
         },
     ),
     ("Standard", Difficulty::STANDARD),

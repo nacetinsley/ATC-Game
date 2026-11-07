@@ -28,7 +28,9 @@ the Difficulty box) to set how hard the shift is:
 | Pilot mistakes | Off, Realistic, Occasional or Frequent (see Pilot mistakes) |
 | Weather | Good, Variable, Low IFR or Storms (see Weather) |
 
-Relaxed, Standard (the default) and Demanding set all four at once.
+Relaxed, Realistic, Standard (the default) and Demanding set all four at
+once. Realistic is the real job: the airport's normal traffic, emergencies
+and pilot mistakes at real-world rates, and variable weather.
 
 The shift is an hour unless you change it. Any whole number of minutes from
 1 to 12 hours works: - and + step it by 5 minutes (15 above two hours, 1 with
@@ -409,6 +411,25 @@ python -m pip install piper-tts
 python tools/make_voice.py
 ```
 
+## Settings
+
+**O** on the start menu, or the pause menu during a shift, sets:
+
+- **Sound** and **game cues** (see Sound).
+- **UI scale:** 75% to 200%. Everything grows together and text stays sharp.
+  Above 100%, a window too small for the layout gets the largest scale that
+  fits, and the setting says so ("UI scale: 150% (125% fits)").
+- **Colours:** Standard, **Red-green** (deuteranopia and protanopia: the
+  greens become cyan, so they stand apart from red) or **Blue-yellow**
+  (tritanopia: ambers become pink, greens cyan). Only the colours that carry
+  meaning change.
+
+These, and the last choices on the start menu (airport, position, VFR, shift
+length and difficulty), are saved between runs in `settings.toml`:
+`%APPDATA%tcgame` on Windows, `~/Library/Application Support/atcgame` on a
+Mac, `~/.config/atcgame` on Linux. The settings screen shows the path. Delete
+the file to go back to the defaults; a value it doesn't recognise is ignored.
+
 ## Tutorials
 
 The start menu has a lesson for each position (F5 Approach, F6 Local, F7
@@ -525,6 +546,7 @@ the Actions tab and download the zips from the run.
 | Esc | Pause menu |
 | F5 / F6 / F7 / F8 | Start menu: Approach, Local, Ground or Delivery tutorial |
 | D | Start menu: the Difficulty screen (Up/Down a row, Left/Right change it) |
+| O | Start menu: Settings (sound, UI scale, colours). The same rows are in the pause menu |
 | S | Tutorial: show me |
 | 1 / 2 / 4 | Sim speed |
 | M | Toggle the MVA map |

@@ -5,6 +5,7 @@ use super::input::UiState;
 use crate::sim::World;
 use crate::sim::tutorial::{Target, Tutorial};
 use macroquad::prelude::*;
+use super::gfx::{draw_circle_lines, draw_rectangle, draw_rectangle_lines, draw_text, measure_text};
 
 const BOX: Color = Color::new(0.02, 0.07, 0.05, 0.92);
 const EDGE: Color = Color::new(0.35, 0.95, 0.45, 1.0);

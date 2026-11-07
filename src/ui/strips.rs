@@ -25,6 +25,7 @@ use crate::sim::emergency::EmergencyKind;
 use crate::sim::positions::Position;
 use crate::sim::units::vec_heading;
 use macroquad::prelude::*;
+use super::gfx::{draw_line, draw_rectangle, draw_rectangle_lines, draw_text, draw_triangle, measure_text, mouse_position};
 use std::collections::HashMap;
 
 const PAPER: Color = Color::new(0.87, 0.85, 0.77, 1.0);

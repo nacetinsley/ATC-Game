@@ -3,9 +3,11 @@
 pub mod audio;
 pub mod camera;
 pub mod difficulty;
+pub mod gfx;
 pub mod input;
 pub mod panels;
 pub mod scope;
+pub mod settings;
 pub mod shift;
 pub mod strips;
 pub mod surface;
@@ -17,10 +19,13 @@ use crate::sim::scoring::ShiftEnd;
 use crate::sim::traffic::Busyness;
 use crate::sim::tutorial::{LessonKind, Tutorial};
 use crate::sim::{TICK, World, WorldConfig};
-use audio::{Sounds, Volume};
+use audio::Sounds;
 use difficulty::Difficulty;
+use gfx::{Palette, SCALES};
+use settings::Settings;
 use input::{UiState, View};
 use macroquad::prelude::*;
+use gfx::{clear_background, draw_circle, draw_line, draw_rectangle, draw_rectangle_lines, draw_text, measure_text, mouse_position, screen_height, screen_width};
 
 /// Longest frame time to catch up on, so a stall doesn't fast-forward the sim.
 const MAX_FRAME_SECONDS: f32 = 0.25;
@@ -137,20 +142,30 @@ enum PauseItem {
     Sound,
     /// Sounds no real facility makes: the handoff ding and the like.
     GameCues,
+    UiScale,
+    /// The colour-blind palettes.
+    Colours,
     Controls,
     MainMenu,
     Quit,
+    /// Back to the start menu, from the settings screen.
+    Back,
 }
 
-const PAUSE_ITEMS: [PauseItem; 7] = [
+const PAUSE_ITEMS: [PauseItem; 9] = [
     PauseItem::Resume,
     PauseItem::Restart,
     PauseItem::Sound,
     PauseItem::GameCues,
+    PauseItem::UiScale,
+    PauseItem::Colours,
     PauseItem::Controls,
     PauseItem::MainMenu,
     PauseItem::Quit,
 ];
+/// The settings screen, from the start menu.
+const SETTINGS_ITEMS: [PauseItem; 5] =
+    [PauseItem::Sound, PauseItem::GameCues, PauseItem::UiScale, PauseItem::Colours, PauseItem::Back];
 const PAUSE_ROW: f32 = 40.0;
 const PAUSE_WIDTH: f32 = 340.0;
 const BRIEFING_VIEW: &str =
@@ -160,6 +175,8 @@ enum Screen {
     Menu,
     /// The Difficulty screen, with the row that has the keyboard.
     Difficulty { row: usize },
+    /// Sound, UI scale and colours, from the start menu.
+    Settings { choice: usize },
     Playing,
     /// The sim is frozen behind the pause menu.
     Paused { choice: usize, show_controls: bool },
@@ -185,6 +202,11 @@ pub struct App {
     shift_minutes: u32,
     /// Minutes being typed on the menu's number keys.
     typed: Option<shift::Typed>,
+    /// UI scale chosen, one of `gfx::SCALES`.
+    ui_scale: f32,
+    palette: Palette,
+    /// As last saved to the settings file.
+    saved: Settings,
 }
 
 /// What the menu chose for a new shift.
@@ -224,7 +246,8 @@ fn draw_views(world: &World, ui: &mut UiState) {
 /// Every font size the UI draws text at.
 const FONT_SIZES: [u16; 14] = [12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 28, 30, 36, 56];
 
-/// Cache every printable ASCII glyph at every size before the first frame.
+/// Cache every printable ASCII glyph at every size, at the UI scale, before
+/// anything is drawn: at startup, and again when the scale changes.
 /// macroquad grows its glyph atlas on demand, and a resize partway through
 /// drawing can leave every glyph sampling the wrong texture, so text draws as
 /// solid blocks. Growing it once up front avoids that.
@@ -233,7 +256,8 @@ fn warm_font_cache() {
     let chars: Vec<char> = (' '..='~').collect();
     let dpi = miniquad::window::dpi_scale();
     for size in FONT_SIZES {
-        font.populate_font_cache(&chars, (size as f32 * dpi).ceil() as u16);
+        let raster = gfx::raster_size(size as f32);
+        font.populate_font_cache(&chars, (raster as f32 * dpi).ceil() as u16);
     }
 }
 
@@ -248,6 +272,13 @@ impl App {
             airports.iter().flat_map(|a| a.runways.iter().map(|r| r.id.clone())).collect();
         runways.sort();
         runways.dedup();
+        let settings = Settings::load();
+        gfx::set_palette(settings.palette);
+        let mut sounds = Sounds::load(&runways).await;
+        sounds.volume = settings.volume;
+        sounds.game_cues = settings.game_cues;
+        let choice = airports.iter().position(|a| a.code == settings.airport).unwrap_or(0);
+        let position = Staffing::CHOICES.iter().position(|&s| s == settings.staffing).unwrap_or(0);
         App {
             screen: Screen::Menu,
             world: new_world(
@@ -260,17 +291,65 @@ impl App {
                 },
             ),
             ui: UiState::new(&airports[0], Staffing::default()),
-            sounds: Sounds::load(&runways).await,
+            sounds,
             accumulator: 0.0,
             airports,
-            choice: 0,
-            difficulty: Difficulty::STANDARD,
-            position: 0,
-            vfr: true,
+            choice,
+            difficulty: settings.difficulty,
+            position,
+            vfr: settings.vfr,
             tutorial: None,
-            shift_minutes: shift::DEFAULT_MINUTES,
+            shift_minutes: settings.shift_minutes,
             typed: None,
+            ui_scale: settings.ui_scale,
+            palette: settings.palette,
+            saved: settings,
         }
+    }
+
+    /// The settings as they stand now, saved if they've changed.
+    fn save_settings(&mut self) {
+        let now = Settings {
+            volume: self.sounds.volume,
+            game_cues: self.sounds.game_cues,
+            ui_scale: self.ui_scale,
+            palette: self.palette,
+            airport: self.airports[self.choice].code.clone(),
+            staffing: self.staffing(),
+            vfr: self.vfr,
+            shift_minutes: self.shift_minutes,
+            difficulty: self.difficulty,
+        };
+        if now != self.saved {
+            now.save();
+            self.saved = now;
+        }
+    }
+
+    /// Change a setting from the pause menu or the settings screen: `step`
+    /// is +1 or -1 for Right or Left, and Enter steps forward.
+    fn adjust(&mut self, item: PauseItem, step: i32) {
+        match item {
+            PauseItem::Sound => {
+                self.sounds.volume = if step < 0 { self.sounds.volume.previous() } else { self.sounds.volume.next() };
+            }
+            PauseItem::GameCues => self.sounds.game_cues = !self.sounds.game_cues,
+            PauseItem::UiScale => {
+                let i = SCALES.iter().position(|&s| s == self.ui_scale).unwrap_or(2) as i32;
+                // Enter goes round; the arrows stop at the ends.
+                let next = match step {
+                    0 => (i + 1) % SCALES.len() as i32,
+                    _ => (i + step).clamp(0, SCALES.len() as i32 - 1),
+                };
+                self.ui_scale = SCALES[next as usize];
+            }
+            PauseItem::Colours => {
+                self.palette = if step < 0 { self.palette.previous() } else { self.palette.next() };
+                gfx::set_palette(self.palette);
+            }
+            _ => return,
+        }
+        self.save_settings();
     }
 
     fn staffing(&self) -> Staffing {
@@ -278,6 +357,7 @@ impl App {
     }
 
     fn start_shift(&mut self) {
+        self.save_settings();
         let airport = &self.airports[self.choice];
         let choice = ShiftChoice {
             difficulty: self.difficulty,
@@ -286,7 +366,8 @@ impl App {
             minutes: self.shift_minutes,
         };
         self.world = new_world(airport, choice);
-        self.ui = UiState::new(airport, self.staffing());
+        let scale = gfx::effective_scale(self.ui_scale, gfx::GAME_ROOM);
+        self.ui = gfx::laid_out_at(scale, || UiState::new(airport, self.staffing()));
         // The sim's clock, for EFC times, reads the same as the strips'.
         self.world.set_clock_start(self.ui.clock_start);
         self.sounds.reset(&self.world);
@@ -298,7 +379,8 @@ impl App {
     fn start_lesson(&mut self, kind: LessonKind) {
         let tutorial = Tutorial::new(kind);
         self.world = tutorial.world();
-        self.ui = UiState::new(&self.world.airport, kind.staffing());
+        let scale = gfx::effective_scale(self.ui_scale, gfx::GAME_ROOM);
+        self.ui = gfx::laid_out_at(scale, || UiState::new(&self.world.airport, kind.staffing()));
         self.ui.lesson = true;
         self.world.set_clock_start(self.ui.clock_start);
         self.sounds.reset(&self.world);
@@ -316,6 +398,13 @@ impl App {
     }
 
     pub fn frame(&mut self) {
+        let room = match self.screen {
+            Screen::Menu => gfx::MENU_ROOM,
+            _ => gfx::GAME_ROOM,
+        };
+        if gfx::begin_frame(self.ui_scale, room) {
+            warm_font_cache();
+        }
         match self.screen {
             Screen::Menu => {
                 self.sounds.silence();
@@ -347,6 +436,10 @@ impl App {
                     self.screen = Screen::Difficulty { row: 0 };
                     return;
                 }
+                if picked.settings || is_key_pressed(KeyCode::O) {
+                    self.screen = Screen::Settings { choice: 0 };
+                    return;
+                }
                 if let Some(minutes) = picked.shift_minutes {
                     self.shift_minutes = minutes;
                     self.typed = None;
@@ -372,10 +465,14 @@ impl App {
                 let real_data = self.airports[self.choice].traffic.is_some();
                 match difficulty::frame(&mut self.difficulty, &mut row, real_data) {
                     difficulty::Action::Stay => self.screen = Screen::Difficulty { row },
-                    difficulty::Action::Back => self.screen = Screen::Menu,
+                    difficulty::Action::Back => {
+                        self.save_settings();
+                        self.screen = Screen::Menu;
+                    }
                     difficulty::Action::Start => self.start_shift(),
                 }
             }
+            Screen::Settings { choice } => self.settings_frame(choice),
             Screen::Playing => self.play_frame(),
             Screen::Paused { choice, show_controls } => self.pause_frame(choice, show_controls),
             Screen::Ended(end) => {
@@ -422,8 +519,15 @@ impl App {
         if is_key_pressed(KeyCode::Down) {
             choice = (choice + 1) % count;
         }
-        let (hovered, clicked) =
-            draw_pause(choice, self.sounds.volume, self.sounds.game_cues, show_controls, self.world.staffing());
+        let labels: Vec<String> = PAUSE_ITEMS.iter().map(|&item| self.item_label(item, show_controls)).collect();
+        let (hovered, clicked) = draw_pause(choice, &labels, show_controls, self.world.staffing());
+        let item = PAUSE_ITEMS[choice];
+        if is_key_pressed(KeyCode::Left) {
+            self.adjust(item, -1);
+        }
+        if is_key_pressed(KeyCode::Right) {
+            self.adjust(item, 1);
+        }
         // The mouse only takes over the highlight when it moves, so arrow keys still work.
         let mouse_moved = mouse_delta_position() != Vec2::ZERO;
         if let Some(index) = hovered.filter(|_| mouse_moved || clicked) {
@@ -442,8 +546,7 @@ impl App {
         match PAUSE_ITEMS[choice] {
             PauseItem::Resume => self.resume(),
             PauseItem::Restart => self.restart(),
-            PauseItem::Sound => self.sounds.volume = self.sounds.volume.next(),
-            PauseItem::GameCues => self.sounds.game_cues = !self.sounds.game_cues,
+            PauseItem::Sound | PauseItem::GameCues | PauseItem::UiScale | PauseItem::Colours => self.adjust(item, 0),
             PauseItem::Controls => {
                 show_controls = !show_controls;
                 self.screen = Screen::Paused { choice, show_controls };
@@ -453,6 +556,66 @@ impl App {
                 self.screen = Screen::Menu;
             }
             PauseItem::Quit => macroquad::miniquad::window::order_quit(),
+            PauseItem::Back => {}
+        }
+    }
+
+    fn item_label(&self, item: PauseItem, show_controls: bool) -> String {
+        match item {
+            PauseItem::Resume => "Resume".into(),
+            PauseItem::Restart => "Restart shift".into(),
+            PauseItem::Sound => format!("Sound: {}", self.sounds.volume.label()),
+            PauseItem::GameCues => format!("Game cues: {}", if self.sounds.game_cues { "On" } else { "Off" }),
+            PauseItem::UiScale => {
+                let chosen = percent(self.ui_scale);
+                let fits = gfx::effective_scale(self.ui_scale, gfx::GAME_ROOM);
+                if fits < self.ui_scale {
+                    format!("UI scale: {chosen} ({} fits)", percent(fits))
+                } else {
+                    format!("UI scale: {chosen}")
+                }
+            }
+            PauseItem::Colours => format!("Colours: {}", self.palette.label()),
+            PauseItem::Controls if show_controls => "Hide controls".into(),
+            PauseItem::Controls => "Show controls".into(),
+            PauseItem::MainMenu => "Quit to main menu".into(),
+            PauseItem::Quit => "Quit to desktop".into(),
+            PauseItem::Back => "Back".into(),
+        }
+    }
+
+    /// The settings screen, from the start menu.
+    fn settings_frame(&mut self, mut choice: usize) {
+        self.sounds.silence();
+        clear_background(BACKGROUND);
+        let count = SETTINGS_ITEMS.len();
+        if is_key_pressed(KeyCode::Up) {
+            choice = (choice + count - 1) % count;
+        }
+        if is_key_pressed(KeyCode::Down) {
+            choice = (choice + 1) % count;
+        }
+        let item = SETTINGS_ITEMS[choice];
+        if is_key_pressed(KeyCode::Left) {
+            self.adjust(item, -1);
+        }
+        if is_key_pressed(KeyCode::Right) {
+            self.adjust(item, 1);
+        }
+        let labels: Vec<String> = SETTINGS_ITEMS.iter().map(|&item| self.item_label(item, false)).collect();
+        let (hovered, clicked) = draw_menu_list("SETTINGS", choice, &labels, "Up/Down  Left/Right change  ESC back");
+        if let Some(index) = hovered.filter(|_| mouse_delta_position() != Vec2::ZERO || clicked) {
+            choice = index;
+        }
+        let path = Settings::path().map(|p| p.display().to_string()).unwrap_or_else(|| "not saved".into());
+        let width = measure_text(&path, None, 16, 1.0).width;
+        draw_text(&path, (screen_width() - width) / 2.0, screen_height() - 24.0, 16.0, DIM);
+        self.screen = Screen::Settings { choice };
+        let back = is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::O);
+        if back || ((clicked || start_pressed()) && SETTINGS_ITEMS[choice] == PauseItem::Back) {
+            self.screen = Screen::Menu;
+        } else if clicked || start_pressed() {
+            self.adjust(SETTINGS_ITEMS[choice], 0);
         }
     }
 
@@ -626,6 +789,8 @@ struct MenuPick {
     vfr: bool,
     /// A lesson button was clicked.
     lesson: Option<LessonKind>,
+    /// The settings button was clicked.
+    settings: bool,
     shift_minutes: Option<u32>,
 }
 
@@ -756,6 +921,7 @@ fn draw_menu(airports: &[Airport], choice: usize, state: MenuState) -> MenuPick 
     ry += 26.0;
     pick.difficulty = difficulty::draw_summary(&difficulty, airport.traffic.is_some(), right, ry);
     draw_text("Press ENTER to start your shift", right, ry + 110.0, 30.0, TITLE);
+    pick.settings = menu_button("O  Settings: sound, UI scale, colours", right, ry + 132.0, false).0;
 
     // The left: the briefing, wrapped clear of the right column, closer
     // together if it's long.
@@ -775,43 +941,27 @@ fn draw_menu(airports: &[Airport], choice: usize, state: MenuState) -> MenuPick 
     pick
 }
 
-fn pause_label(item: PauseItem, volume: Volume, game_cues: bool, show_controls: bool) -> String {
-    match item {
-        PauseItem::Resume => "Resume".into(),
-        PauseItem::Restart => "Restart shift".into(),
-        PauseItem::Sound => format!("Sound: {}", volume.label()),
-        PauseItem::GameCues => format!("Game cues: {}", if game_cues { "On" } else { "Off" }),
-        PauseItem::Controls if show_controls => "Hide controls".into(),
-        PauseItem::Controls => "Show controls".into(),
-        PauseItem::MainMenu => "Quit to main menu".into(),
-        PauseItem::Quit => "Quit to desktop".into(),
-    }
+fn percent(scale: f32) -> String {
+    format!("{:.0}%", scale * 100.0)
 }
 
-/// Pause menu over the frozen scope. Returns the row under the mouse and whether it was clicked.
-fn draw_pause(
-    choice: usize,
-    volume: Volume,
-    game_cues: bool,
-    show_controls: bool,
-    staffing: Staffing,
-) -> (Option<usize>, bool) {
-    draw_rectangle(0.0, 0.0, screen_width(), screen_height(), Color::new(0.0, 0.0, 0.0, 0.65));
-
-    let height = 70.0 + PAUSE_ROW * PAUSE_ITEMS.len() as f32 + 40.0;
-    let left = (screen_width() - PAUSE_WIDTH) / 2.0;
+/// A centred menu of rows under a title. Returns the row under the mouse and
+/// whether it was clicked.
+fn draw_menu_list(title: &str, choice: usize, labels: &[String], hint: &str) -> (Option<usize>, bool) {
+    let height = 70.0 + PAUSE_ROW * labels.len() as f32 + 40.0;
+    let width = labels.iter().map(|l| measure_text(l, None, 24, 1.0).width + 64.0).fold(PAUSE_WIDTH, f32::max);
+    let left = (screen_width() - width) / 2.0;
     let top = (screen_height() - height) / 2.0;
-    draw_rectangle(left, top, PAUSE_WIDTH, height, BACKGROUND);
-    draw_rectangle_lines(left, top, PAUSE_WIDTH, height, 1.5, DIM);
-    let title = "PAUSED";
+    draw_rectangle(left, top, width, height, BACKGROUND);
+    draw_rectangle_lines(left, top, width, height, 1.5, DIM);
     let size = measure_text(title, None, 36, 1.0);
-    draw_text(title, left + (PAUSE_WIDTH - size.width) / 2.0, top + 46.0, 36.0, TITLE);
+    draw_text(title, left + (width - size.width) / 2.0, top + 46.0, 36.0, TITLE);
 
     let mouse = Vec2::from(mouse_position());
     let mut hovered = None;
-    for (index, &item) in PAUSE_ITEMS.iter().enumerate() {
+    for (index, label) in labels.iter().enumerate() {
         let y = top + 70.0 + PAUSE_ROW * index as f32;
-        let row = Rect::new(left + 16.0, y, PAUSE_WIDTH - 32.0, PAUSE_ROW - 6.0);
+        let row = Rect::new(left + 16.0, y, width - 32.0, PAUSE_ROW - 6.0);
         if row.contains(mouse) {
             hovered = Some(index);
         }
@@ -819,18 +969,22 @@ fn draw_pause(
         if selected {
             draw_rectangle(row.x, row.y, row.w, row.h, Color::new(0.10, 0.22, 0.12, 1.0));
         }
-        let label = pause_label(item, volume, game_cues, show_controls);
-        let width = measure_text(&label, None, 24, 1.0).width;
+        let label_width = measure_text(label, None, 24, 1.0).width;
         let color = if selected { TITLE } else { TEXT };
-        draw_text(&label, left + (PAUSE_WIDTH - width) / 2.0, y + 24.0, 24.0, color);
+        draw_text(label, left + (width - label_width) / 2.0, y + 24.0, 24.0, color);
     }
-    draw_text(
-        "Up/Down  ENTER select  ESC resume",
-        left + 34.0,
-        top + height - 16.0,
-        18.0,
-        DIM,
-    );
+    let hint_width = measure_text(hint, None, 18, 1.0).width;
+    draw_text(hint, left + (width - hint_width) / 2.0, top + height - 16.0, 18.0, DIM);
+    let clicked = hovered.is_some() && is_mouse_button_pressed(MouseButton::Left);
+    (hovered, clicked)
+}
+
+/// Pause menu over the frozen scope. Returns the row under the mouse and whether it was clicked.
+fn draw_pause(choice: usize, labels: &[String], show_controls: bool, staffing: Staffing) -> (Option<usize>, bool) {
+    draw_rectangle(0.0, 0.0, screen_width(), screen_height(), Color::new(0.0, 0.0, 0.0, 0.65));
+    let (hovered, clicked) = draw_menu_list("PAUSED", choice, labels, "Up/Down  Left/Right change  ESC resume");
+    let height = 70.0 + PAUSE_ROW * labels.len() as f32 + 40.0;
+    let top = (screen_height() - height) / 2.0;
 
     if show_controls {
         let lines: Vec<&str> =
@@ -844,7 +998,6 @@ fn draw_pause(
         }
     }
 
-    let clicked = hovered.is_some() && is_mouse_button_pressed(MouseButton::Left);
     (hovered, clicked)
 }
 

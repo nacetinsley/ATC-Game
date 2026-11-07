@@ -397,6 +397,17 @@ pub enum Volume {
 }
 
 impl Volume {
+    pub const ALL: [Volume; 4] = [Volume::Off, Volume::Low, Volume::Medium, Volume::High];
+
+    pub fn previous(self) -> Volume {
+        match self {
+            Volume::Off => Volume::High,
+            Volume::Low => Volume::Off,
+            Volume::Medium => Volume::Low,
+            Volume::High => Volume::Medium,
+        }
+    }
+
     pub fn next(self) -> Volume {
         match self {
             Volume::Off => Volume::Low,

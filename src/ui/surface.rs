@@ -11,6 +11,7 @@ use crate::sim::ground_map::{EdgeKind, GroundMap};
 use crate::sim::performance::WakeCategory;
 use crate::sim::units::heading_vec;
 use macroquad::prelude::*;
+use super::gfx::{draw_circle, draw_circle_lines, draw_line, draw_rectangle, draw_rectangle_lines, draw_text, draw_triangle, measure_text, mouse_position};
 
 const BACKGROUND: Color = Color::new(0.04, 0.06, 0.05, 1.0);
 const RUNWAY: Color = Color::new(0.30, 0.31, 0.32, 1.0);

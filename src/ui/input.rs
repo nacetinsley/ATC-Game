@@ -10,6 +10,7 @@ use crate::sim::clearance::{Clearance, PendingClearance};
 use crate::sim::positions::{Position, Staffing};
 use crate::sim::units::vec_heading;
 use macroquad::prelude::*;
+use super::gfx::{mouse_position};
 use std::collections::{HashMap, HashSet};
 
 const TARGET_HIT_PX: f32 = 12.0;

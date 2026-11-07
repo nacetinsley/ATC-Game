@@ -9,6 +9,7 @@ use crate::sim::delivery;
 use crate::sim::positions::Position;
 use crate::sim::{Speaker, World};
 use macroquad::prelude::*;
+use super::gfx::{draw_line, draw_rectangle, draw_rectangle_lines, draw_text, measure_text, mouse_position, screen_height};
 
 const BACKGROUND: Color = Color::new(0.07, 0.09, 0.10, 1.0);
 const DIVIDER: Color = Color::new(0.22, 0.27, 0.28, 1.0);
