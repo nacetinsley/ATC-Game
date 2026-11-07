@@ -85,6 +85,24 @@ and an automated one. On a combined position you're both ends.
   - Ground crosses the aircraft itself once you approve, and asks again a
     minute after an unable.
   - Leaving a request unanswered for 45 seconds costs points.
+- **Departure releases, on Local with Approach automated:**
+  - IFR departures normally go whenever you're ready. Approach puts them on
+    call for release while it has a reason: a missed approach to sort out,
+    a runway change, an emergency about to land, or storms on the way out.
+    "Approach to Tower: departures off 27R call for release, weather."
+  - While that's on, the row above the log says so, and K first asks
+    Approach for the release ("Req rel K").
+  - Approach releases it, void if not off within two minutes, or says hold
+    for release and calls you back.
+  - A takeoff clearance without the release still goes out, but costs
+    points.
+  - Approach lets departures go again a few minutes after the reason has
+    gone.
+- **On Approach, with Tower automated:**
+  - F stops departures: Tower then calls you for each one at the hold line.
+    Release it with Y, or hold it with N, and Tower asks again a minute
+    later.
+  - F again, or the "Release all" button, lets them all go.
 
 ### VFR traffic
 
@@ -771,12 +789,13 @@ but not notarized.
 | Ctrl-drag onto a fix (Cmd on a Mac) | Hold at that fix |
 | X | Cross the runway ahead. On Ground with Tower automated: first ask Tower on the landline |
 | Y / N | Approve, or say unable to, a landline request (the selected aircraft's, else the oldest) |
+| F | Approach with Tower automated: stop departures (call for release), or release them all |
 | D | Approve a deviation round weather (`WX` on the strip) |
 | I | Delivery: the IFR clearance; again once cleared, repeat the code and altitude. Airborne: say the assigned altitude and heading again, and reset a wrong code |
 | Up / Down at Delivery | Amend the altitude to expect |
 | S at Delivery | The next SID in use |
 | F4 | Delivery: show or hide the course hint |
-| W / K | Line up and wait / Cleared for takeoff |
+| W / K | Line up and wait / Cleared for takeoff. On call for release: K first asks Approach for the release |
 | L | Cleared to land (a full stop, for VFR) |
 | E | VFR: enter the downwind, or extend it once in the pattern |
 | B | VFR: turn base now |

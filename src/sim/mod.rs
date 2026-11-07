@@ -184,6 +184,8 @@ pub struct World {
     pub ils_outage: Option<approach::IlsOutage>,
     /// Open landline coordination between controllers.
     pub coordination: Vec<coordination::Coordination>,
+    /// Whether departures need Approach's release.
+    pub releases: coordination::Releases,
 
     config: WorldConfig,
     config_index: usize,
@@ -228,6 +230,7 @@ impl World {
             emergencies: emergency::Emergencies::new(config.seed),
             ils_outage: approach::IlsOutage::roll(config.seed, config.shift_seconds, config.weather),
             coordination: Vec::new(),
+            releases: coordination::Releases::default(),
             config,
             config_index,
             rng,
@@ -542,11 +545,12 @@ impl World {
     /// Everything that should be identical for two runs with the same seed and commands.
     pub fn state_digest(&self) -> String {
         format!(
-            "{:.3} {:?} {:?} {:?} {} {:?} {:?}",
+            "{:.3} {:?} {:?} {:?} {:?} {} {:?} {:?}",
             self.time,
             self.aircraft,
             self.departure_queue,
             self.coordination,
+            self.releases,
             self.score.points,
             self.score.incidents,
             self.log.iter().map(|l| &l.text).collect::<Vec<_>>(),

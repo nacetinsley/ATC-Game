@@ -2,14 +2,18 @@
 //!
 //! Positions don't only talk to pilots: Ground asks Local before crossing a
 //! runway, Local tells Ground about an arrival it has left holding short
-//! between runways. The landline only matters between a position the player
-//! works and one that's automated. On a combined position the player is both
-//! ends, and two automated positions agree silently, as they always have.
+//! between runways, and Local asks Approach to release a departure when
+//! Approach has put departures on call for release. The landline only
+//! matters between a position the player works and one that's automated. On
+//! a combined position the player is both ends, and two automated positions
+//! agree silently, as they always have.
 
+use super::aircraft::{Aircraft, Flow, Phase};
 use super::clearance::spoken_runway;
 use super::positions::Position;
 use super::replay::Action;
 use super::scoring::SimEvent;
+use super::units::vec_heading;
 use super::{Speaker, World};
 
 /// An automated controller answers the landline after this long, seconds.
@@ -22,11 +26,20 @@ pub const ANSWER_S: f32 = 45.0;
 const REASK_S: f32 = 60.0;
 /// Local withdraws an unused crossing approval once an arrival is this close, NM.
 const CANCEL_CROSSING_NM: f32 = 3.0;
+/// A release is void if the departure isn't off within this long, seconds.
+pub const RELEASE_VOID_S: f32 = 120.0;
+/// Once Approach puts departures on call for release, it keeps them there at
+/// least this long after the reason has gone, seconds.
+pub const CALL_FOR_RELEASE_MIN_S: f32 = 300.0;
+/// Severe weather this far along a departure's first leg holds it, NM.
+const RELEASE_STORM_NM: f32 = 10.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoordKind {
     /// Ground asking Local to let an aircraft across a physical runway.
     Crossing { runway: usize },
+    /// Local asking Approach to release an IFR departure off this runway end.
+    Release { end: usize },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -62,6 +75,16 @@ impl Coordination {
     pub fn live(&self) -> bool {
         matches!(self.state, CoordState::Approved { .. } | CoordState::InUse)
     }
+}
+
+/// Whether IFR departures go when Tower is ready, or only once Approach has
+/// released each one.
+#[derive(Debug, Clone, Default)]
+pub struct Releases {
+    /// Departures are on call for release, and why. `None`: released automatically.
+    pub call_for_release: Option<String>,
+    /// When the automated Approach last saw a reason to hold departures.
+    pub reason_seen: f32,
 }
 
 impl World {
@@ -125,6 +148,67 @@ impl World {
         None
     }
 
+    /// Releases are coordinated only when the player works exactly one of
+    /// Local and Approach.
+    fn releases_coordinated(&self) -> bool {
+        let staffing = self.config.staffing;
+        staffing.local != staffing.approach
+    }
+
+    /// Departures are on call for release.
+    pub fn call_for_release(&self) -> bool {
+        self.releases.call_for_release.is_some()
+    }
+
+    /// Approach has released this departure, and the release isn't void.
+    pub fn release_approved(&self, id: u32) -> bool {
+        self.coordination
+            .iter()
+            .any(|c| c.aircraft == id && matches!(c.kind, CoordKind::Release { .. }) && c.live())
+    }
+
+    /// An IFR departure that needs Approach's release before it may take off.
+    pub fn needs_release(&self, id: u32) -> bool {
+        self.releases_coordinated()
+            && self.call_for_release()
+            && self.find(id).is_some_and(|a| {
+                a.flow == Flow::Departure && a.vfr.is_none() && a.on_ground && a.phase != Phase::TowerRelease
+            })
+            && !self.release_approved(id)
+    }
+
+    /// Why Approach would hold departures off this runway end, flying out on
+    /// `bearing`: a missed approach to sort out, a runway change, an
+    /// emergency about to land, or weather on the way out.
+    fn release_reason(&self, end: usize, bearing: f32) -> Option<String> {
+        if self.aircraft.iter().any(|a| a.phase == Phase::GoAround && a.vfr.is_none()) {
+            return Some("missed approach in progress".into());
+        }
+        if self.landing_against_flow() {
+            return Some("runway change".into());
+        }
+        let physical = self.surface().runway_of_end[end];
+        if self.emergency_inbound(physical) {
+            return Some("emergency inbound".into());
+        }
+        if self.storms.blocked(self.airport.runways[end].far_end(), bearing, RELEASE_STORM_NM) {
+            return Some("weather".into());
+        }
+        None
+    }
+
+    /// Why Approach won't release this departure yet, if it won't: as for
+    /// the field, but with weather checked along its own first leg.
+    fn release_blocker(&self, ac: &Aircraft) -> Option<String> {
+        let end = ac.departure_end?;
+        let runway = &self.airport.runways[end];
+        let bearing = ac
+            .route
+            .get(ac.route_index)
+            .map_or(runway.heading, |&f| vec_heading(self.airport.fixes[f].pos() - runway.far_end()));
+        self.release_reason(end, bearing)
+    }
+
     fn landline(&mut self, from: Position, to: Position, text: String) {
         self.say(Speaker::Landline, format!("{} to {}: {text}", from.name(), to.name()));
     }
@@ -135,6 +219,30 @@ impl World {
 
     fn callsign(&self, id: u32) -> String {
         self.find(id).map(|a| a.callsign.clone()).unwrap_or_default()
+    }
+
+    /// The asked controller agreeing, as said on the landline.
+    fn approval_text(&self, kind: CoordKind, callsign: &str, until: f32, automated: bool) -> String {
+        match kind {
+            CoordKind::Crossing { runway } => format!("{callsign} cross runway {}, approved.", self.runway_name(runway)),
+            CoordKind::Release { .. } if automated => {
+                format!("{callsign} released, void if not off by {}.", self.utc(until))
+            }
+            CoordKind::Release { .. } => format!("{callsign} released."),
+        }
+    }
+
+    /// The asked controller saying no, with why and a promise to call back
+    /// if there's a reason.
+    fn unable_text(&self, kind: CoordKind, callsign: &str, why: Option<&str>) -> String {
+        let what = match kind {
+            CoordKind::Crossing { runway } => format!("{callsign} hold short runway {}", self.runway_name(runway)),
+            CoordKind::Release { .. } => format!("{callsign} hold for release"),
+        };
+        match why {
+            Some(why) => format!("{what}, {why}. I'll call you."),
+            None => format!("{what}, unable."),
+        }
     }
 
     /// Open a request. An automated controller answers after a short delay.
@@ -157,6 +265,9 @@ impl World {
             CoordKind::Crossing { runway } => {
                 format!("request crossing runway {} for {callsign}.", self.runway_name(runway))
             }
+            CoordKind::Release { end } => {
+                format!("request release {callsign}, runway {}.", self.airport.runways[end].id)
+            }
         };
         self.landline(from, to, text);
         if self.config.staffing.works(to) {
@@ -164,23 +275,91 @@ impl World {
         }
     }
 
+    /// A request of this kind is already waiting on the other controller.
+    fn already_asked(&self, id: u32, kind: CoordKind) -> bool {
+        self.coordination.iter().any(|c| {
+            c.aircraft == id
+                && c.kind == kind
+                && matches!(c.state, CoordState::Pending | CoordState::Unable { callback: true })
+        })
+    }
+
     /// The player, on Ground, asks Local to let this aircraft cross. Immediate:
     /// it's a landline, not the radio.
     pub fn request_crossing(&mut self, id: u32, runway: usize) -> bool {
-        if !self.needs_crossing_approval(id, runway) {
+        let kind = CoordKind::Crossing { runway };
+        if !self.needs_crossing_approval(id, runway) || self.already_asked(id, kind) {
             return false;
         }
-        let asked = self.coordination.iter().any(|c| {
-            c.aircraft == id
-                && c.kind == CoordKind::Crossing { runway }
-                && matches!(c.state, CoordState::Pending | CoordState::Unable { callback: true })
-        });
-        if asked {
-            return false;
-        }
-        self.ask(CoordKind::Crossing { runway }, id, Position::Ground, Position::Local);
+        self.ask(kind, id, Position::Ground, Position::Local);
         self.record(id, Action::RequestCrossing(runway));
         true
+    }
+
+    /// The player, on Local, asks Approach to release this departure.
+    pub fn request_release(&mut self, id: u32) -> bool {
+        let Some(end) = self.find(id).and_then(|a| a.departure_end) else { return false };
+        let kind = CoordKind::Release { end };
+        if !self.config.staffing.local || !self.needs_release(id) || self.already_asked(id, kind) {
+            return false;
+        }
+        self.ask(kind, id, Position::Local, Position::Approach);
+        self.record(id, Action::RequestRelease);
+        true
+    }
+
+    /// The player, on Approach with Tower automated, stops departures (each
+    /// then needs a release) or lets them go again.
+    pub fn set_call_for_release(&mut self, on: bool) -> bool {
+        let staffing = self.config.staffing;
+        if !staffing.approach || staffing.local || on == self.call_for_release() {
+            return false;
+        }
+        if on {
+            self.start_call_for_release(None);
+        } else {
+            self.end_call_for_release();
+        }
+        self.record(0, Action::CallForRelease { on });
+        true
+    }
+
+    fn start_call_for_release(&mut self, why: Option<String>) {
+        let runway = self.airport.runways[self.departure_runway()].id.clone();
+        let reason = why.as_deref().map(|w| format!(", {w}")).unwrap_or_default();
+        self.releases.call_for_release = Some(why.unwrap_or_default());
+        self.releases.reason_seen = self.time;
+        self.landline(
+            Position::Approach,
+            Position::Local,
+            format!("departures off {runway} call for release{reason}."),
+        );
+    }
+
+    fn end_call_for_release(&mut self) {
+        self.releases.call_for_release = None;
+        self.coordination.retain(|c| !matches!(c.kind, CoordKind::Release { .. }));
+        self.landline(Position::Approach, Position::Local, "departures released, resume normal.".into());
+    }
+
+    /// The automated Approach, with the player on Local, puts departures on
+    /// call for release while it has a reason, and lets them go a while after.
+    fn run_releases(&mut self) {
+        let staffing = self.config.staffing;
+        if staffing.approach || !staffing.local {
+            return;
+        }
+        let end = self.departure_runway();
+        let reason = self.release_reason(end, self.airport.runways[end].heading);
+        let now = self.time;
+        match (reason, self.call_for_release()) {
+            (Some(why), false) => self.start_call_for_release(Some(why)),
+            (Some(_), true) => self.releases.reason_seen = now,
+            (None, true) if now - self.releases.reason_seen >= CALL_FOR_RELEASE_MIN_S => {
+                self.end_call_for_release()
+            }
+            _ => {}
+        }
     }
 
     /// The player answers a request about this aircraft.
@@ -200,8 +379,9 @@ impl World {
         }
         let now = self.time;
         let c = &mut self.coordination[index];
+        let lasts = if matches!(c.kind, CoordKind::Release { .. }) { RELEASE_VOID_S } else { APPROVAL_S };
         c.state = if approve {
-            CoordState::Approved { until: now + APPROVAL_S }
+            CoordState::Approved { until: now + lasts }
         } else {
             CoordState::Unable { callback: false }
         };
@@ -211,15 +391,10 @@ impl World {
             c.asked = now;
         }
         let callsign = self.callsign(id);
-        let text = match kind {
-            CoordKind::Crossing { runway } => {
-                let name = self.runway_name(runway);
-                if approve {
-                    format!("{callsign} cross runway {name}, approved.")
-                } else {
-                    format!("{callsign} hold short runway {name}, unable.")
-                }
-            }
+        let text = if approve {
+            self.approval_text(kind, &callsign, now + lasts, false)
+        } else {
+            self.unable_text(kind, &callsign, None)
         };
         self.landline(to, from, text);
         self.record(id, Action::Coordinate { approve });
@@ -228,6 +403,7 @@ impl World {
 
     /// Automated answers and callbacks, lapsed approvals, late answers.
     pub(super) fn run_coordination(&mut self) {
+        self.run_releases();
         if self.coordination.is_empty() {
             return;
         }
@@ -240,16 +416,27 @@ impl World {
                 self.coordination.remove(index);
                 continue;
             };
-            let CoordKind::Crossing { runway } = c.kind;
-            let map = self.surface();
-            let taxi = ac.taxi.as_ref();
-            let ahead = ac.on_ground
-                && taxi.is_some_and(|t| t.path[t.index.min(t.path.len())..].iter().any(|&n| map.in_zone(n, runway)));
-            let on_it = self.occupies(ac, runway);
-            let cleared = taxi.is_some_and(|t| t.cleared.contains(&runway));
             let callsign = ac.callsign.clone();
-            // Across, or no longer going that way: nothing left to coordinate.
-            if !ahead && !on_it {
+            let (done, cleared, blocker) = match c.kind {
+                CoordKind::Crossing { runway } => {
+                    let map = self.surface();
+                    let taxi = ac.taxi.as_ref();
+                    let ahead = ac.on_ground
+                        && taxi.is_some_and(|t| {
+                            t.path[t.index.min(t.path.len())..].iter().any(|&n| map.in_zone(n, runway))
+                        });
+                    // Across, or no longer going that way: nothing left to coordinate.
+                    let done = !ahead && !self.occupies(ac, runway);
+                    let cleared = taxi.is_some_and(|t| t.cleared.contains(&runway));
+                    (done, cleared, self.crossing_blocker(runway, c.aircraft))
+                }
+                CoordKind::Release { .. } => {
+                    // Rolling or gone, or departures no longer need releasing.
+                    let done = !ac.on_ground || ac.phase == Phase::TowerRelease || !self.call_for_release();
+                    (done, false, self.release_blocker(ac))
+                }
+            };
+            if done {
                 self.coordination.remove(index);
                 continue;
             }
@@ -259,47 +446,47 @@ impl World {
                     self.coordination[index].state = CoordState::InUse;
                 }
                 CoordState::Pending if automated_to && now >= c.due => {
-                    let name = self.runway_name(runway);
-                    match self.crossing_blocker(runway, c.aircraft) {
+                    let text = match blocker {
                         None => {
-                            self.coordination[index].state = CoordState::Approved { until: now + APPROVAL_S };
-                            self.landline(c.to, c.from, format!("{callsign} cross runway {name}, approved."));
+                            let until = now + self.approval_lasts(c.kind);
+                            self.coordination[index].state = CoordState::Approved { until };
+                            self.approval_text(c.kind, &callsign, until, true)
                         }
                         Some(why) => {
                             self.coordination[index].state = CoordState::Unable { callback: true };
-                            self.landline(
-                                c.to,
-                                c.from,
-                                format!("{callsign} hold short runway {name}, {why}. I'll call you."),
-                            );
+                            self.unable_text(c.kind, &callsign, Some(&why))
                         }
-                    }
+                    };
+                    self.landline(c.to, c.from, text);
                 }
                 CoordState::Unable { callback: true } if automated_to => {
-                    if self.crossing_blocker(runway, c.aircraft).is_none() {
-                        let name = self.runway_name(runway);
-                        self.coordination[index].state = CoordState::Approved { until: now + APPROVAL_S };
-                        self.landline(c.to, c.from, format!("{callsign} cross runway {name}, approved."));
+                    if blocker.is_none() {
+                        let until = now + self.approval_lasts(c.kind);
+                        self.coordination[index].state = CoordState::Approved { until };
+                        let text = self.approval_text(c.kind, &callsign, until, true);
+                        self.landline(c.to, c.from, text);
                     }
                 }
                 // The player turned it down: ask again in a while.
                 CoordState::Unable { callback: false } if !staffing.works(c.from) && now - c.asked >= REASK_S => {
-                    let name = self.runway_name(runway);
+                    let text = match c.kind {
+                        CoordKind::Crossing { runway } => {
+                            format!("{callsign} still holding short runway {}.", self.runway_name(runway))
+                        }
+                        CoordKind::Release { .. } => format!("{callsign} still waiting for release."),
+                    };
                     let item = &mut self.coordination[index];
                     item.state = CoordState::Pending;
                     item.asked = now;
                     item.late = false;
-                    self.landline(c.from, c.to, format!("{callsign} still holding short runway {name}."));
+                    self.landline(c.from, c.to, text);
                     self.emit(SimEvent::CoordinationRequest { callsign });
                 }
                 CoordState::Approved { until } if automated_to => {
-                    let close = !self.arrivals_within(runway, CANCEL_CROSSING_NM, 0.0).is_empty();
-                    if close || now >= until {
-                        let name = self.runway_name(runway);
-                        let why = if close { ", traffic short final. I'll call you" } else { "" };
-                        self.landline(c.to, c.from, format!("cancel crossing runway {name} for {callsign}{why}."));
-                        if !close {
-                            // Lapsed: Ground has to ask again.
+                    if let Some((text, callback)) = self.withdraw(c.kind, &callsign, until, blocker.as_deref()) {
+                        self.landline(c.to, c.from, text);
+                        if !callback {
+                            // Lapsed: it has to be asked for again.
                             self.coordination.remove(index);
                             continue;
                         }
@@ -317,6 +504,33 @@ impl World {
                 _ => {}
             }
             index += 1;
+        }
+    }
+
+    fn approval_lasts(&self, kind: CoordKind) -> f32 {
+        match kind {
+            CoordKind::Crossing { .. } => APPROVAL_S,
+            CoordKind::Release { .. } => RELEASE_VOID_S,
+        }
+    }
+
+    /// An automated controller taking back an approval it gave, if it should:
+    /// it has lapsed, or (with traffic now in the way) it's cancelled until
+    /// it can call back. The landline line, and whether it will call back.
+    fn withdraw(&self, kind: CoordKind, callsign: &str, until: f32, blocker: Option<&str>) -> Option<(String, bool)> {
+        let lapsed = self.time >= until;
+        match kind {
+            CoordKind::Crossing { runway } => {
+                let close = !self.arrivals_within(runway, CANCEL_CROSSING_NM, 0.0).is_empty();
+                let why = if close { ", traffic short final. I'll call you" } else { "" };
+                (close || lapsed).then(|| {
+                    (format!("cancel crossing runway {} for {callsign}{why}.", self.runway_name(runway)), close)
+                })
+            }
+            CoordKind::Release { .. } if lapsed => Some((format!("{callsign} release void."), false)),
+            CoordKind::Release { .. } => {
+                blocker.map(|why| (format!("cancel release {callsign}, {why}. I'll call you."), true))
+            }
         }
     }
 

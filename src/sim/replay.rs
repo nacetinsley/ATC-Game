@@ -37,6 +37,10 @@ pub enum Action {
     RequestCrossing(usize),
     /// Answering a landline request about the aircraft.
     Coordinate { approve: bool },
+    /// On Local, asking Approach on the landline to release the departure.
+    RequestRelease,
+    /// On Approach, putting departures on call for release, or letting them go.
+    CallForRelease { on: bool },
 }
 
 impl World {
@@ -61,6 +65,8 @@ impl World {
             Action::AcceptHandoff => self.accept_handoff(command.id),
             Action::RequestCrossing(runway) => self.request_crossing(command.id, *runway),
             Action::Coordinate { approve } => self.answer_coordination(command.id, *approve),
+            Action::RequestRelease => self.request_release(command.id),
+            Action::CallForRelease { on } => self.set_call_for_release(*on),
         }
     }
 

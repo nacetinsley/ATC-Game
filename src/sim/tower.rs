@@ -472,7 +472,9 @@ impl World {
                 // After a runway change, the last arrival the old way lands first.
                 && !self.landing_against_flow()
                 // An emergency about to land gets the runway to itself.
-                && !self.emergency_inbound(r);
+                && !self.emergency_inbound(r)
+                // On call for release: not until Approach has released it.
+                && !self.needs_release(ac.id);
             return safe.then_some(Clearance::ClearedForTakeoff(end));
         }
         // Clear of the runways: over to Ground, if anyone is working it.
@@ -488,15 +490,24 @@ impl World {
             return;
         }
         let mut calls = Vec::new();
+        let mut releases = Vec::new();
         let mut launched = false;
         for ac in &self.aircraft {
             if ac.frequency() != Position::Local || self.call_pending(ac.id) {
                 continue;
             }
+            // Departures on call for release: ask Approach at the hold line.
+            if self.at_departure_hold(ac) && self.needs_release(ac.id) && self.coordination_for(ac.id).is_none() {
+                releases.extend(ac.departure_end.map(|end| (ac.id, end)));
+            }
             if let Some(c) = self.local_decision(ac, launched) {
                 launched |= matches!(c, Clearance::ClearedForTakeoff(_));
                 calls.push((ac.id, c, departure_interval(ac)));
             }
+        }
+        for (id, end) in releases {
+            let kind = super::coordination::CoordKind::Release { end };
+            self.ask(kind, id, Position::Local, Position::Approach);
         }
         for (id, clearance, interval) in calls {
             if matches!(clearance, Clearance::ClearedForTakeoff(_)) {

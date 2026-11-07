@@ -435,6 +435,16 @@ impl World {
                 _ => false,
             })
             .collect();
+        // Local launching a departure Approach hasn't released.
+        let unreleased: Vec<bool> = call
+            .clearances
+            .iter()
+            .map(|(c, issuer)| {
+                matches!(c, Clearance::ClearedForTakeoff(_))
+                    && *issuer == Some(Position::Local)
+                    && self.needs_release(call.aircraft)
+            })
+            .collect();
         let in_use = self.ends_in_use();
         let ctx = Context {
             approaches: self.approach_facts(index, &call.clearances),
@@ -492,6 +502,9 @@ impl World {
                     }
                     if uncoordinated[n] {
                         events.push(SimEvent::UncoordinatedCrossing { callsign: ac.callsign.clone() });
+                    }
+                    if unreleased[n] {
+                        events.push(SimEvent::UnreleasedDeparture { callsign: ac.callsign.clone() });
                     }
                     if *clearance == Clearance::GoAround {
                         let callsign = ac.callsign.clone();

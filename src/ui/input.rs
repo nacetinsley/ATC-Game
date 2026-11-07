@@ -327,8 +327,39 @@ impl UiState {
         }
     }
 
+    /// K on Local while departures are on call for release, with no release
+    /// asked for yet: the first press asks Approach on the landline.
+    fn needs_release_request(&self, world: &World) -> bool {
+        use crate::sim::coordination::{CoordKind, CoordState};
+        self.selected.is_some_and(|id| {
+            let asked = world.coordination_for(id).is_some_and(|c| {
+                matches!(c.kind, CoordKind::Release { .. })
+                    && matches!(c.state, CoordState::Pending | CoordState::Unable { callback: true })
+            });
+            world.staffing().local && world.needs_release(id) && !asked
+        })
+    }
+
+    /// The K button's label: a release request while one is needed.
+    pub fn takeoff_label(&self, world: &World) -> &'static str {
+        if self.needs_release_request(world) { "Req rel K" } else { "Takeoff K" }
+    }
+
+    /// F on Approach with Tower automated: stop departures, or release them.
+    pub fn toggle_call_for_release(&mut self, world: &mut World) {
+        if !self.replay {
+            world.set_call_for_release(!world.call_for_release());
+        }
+    }
+
     /// Line up and wait, or cleared for takeoff, on the aircraft's departure runway.
-    pub fn departure(&mut self, world: &World, takeoff: bool) {
+    pub fn departure(&mut self, world: &mut World, takeoff: bool) {
+        if takeoff && self.needs_release_request(world) {
+            if let Some(id) = self.selected.filter(|_| !self.replay) {
+                world.request_release(id);
+            }
+            return;
+        }
         let Some(ac) = self.selected.and_then(|id| world.find(id)) else { return };
         let Some(end) = ac.departure_end else { return };
         let clearance = if takeoff { Clearance::ClearedForTakeoff(end) } else { Clearance::LineUpAndWait(end) };
@@ -618,6 +649,9 @@ impl UiState {
         }
         if is_key_pressed(KeyCode::Y) {
             self.coordinate(world, true);
+        }
+        if is_key_pressed(KeyCode::F) {
+            self.toggle_call_for_release(world);
         }
         if is_key_pressed(KeyCode::N) {
             self.coordinate(world, false);

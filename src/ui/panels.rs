@@ -95,17 +95,35 @@ fn draw_landline(world: &mut World, ui: &mut UiState, x: f32, top: f32) -> f32 {
                     let name = crate::sim::clearance::spoken_runway(&world.airport, map, runway, &world.ends_in_use());
                     format!("{callsign} cross {name}?")
                 }
+                CoordKind::Release { end } => format!("release {callsign} off {}?", world.airport.runways[end].id),
             };
             let pending = c.state == CoordState::Pending;
             let text = if pending { format!("{}: {what}", c.from.name()) } else { format!("{}: {what} (unable)", c.from.name()) };
             (c.aircraft, text, pending)
         })
         .collect();
-    if rows.is_empty() {
+    let releases = release_line(world);
+    if rows.is_empty() && releases.is_none() {
         return 0.0;
     }
     let bw = 86.0;
     let mut y = top + 6.0;
+    if let Some(text) = releases {
+        let staffing = world.staffing();
+        let right = x + PANEL_WIDTH - PADDING;
+        // Approach, with Tower automated, stops and restarts departures.
+        if staffing.approach && !staffing.local {
+            let on = world.call_for_release();
+            let wide = bw * 1.4;
+            if button(if on { "Release all F" } else { "Stop deps F" }, right - wide, y, wide, LANDLINE_ROW - 4.0)
+                && !ui.replay
+            {
+                world.set_call_for_release(!on);
+            }
+        }
+        label(&text, left, y + 17.0, 17.0, LANDLINE);
+        y += LANDLINE_ROW;
+    }
     for (id, text, pending) in rows {
         let selected = ui.selected == Some(id);
         label(&text, left, y + 17.0, 17.0, if selected { TEXT } else { LANDLINE });
@@ -120,6 +138,37 @@ fn draw_landline(world: &mut World, ui: &mut UiState, x: f32, top: f32) -> f32 {
     }
     divider(x, y + 2.0);
     y + 4.0 - top
+}
+
+/// Departure releases, for a player on Local or Approach but not both: on
+/// call for release or not, and who's released.
+fn release_line(world: &World) -> Option<String> {
+    use crate::sim::coordination::{CoordKind, CoordState};
+    let staffing = world.staffing();
+    if staffing.local == staffing.approach {
+        return None;
+    }
+    let Some(why) = &world.releases.call_for_release else {
+        // Approach can stop departures; Local only hears when it does.
+        return staffing.approach.then(|| "Departures released automatically".to_string());
+    };
+    let mut text = if why.is_empty() { "Call for release".to_string() } else { format!("Call for release, {why}") };
+    let released: Vec<String> = world
+        .coordination
+        .iter()
+        .filter(|c| matches!(c.kind, CoordKind::Release { .. }))
+        .filter_map(|c| match c.state {
+            CoordState::Approved { until } => {
+                let callsign = &world.find(c.aircraft)?.callsign;
+                Some(format!("{callsign} void {}", world.utc(until)))
+            }
+            _ => None,
+        })
+        .collect();
+    if !released.is_empty() {
+        text += &format!(": {}", released.join(", "));
+    }
+    Some(text)
 }
 
 fn draw_status(world: &World, ui: &UiState, x: f32) {
@@ -386,7 +435,7 @@ fn draw_tower_buttons(world: &mut World, ui: &mut UiState, left: f32, top: f32) 
     if button("Line up W", col(2.0), y, w, bh) {
         ui.departure(world, false);
     }
-    if button("Takeoff K", col(3.0), y, w, bh) {
+    if button(ui.takeoff_label(world), col(3.0), y, w, bh) {
         ui.departure(world, true);
     }
     let y = y + 28.0;

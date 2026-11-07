@@ -38,6 +38,8 @@ pub const PENALTY_MISSED_HANDOFF: i32 = -25;
 pub const PENALTY_UNCOORDINATED_CROSSING: i32 = -100;
 /// Left another controller waiting on the landline.
 pub const PENALTY_COORDINATION_LATE: i32 = -25;
+/// Tower launched an IFR departure Approach hadn't released.
+pub const PENALTY_UNRELEASED_DEPARTURE: i32 = -100;
 /// A pilot asked to go round weather and had to go without an answer.
 pub const PENALTY_DEVIATION_IGNORED: i32 = -50;
 pub const POINTS_TOUCH_AND_GO: i32 = 20;
@@ -139,6 +141,9 @@ pub enum SimEvent {
     UncoordinatedCrossing { callsign: String },
     /// A landline request to the player went unanswered too long.
     CoordinationLate { callsign: String },
+    /// The player, on Local, cleared a departure for takeoff without the
+    /// release Approach asked for.
+    UnreleasedDeparture { callsign: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -417,6 +422,13 @@ impl Score {
                     time,
                     format!("{callsign} crossed a runway without Tower's approval"),
                     PENALTY_UNCOORDINATED_CROSSING,
+                );
+            }
+            SimEvent::UnreleasedDeparture { callsign } => {
+                self.incident(
+                    time,
+                    format!("{callsign} took off without Approach's release"),
+                    PENALTY_UNRELEASED_DEPARTURE,
                 );
             }
             SimEvent::CoordinationLate { callsign } => {

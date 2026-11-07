@@ -216,7 +216,7 @@ fn draw_layout(world: &World, map: &GroundMap, cam: &Camera) {
 
     // Crossings Tower has agreed to: the way across, dashed.
     for c in world.coordination.iter().filter(|c| c.live()) {
-        let crate::sim::coordination::CoordKind::Crossing { runway } = c.kind;
+        let crate::sim::coordination::CoordKind::Crossing { runway } = c.kind else { continue };
         let Some(taxi) = world.find(c.aircraft).and_then(|a| a.taxi.as_ref()) else { continue };
         let rest = &taxi.path[taxi.index.min(taxi.path.len())..];
         let Some(first) = rest.iter().position(|&n| map.in_zone(n, runway)) else { continue };

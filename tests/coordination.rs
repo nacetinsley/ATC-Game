@@ -1,12 +1,13 @@
 //! Landline coordination between a position the player works and an
 //! automated one: runway crossings between Ground and Local, and arrivals
-//! Local leaves holding short between runways.
+//! Local leaves holding short between runways, and departure releases
+//! between Local and Approach.
 
 use atcgame::sim::aircraft::{Aircraft, Flow, Lateral, Phase, Taxi};
 use atcgame::sim::airspace::Airport;
 use atcgame::sim::awaiting::Awaiting;
 use atcgame::sim::clearance::Clearance;
-use atcgame::sim::coordination::{ANSWER_S, APPROVAL_S, CoordState};
+use atcgame::sim::coordination::{ANSWER_S, APPROVAL_S, CALL_FOR_RELEASE_MIN_S, CoordState, RELEASE_VOID_S};
 use atcgame::sim::performance::aircraft_type;
 use atcgame::sim::positions::{Position, Staffing};
 use atcgame::sim::replay::Action;
@@ -304,4 +305,174 @@ fn runways_are_named_by_the_end_in_use() {
         assert_eq!(name("27L"), south, "wind {wind}");
         assert_eq!(name("27R"), north, "wind {wind}");
     }
+}
+
+/// An IFR departure at the 27R hold line, with Tower.
+fn ready_departure(world: &World, id: u32) -> Aircraft {
+    let hold = hold_27r(world);
+    let mut ac = cargo_departure(world, id);
+    ac.callsign = "DAL20".into();
+    ac.pos = world.airport.surface.as_ref().unwrap().nodes[hold].pos;
+    ac.phase = Phase::Taxiing;
+    ac.taxi = Some(Taxi::at(hold));
+    ac.surface_freq = Position::Local;
+    ac
+}
+
+/// An IFR arrival going around off 27L, low over the field.
+fn going_around(world: &World, id: u32) -> Aircraft {
+    let mut ac = final_arrival(world, id, "NVA7", 0.5);
+    ac.phase = Phase::GoAround;
+    ac.on_glideslope = false;
+    ac.lateral = Lateral::Heading(270.0);
+    ac.target_altitude = world.airport.go_around_altitude;
+    ac.altitude = world.airport.elevation + 400.0;
+    ac
+}
+
+fn set_phase(world: &mut World, id: u32, phase: Phase) {
+    world.aircraft.iter_mut().find(|a| a.id == id).unwrap().phase = phase;
+}
+
+fn rolling(world: &World, id: u32) -> bool {
+    world.find(id).is_none_or(|a| a.phase == Phase::TowerRelease || !a.on_ground)
+}
+
+/// On Local with Approach automated: a go-around puts departures on call for release.
+fn local_on_call_for_release() -> (World, Vec<SimEvent>, usize) {
+    let mut world = harrowgate(Staffing::LOCAL);
+    let mut events = Vec::new();
+    world.add_aircraft(ready_departure(&world, 1));
+    world.add_aircraft(going_around(&world, 2));
+    run(&mut world, 1.0, &mut events);
+    let end = end(&world, "27R");
+    (world, events, end)
+}
+
+#[test]
+fn approach_puts_departures_on_call_for_release_and_releases_them() {
+    let (mut world, mut events, end) = local_on_call_for_release();
+    assert!(world.call_for_release());
+    assert!(
+        landline(&world).contains(&"Approach to Tower: departures off 27R call for release, missed approach in progress."),
+        "{:?}",
+        landline(&world)
+    );
+    assert!(world.needs_release(1));
+    assert!(world.request_release(1));
+    assert!(!world.request_release(1), "asked once");
+    assert!(landline(&world).last().unwrap().ends_with("Tower to Approach: request release DAL20, runway 27R."));
+    // Still sorting out the missed approach: hold.
+    run(&mut world, 8.0, &mut events);
+    let last = landline(&world).last().unwrap().to_string();
+    assert!(last.contains("DAL20 hold for release, missed approach in progress. I'll call you"), "{last}");
+    // The go-around is with Approach now: the release comes.
+    set_phase(&mut world, 2, Phase::Controlled);
+    run_until(&mut world, 10.0, &mut events, |w| w.release_approved(1));
+    assert!(landline(&world).last().unwrap().contains("DAL20 released, void if not off by"));
+    assert!(!world.needs_release(1));
+
+    assert!(world.transmit(1, vec![Clearance::ClearedForTakeoff(end)]));
+    run_until(&mut world, 60.0, &mut events, |w| rolling(w, 1));
+    run(&mut world, 1.0, &mut events);
+    assert!(world.coordination_for(1).is_none(), "done once rolling");
+    assert!(!events.iter().any(|e| matches!(e, SimEvent::UnreleasedDeparture { .. })), "{events:?}");
+
+    // Departures go back to normal a while after the reason has gone.
+    run(&mut world, CALL_FOR_RELEASE_MIN_S, &mut events);
+    assert!(!world.call_for_release());
+    assert!(landline(&world).last().unwrap().contains("departures released, resume normal"));
+}
+
+#[test]
+fn a_takeoff_without_a_release_is_scored() {
+    let (mut world, mut events, end) = local_on_call_for_release();
+    assert!(world.transmit(1, vec![Clearance::ClearedForTakeoff(end)]));
+    run(&mut world, 10.0, &mut events);
+    assert!(
+        events.iter().any(|e| matches!(e, SimEvent::UnreleasedDeparture { callsign } if callsign == "DAL20")),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn an_unused_release_is_void() {
+    let (mut world, mut events, _) = local_on_call_for_release();
+    set_phase(&mut world, 2, Phase::Controlled);
+    world.request_release(1);
+    run_until(&mut world, 10.0, &mut events, |w| w.release_approved(1));
+    run(&mut world, RELEASE_VOID_S + 1.0, &mut events);
+    assert!(world.call_for_release());
+    assert!(!world.release_approved(1));
+    assert!(landline(&world).last().unwrap().contains("DAL20 release void"), "{:?}", landline(&world));
+    assert!(world.needs_release(1));
+}
+
+#[test]
+fn departures_go_automatically_without_a_reason() {
+    let mut world = harrowgate(Staffing::LOCAL);
+    let mut events = Vec::new();
+    world.add_aircraft(ready_departure(&world, 1));
+    run(&mut world, 5.0, &mut events);
+    assert!(!world.call_for_release());
+    assert!(!world.needs_release(1));
+    assert!(!world.request_release(1));
+    assert!(landline(&world).is_empty());
+}
+
+#[test]
+fn tower_asks_the_player_on_approach_for_releases() {
+    let mut world = harrowgate(Staffing::APPROACH);
+    let mut events = Vec::new();
+    world.add_aircraft(ready_departure(&world, 1));
+    assert!(world.set_call_for_release(true));
+    assert!(landline(&world).last().unwrap().ends_with("Approach to Tower: departures off 27R call for release."));
+    run_until(&mut world, 10.0, &mut events, |w| w.incoming().any(|c| c.aircraft == 1));
+    assert!(events.iter().any(|e| matches!(e, SimEvent::CoordinationRequest { .. })));
+    run(&mut world, 30.0, &mut events);
+    assert!(!rolling(&world, 1), "Tower holds it for release");
+
+    assert!(world.answer_coordination(1, true));
+    assert!(landline(&world).last().unwrap().contains("DAL20 released."));
+    run_until(&mut world, 60.0, &mut events, |w| rolling(w, 1));
+    assert!(world.score.incidents.is_empty(), "{:?}", world.score.incidents);
+
+    assert!(world.set_call_for_release(false));
+    assert!(!world.set_call_for_release(false), "already released");
+    run(&mut world, 1.0, &mut events);
+    let commands = world.commands().to_vec();
+    assert!(commands.iter().any(|c| c.action == Action::CallForRelease { on: true }));
+
+    let mut again = harrowgate(Staffing::APPROACH);
+    again.add_aircraft(ready_departure(&again, 1));
+    again.run_to(world.ticks(), &commands);
+    assert_eq!(again.state_digest(), world.state_digest());
+}
+
+#[test]
+fn tower_asks_again_when_approach_holds_a_departure() {
+    let mut world = harrowgate(Staffing::APPROACH);
+    let mut events = Vec::new();
+    world.add_aircraft(ready_departure(&world, 1));
+    world.set_call_for_release(true);
+    run_until(&mut world, 10.0, &mut events, |w| w.incoming().any(|c| c.aircraft == 1));
+    assert!(world.answer_coordination(1, false));
+    assert!(landline(&world).last().unwrap().contains("DAL20 hold for release, unable"));
+    run_until(&mut world, 70.0, &mut events, |w| w.coordination_for(1).is_some_and(|c| c.state == CoordState::Pending));
+    assert!(landline(&world).last().unwrap().contains("DAL20 still waiting for release"));
+    // Letting departures go drops the request: off it goes.
+    world.set_call_for_release(false);
+    run_until(&mut world, 60.0, &mut events, |w| rolling(w, 1));
+}
+
+#[test]
+fn releases_need_no_landline_on_a_combined_position() {
+    let mut world = harrowgate(Staffing::ALL);
+    let mut events = Vec::new();
+    world.add_aircraft(ready_departure(&world, 1));
+    world.add_aircraft(going_around(&world, 2));
+    run(&mut world, 5.0, &mut events);
+    assert!(!world.call_for_release());
+    assert!(!world.set_call_for_release(true));
+    assert!(!world.needs_release(1));
 }
