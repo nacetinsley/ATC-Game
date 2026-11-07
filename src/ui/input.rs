@@ -1,6 +1,6 @@
 //! Selection, drag vectors, hotkeys and the pending clearance.
 
-use super::camera::{Camera, inset_area, mouse_in_scope, scope_area};
+use super::camera::{Camera, inset_area, mouse_in_scope, scope_area, scope_width};
 use super::scope::{self, BLOCK_SIZE};
 use super::surface;
 use crate::sim::World;
@@ -70,6 +70,8 @@ pub struct UiState {
     pub hovered: Option<u32>,
     /// Show the direction of flight beside a flight plan (F4 hides it).
     pub course_hint: bool,
+    /// Watching a replay: everything can be looked at, nothing can be said.
+    pub replay: bool,
 }
 
 impl UiState {
@@ -95,6 +97,7 @@ impl UiState {
             board: Default::default(),
             hovered: None,
             course_hint: true,
+            replay: false,
         };
         ui.frame_views(airport);
         ui
@@ -158,6 +161,9 @@ impl UiState {
     }
 
     pub fn transmit(&mut self, world: &mut World) {
+        if self.replay {
+            return;
+        }
         if let Some(id) = self.selected
             && world.transmit(id, self.pending.to_clearances()) {
                 self.pending = PendingClearance::default();
@@ -167,7 +173,7 @@ impl UiState {
     /// One action for all handoffs: accept from Center, or pass the aircraft on
     /// to whoever is next: Tower, Ground, Departure or Center.
     pub fn handoff(&mut self, world: &mut World) {
-        let Some(id) = self.selected else { return };
+        let Some(id) = self.selected.filter(|_| !self.replay) else { return };
         let Some(ac) = world.find(id) else { return };
         match (ac.phase, ac.flow) {
             (Phase::Offered, _) => {
@@ -425,6 +431,11 @@ impl UiState {
         }
         self.handle_keys(world);
         self.handle_mouse(world);
+        if self.replay {
+            // Nothing is said in a replay, so nothing is drafted either.
+            self.pending = PendingClearance::default();
+            self.via.clear();
+        }
         if let Some(id) = self.selected.filter(|&id| world.find(id).is_some_and(|a| a.in_emergency())) {
             self.acknowledged.insert(id);
         }
@@ -436,6 +447,10 @@ impl UiState {
 
         if is_key_pressed(KeyCode::Tab) {
             self.cycle_selection(world);
+        }
+        if self.replay {
+            self.view_keys(world);
+            return;
         }
         if is_key_pressed(KeyCode::Left) {
             self.nudge_heading(world, -heading_step);
@@ -514,6 +529,21 @@ impl UiState {
                 self.cycle_sid(world);
             }
         }
+        if is_key_pressed(KeyCode::T) {
+            self.handoff(world);
+        }
+        if (is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter)) && !self.enter_taken {
+            self.transmit(world);
+        }
+        // Escape opens the pause menu, handled by the app.
+        if is_key_pressed(KeyCode::Backspace) || is_key_pressed(KeyCode::Delete) {
+            self.cancel();
+        }
+        self.view_keys(world);
+    }
+
+    /// Keys that change what's shown, not what's said: these work in a replay too.
+    fn view_keys(&mut self, world: &World) {
         if is_key_pressed(KeyCode::F4) {
             self.course_hint = !self.course_hint;
         }
@@ -525,16 +555,6 @@ impl UiState {
         }
         if is_key_pressed(KeyCode::F3) {
             self.board.expanded = !self.board.expanded;
-        }
-        if is_key_pressed(KeyCode::T) {
-            self.handoff(world);
-        }
-        if (is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter)) && !self.enter_taken {
-            self.transmit(world);
-        }
-        // Escape opens the pause menu, handled by the app.
-        if is_key_pressed(KeyCode::Backspace) || is_key_pressed(KeyCode::Delete) {
-            self.cancel();
         }
         if is_key_pressed(KeyCode::Space) {
             self.paused = !self.paused;
@@ -548,6 +568,9 @@ impl UiState {
         if is_key_pressed(KeyCode::Key4) {
             self.rate = 4.0;
         }
+        if self.replay && is_key_pressed(KeyCode::Key8) {
+            self.rate = 8.0;
+        }
         if is_key_pressed(KeyCode::M) {
             self.show_mva = !self.show_mva;
         }
@@ -555,6 +578,10 @@ impl UiState {
 
     fn handle_mouse(&mut self, world: &World) {
         let mouse = Vec2::from(mouse_position());
+        if self.replay && mouse.y > screen_height() - super::debrief::BAR_HEIGHT && mouse.x < scope_width() {
+            // The replay bar has the mouse.
+            return;
+        }
         let in_inset = self.has_inset() && inset_area().contains(mouse);
         let in_main = mouse_in_scope() && !in_inset;
         let (_, wheel) = mouse_wheel();

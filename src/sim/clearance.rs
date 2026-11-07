@@ -9,6 +9,7 @@ use super::scoring::{GoAroundReason, SimEvent};
 use super::units::{format_heading, heading_diff, normalize_heading};
 use super::vfr::{compass, landing_for, side_word};
 use super::{Speaker, World};
+use serde::{Deserialize, Serialize};
 
 pub const MIN_ASSIGNED_ALTITUDE: f32 = 1000.0;
 pub const MAX_ASSIGNED_ALTITUDE: f32 = 17000.0;
@@ -23,7 +24,7 @@ const ABOVE_GLIDESLOPE_TOLERANCE: f32 = 200.0;
 /// Closer than this to a node, an aircraft is at it, NM.
 pub(super) const AT_NODE_NM: f32 = 1e-4;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Clearance {
     Heading(f32),
     Altitude(f32),
@@ -304,6 +305,7 @@ impl World {
         ac.phase = Phase::Controlled;
         let line = format!("{}, radar contact.", ac.callsign);
         self.say(Speaker::Controller, line);
+        self.record(id, super::replay::Action::AcceptHandoff);
         true
     }
 
@@ -320,13 +322,18 @@ impl World {
         };
         let frequency = ac.frequency();
         let calls = clearances
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|c| {
                 let issuer = issuer_for(&c, frequency, staffing);
                 (c, issuer)
             })
             .collect();
-        self.send(id, calls, None)
+        let sent = self.send(id, calls, None);
+        if sent {
+            self.record(id, super::replay::Action::Transmit(clearances));
+        }
+        sent
     }
 
     /// Send a radio call from an automated position.

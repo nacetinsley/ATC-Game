@@ -11,7 +11,7 @@ use super::{Speaker, World};
 use super::aircraft::{Aircraft, Lateral, Phase, STANDARD_TURN_RATE};
 use super::units::{SECONDS_PER_HOUR, heading_diff, heading_for_track, heading_vec, normalize_heading, vec_heading};
 use glam::Vec2;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// The fix counts as reached within this distance, NM.
 const ARRIVE_NM: f32 = 0.4;
@@ -43,7 +43,7 @@ const HIGH_HOLD_FT: f32 = 14_000.0;
 /// the turn going in the right direction.
 const FORCE_TURN_DEG: f32 = 90.0;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Turns {
     #[default]
@@ -82,7 +82,7 @@ pub struct HoldData {
     pub altitude: Option<f32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum HoldLeg {
     /// A minute below 14,000 ft, a minute and a half above.
     Standard,
@@ -129,7 +129,7 @@ impl HoldLeg {
 }
 
 /// What the controller told the aircraft.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct HoldSpec {
     pub fix: usize,
     /// True course inbound to the fix.

@@ -430,6 +430,42 @@ length and difficulty), are saved between runs in `settings.toml`:
 Mac, `~/.config/atcgame` on Linux. The settings screen shows the path. Delete
 the file to go back to the defaults; a value it doesn't recognise is ignored.
 
+## Debrief and replay
+
+When a shift ends, the debrief shows the score and a **timeline** of the
+shift: penalties in red, credits in green, emergencies as amber diamonds.
+Hover over a mark to read it, and click it (or pick it in the list below with
+Up/Down and press Space) to **replay** that moment, starting 45 seconds before.
+**R** replays from the start.
+
+The replay is the shift on the scope again, exactly as it happened: the same
+aircraft, the same radio calls, with the aircraft the incident names already
+selected. You can select, pan and zoom, read the strips, and switch views, but
+not give instructions. Along the bottom:
+
+- **Space** plays or pauses, **1 2 4 8** set the speed.
+- **Left / Right** step 10 seconds back or forward (Shift: a minute).
+  **N / P** jump to the next or previous incident. Click or drag on the
+  timeline to go anywhere.
+- **T takes over**: the replay becomes your shift again from that moment, and
+  what happens next is up to you. Try the incident another way.
+- **Esc** goes back to the debrief.
+
+The sim is deterministic, so a replay is only the shift's settings and what you
+said: each finished shift is saved, a few KB, in a `replays` folder next to
+the settings file. **R** on the start menu lists them (the newest 30 are kept)
+to watch again; Delete removes one.
+
+### Shift codes
+
+Every shift has a code, such as `KSUS-7KQ4-XM2P-AB3CD`, on the debrief and at
+the foot of the pause menu. It holds the airport, the position, the
+difficulty, VFR, the shift length and the random seed. Press **C** on the
+debrief to copy it. **C** on the start menu opens a box to type or paste
+(Ctrl+V) a code into, and Enter plays that exact traffic, to try again or to
+challenge a friend with the same shift. A mistyped code is caught by its
+check digits.
+
 ## Tutorials
 
 The start menu has a lesson for each position (F5 Approach, F6 Local, F7
@@ -468,6 +504,9 @@ arrival goes around, say), the lesson takes you back and lets you try again.
   your own positions' work: a Ground controller isn't credited for the
   landings an automated Tower made. Five separation losses
   and you're decertified; a near collision ends the shift.
+- **Debrief and replay:** a timeline of each shift's incidents, a replay of
+  any moment you can take over from, saved replays, and shift codes to play
+  the same traffic again.
 
 ## Running it
 
@@ -547,6 +586,10 @@ the Actions tab and download the zips from the run.
 | F5 / F6 / F7 / F8 | Start menu: Approach, Local, Ground or Delivery tutorial |
 | D | Start menu: the Difficulty screen (Up/Down a row, Left/Right change it) |
 | O | Start menu: Settings (sound, UI scale, colours). The same rows are in the pause menu |
+| C | Start menu: play a shift code. Debrief: copy this shift's code |
+| R | Start menu: saved replays. Debrief: replay from the start |
+| Space, 1 2 4 8, Left / Right, N / P | Replay: play or pause, speed, step 10 s, next or previous incident |
+| T | Replay: take over and play on from here |
 | S | Tutorial: show me |
 | 1 / 2 / 4 | Sim speed |
 | M | Toggle the MVA map |

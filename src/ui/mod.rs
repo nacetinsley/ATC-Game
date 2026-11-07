@@ -2,10 +2,12 @@
 
 pub mod audio;
 pub mod camera;
+pub mod debrief;
 pub mod difficulty;
 pub mod gfx;
 pub mod input;
 pub mod panels;
+pub mod replays;
 pub mod scope;
 pub mod settings;
 pub mod shift;
@@ -15,6 +17,7 @@ pub mod tutorial;
 
 use crate::sim::airspace::{Airport, CATALOG};
 use crate::sim::positions::Staffing;
+use crate::sim::replay::{Recording, ShiftCode};
 use crate::sim::scoring::ShiftEnd;
 use crate::sim::traffic::Busyness;
 use crate::sim::tutorial::{LessonKind, Tutorial};
@@ -23,6 +26,7 @@ use audio::Sounds;
 use difficulty::Difficulty;
 use gfx::{Palette, SCALES};
 use settings::Settings;
+use std::path::PathBuf;
 use input::{UiState, View};
 use macroquad::prelude::*;
 use gfx::{clear_background, draw_circle, draw_line, draw_rectangle, draw_rectangle_lines, draw_text, measure_text, mouse_position, screen_height, screen_width};
@@ -180,7 +184,17 @@ enum Screen {
     Playing,
     /// The sim is frozen behind the pause menu.
     Paused { choice: usize, show_controls: bool },
-    Ended(ShiftEnd),
+    /// The end of a shift, with the incident highlighted in the list and the
+    /// list's first row shown.
+    Debrief { end: ShiftEnd, choice: Option<usize>, scroll: usize },
+    /// Watching the shift back, from the debrief.
+    Replay { end: ShiftEnd },
+    /// Running a saved replay's shift again, to watch it.
+    Rebuilding,
+    /// Saved replays, from the start menu.
+    Replays { choice: usize },
+    /// Typing a shift code, from the start menu.
+    Code,
 }
 
 pub struct App {
@@ -207,6 +221,21 @@ pub struct App {
     palette: Palette,
     /// As last saved to the settings file.
     saved: Settings,
+    /// The shift as played, to replay. None for lessons.
+    recording: Option<Recording>,
+    /// The shift's code.
+    code: Option<ShiftCode>,
+    /// Where its replay was saved.
+    replay_path: Option<String>,
+    /// A note for the debrief and the replay: "Copied", or a version warning.
+    note: Option<&'static str>,
+    /// The code being typed on the code screen, and why it was refused.
+    code_text: String,
+    code_error: Option<String>,
+    /// Saved replays, read when the list opens.
+    replay_list: Vec<(PathBuf, replays::ReplayFile)>,
+    /// The saved replay being rebuilt, to check against.
+    rebuilding: Option<replays::ReplayFile>,
 }
 
 /// What the menu chose for a new shift.
@@ -217,14 +246,13 @@ struct ShiftChoice {
     minutes: u32,
 }
 
-fn new_world(airport: &Airport, choice: ShiftChoice) -> World {
-    let seed = macroquad::miniquad::date::now() as u64;
+/// A new shift's settings, with a fresh seed: 32 bits, so a shift code holds it.
+fn shift_config(choice: ShiftChoice) -> WorldConfig {
+    let seed = fastrand::u32(..) as u64;
     let ShiftChoice { difficulty, staffing, vfr, minutes } = choice;
     let Difficulty { busyness, emergencies, mistakes, weather } = difficulty;
     let shift_seconds = minutes as f32 * 60.0;
-    let config =
-        WorldConfig { seed, busyness, staffing, vfr, emergencies, mistakes, weather, shift_seconds, ..Default::default() };
-    World::new(airport.clone(), config)
+    WorldConfig { seed, busyness, staffing, vfr, emergencies, mistakes, weather, shift_seconds, ..Default::default() }
 }
 
 /// Both views, when the player has two: one full size, one inset.
@@ -281,14 +309,14 @@ impl App {
         let position = Staffing::CHOICES.iter().position(|&s| s == settings.staffing).unwrap_or(0);
         App {
             screen: Screen::Menu,
-            world: new_world(
-                &airports[0],
-                ShiftChoice {
+            world: World::new(
+                airports[0].clone(),
+                shift_config(ShiftChoice {
                     difficulty: Difficulty::STANDARD,
                     staffing: Staffing::default(),
                     vfr: false,
                     minutes: shift::DEFAULT_MINUTES,
-                },
+                }),
             ),
             ui: UiState::new(&airports[0], Staffing::default()),
             sounds,
@@ -304,6 +332,14 @@ impl App {
             ui_scale: settings.ui_scale,
             palette: settings.palette,
             saved: settings,
+            recording: None,
+            code: None,
+            replay_path: None,
+            note: None,
+            code_text: String::new(),
+            code_error: None,
+            replay_list: Vec::new(),
+            rebuilding: None,
         }
     }
 
@@ -358,22 +394,339 @@ impl App {
 
     fn start_shift(&mut self) {
         self.save_settings();
-        let airport = &self.airports[self.choice];
         let choice = ShiftChoice {
             difficulty: self.difficulty,
             staffing: self.staffing(),
             vfr: self.vfr,
             minutes: self.shift_minutes,
         };
-        self.world = new_world(airport, choice);
+        self.start_world(self.choice, shift_config(choice));
+    }
+
+    /// Start a shift at the airport at `index`, recording it.
+    fn start_world(&mut self, index: usize, config: WorldConfig) {
+        let airport = &self.airports[index];
+        self.world = World::new(airport.clone(), config);
         let scale = gfx::effective_scale(self.ui_scale, gfx::GAME_ROOM);
-        self.ui = gfx::laid_out_at(scale, || UiState::new(airport, self.staffing()));
+        self.ui = gfx::laid_out_at(scale, || UiState::new(airport, config.staffing));
         // The sim's clock, for EFC times, reads the same as the strips'.
         self.world.set_clock_start(self.ui.clock_start);
+        self.code = Some(ShiftCode::of(&config, &airport.code));
+        self.recording = Some(Recording::new(&self.world));
+        self.replay_path = None;
+        self.note = None;
         self.sounds.reset(&self.world);
         self.tutorial = None;
         self.accumulator = 0.0;
         self.screen = Screen::Playing;
+    }
+
+    /// The shift is over: keep its replay and show the debrief.
+    fn finish_shift(&mut self, end: ShiftEnd) {
+        if let (Some(recording), Some(code)) = (&mut self.recording, &self.code) {
+            recording.finish(&self.world);
+            let file = replays::ReplayFile::new(code, &self.world);
+            self.replay_path = replays::save(&file).map(|p| p.display().to_string());
+        }
+        self.screen = Screen::Debrief { end, choice: None, scroll: 0 };
+    }
+
+    /// The world at the end of the shift, for the debrief.
+    fn final_world(&self) -> &World {
+        self.recording.as_ref().map_or(&self.world, |r| r.last())
+    }
+
+    fn debrief_frame(&mut self, end: ShiftEnd, mut choice: Option<usize>, mut scroll: usize) {
+        self.sounds.silence();
+        let code = self.code.as_ref().map(|c| c.text());
+        let info = debrief::Info {
+            code: code.as_deref(),
+            saved: self.replay_path.as_deref(),
+            note: self.note,
+            can_replay: self.recording.is_some(),
+        };
+        let action = debrief::frame(self.final_world(), end, &mut choice, &mut scroll, info);
+        self.screen = Screen::Debrief { end, choice, scroll };
+        match action {
+            debrief::Action::Stay => {}
+            debrief::Action::Replay(t) => self.open_replay(end, t),
+            debrief::Action::NewShift => self.restart(),
+            debrief::Action::Menu => {
+                self.tutorial = None;
+                self.screen = Screen::Menu;
+            }
+            debrief::Action::CopyCode => {
+                if let Some(code) = code {
+                    macroquad::miniquad::window::clipboard_set(&code);
+                    self.note = Some("Copied");
+                }
+            }
+        }
+    }
+
+    /// Watch the shift from `t` seconds in, paused, with the aircraft an
+    /// incident there names selected.
+    fn open_replay(&mut self, end: ShiftEnd, t: f32) {
+        let Some(recording) = &self.recording else { return };
+        let incident = debrief::marks(recording.last())
+            .into_iter()
+            .find(|m| (m.time - debrief::LEAD_SECONDS - t).abs() < 0.5)
+            .map(|m| m.text);
+        self.seek(t);
+        self.ui.replay = true;
+        self.ui.paused = true;
+        self.ui.drag = input::Drag::None;
+        let named = incident.and_then(|text| debrief::callsign_in(&self.world, &text));
+        self.ui.select(named);
+        self.accumulator = 0.0;
+        self.screen = Screen::Replay { end };
+    }
+
+    /// Put the replay at `t` seconds into the shift.
+    fn seek(&mut self, t: f32) {
+        let Some(recording) = &self.recording else { return };
+        let tick = (t.clamp(0.0, recording.last().time) / TICK).round() as u32;
+        self.world = recording.seek(tick);
+        self.world.drain_events();
+        self.sounds.reset(&self.world);
+    }
+
+    fn replay_frame(&mut self, end: ShiftEnd) {
+        if is_key_pressed(KeyCode::Escape) {
+            self.ui.replay = false;
+            self.ui.paused = false;
+            self.screen = Screen::Debrief { end, choice: None, scroll: 0 };
+            return;
+        }
+        if is_key_pressed(KeyCode::T) && self.world.ended.is_none() {
+            self.take_over();
+            return;
+        }
+        let Some(recording) = &self.recording else { return };
+        let now = self.world.time;
+        let step = if is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift) { 60.0 } else { 10.0 };
+        let mut seek = None;
+        if is_key_pressed(KeyCode::Left) {
+            seek = Some(now - step);
+        }
+        if is_key_pressed(KeyCode::Right) {
+            seek = Some(now + step);
+        }
+        if is_key_pressed(KeyCode::N) {
+            seek = debrief::next_mark(recording.last(), now, true).or(seek);
+        }
+        if is_key_pressed(KeyCode::P) {
+            seek = debrief::next_mark(recording.last(), now, false).or(seek);
+        }
+
+        self.ui.layout();
+        self.ui.update(&mut self.world);
+        if !self.ui.paused && self.world.ended.is_none() {
+            self.accumulator += get_frame_time().min(MAX_FRAME_SECONDS) * self.ui.rate;
+            while self.accumulator >= TICK && self.world.ended.is_none() {
+                self.accumulator -= TICK;
+                self.world.replay_tick(&recording.commands);
+            }
+        }
+        let events = self.world.drain_events();
+        self.sounds.update(&self.world, &self.ui, &events);
+        draw_views(&self.world, &mut self.ui);
+        panels::draw(&mut self.world, &mut self.ui);
+        let bar = debrief::draw_bar(&self.world, recording.last(), self.ui.rate, self.ui.paused, self.note);
+        // Dragging along the bar seeks only when it moves the replay.
+        if let Some(t) = seek.or(bar.seek.filter(|t| (t - now).abs() >= TICK)) {
+            self.seek(t);
+        }
+    }
+
+    /// Play on from here, live: the shift from now on is whatever happens next.
+    fn take_over(&mut self) {
+        if let Some(recording) = &mut self.recording {
+            recording.take_over(&self.world);
+        }
+        self.world.note_take_over();
+        self.ui.replay = false;
+        self.ui.paused = false;
+        self.ui.rate = 1.0;
+        self.replay_path = None;
+        self.note = None;
+        self.accumulator = 0.0;
+        self.sounds.reset(&self.world);
+        self.screen = Screen::Playing;
+    }
+
+    /// Open a saved replay: rebuild its shift, then show its debrief.
+    fn open_replay_file(&mut self, file: replays::ReplayFile) -> Result<(), String> {
+        let code = ShiftCode::parse(&file.code).map_err(str::to_string)?;
+        let index = self
+            .airports
+            .iter()
+            .position(|a| a.code == code.airport)
+            .ok_or_else(|| format!("This version has no airport {}", code.airport))?;
+        let mut world = World::new(self.airports[index].clone(), code.config());
+        world.set_clock_start(file.clock_start);
+        let scale = gfx::effective_scale(self.ui_scale, gfx::GAME_ROOM);
+        self.ui = gfx::laid_out_at(scale, || UiState::new(&self.airports[index], code.staffing));
+        self.ui.clock_start = file.clock_start;
+        self.recording = Some(Recording::from_start(world, file.command.clone()));
+        self.code = Some(code);
+        self.replay_path = None;
+        self.note = None;
+        self.tutorial = None;
+        self.rebuilding = Some(file);
+        self.screen = Screen::Rebuilding;
+        Ok(())
+    }
+
+    fn rebuild_frame(&mut self) {
+        self.sounds.silence();
+        clear_background(BACKGROUND);
+        let (Some(recording), Some(code)) = (&mut self.recording, &self.code) else {
+            self.screen = Screen::Menu;
+            return;
+        };
+        let done = recording.rebuild_step(4000);
+        let total = (code.minutes * 240).max(1) as f32;
+        let fraction = (recording.end_tick() as f32 / total).min(1.0);
+        let (w, h) = (screen_width(), screen_height());
+        let bar = Rect::new(w / 2.0 - 200.0, h / 2.0, 400.0, 16.0);
+        draw_text("Rebuilding replay...", bar.x, bar.y - 16.0, 28.0, TITLE);
+        draw_rectangle_lines(bar.x, bar.y, bar.w, bar.h, 1.0, DIM);
+        draw_rectangle(bar.x + 2.0, bar.y + 2.0, (bar.w - 4.0) * fraction, bar.h - 4.0, TITLE);
+        if done {
+            let world = recording.last().clone();
+            if self.rebuilding.take().is_some_and(|file| file.summary != world.summary()) {
+                self.note = Some("Saved by another version of the game: the replay may not match what happened");
+            }
+            let end = world.ended.unwrap_or(ShiftEnd::Completed);
+            self.world = world;
+            self.screen = Screen::Debrief { end, choice: None, scroll: 0 };
+        }
+    }
+
+    fn replays_frame(&mut self, mut choice: usize) {
+        self.sounds.silence();
+        clear_background(BACKGROUND);
+        let count = self.replay_list.len();
+        if count > 0 {
+            if is_key_pressed(KeyCode::Up) {
+                choice = (choice + count - 1) % count;
+            }
+            if is_key_pressed(KeyCode::Down) {
+                choice = (choice + 1) % count;
+            }
+            choice = choice.min(count - 1);
+        }
+        let x = 60.0;
+        draw_text("REPLAYS", x, 80.0, 56.0, TITLE);
+        draw_text("Up/Down choose | ENTER or click watch | DEL delete | ESC back", x, 112.0, 20.0, DIM);
+        let top = 150.0;
+        let row = 30.0;
+        let rows = ((screen_height() - top - 70.0) / row).max(1.0) as usize;
+        let first = choice.saturating_sub(rows.saturating_sub(1));
+        let mouse = Vec2::from(mouse_position());
+        let mut open = start_pressed() && count > 0;
+        if count == 0 {
+            draw_text("No replays yet. Every shift you finish is saved here.", x, top + 20.0, 22.0, TEXT);
+        }
+        for (n, (_, file)) in self.replay_list.iter().enumerate().skip(first).take(rows) {
+            let y = top + row * (n - first) as f32;
+            let rect = Rect::new(x - 8.0, y, screen_width() - 2.0 * x + 16.0, row - 4.0);
+            if rect.contains(mouse) {
+                if mouse_delta_position() != Vec2::ZERO {
+                    choice = n;
+                }
+                if is_mouse_button_pressed(MouseButton::Left) {
+                    choice = n;
+                    open = true;
+                }
+            }
+            if n == choice {
+                draw_rectangle(rect.x, rect.y, rect.w, rect.h, Color::new(0.10, 0.22, 0.12, 1.0));
+            }
+            draw_text(file.label(), x, y + 19.0, 20.0, if n == choice { TITLE } else { TEXT });
+        }
+        if let Some(error) = &self.code_error {
+            draw_text(error, x, screen_height() - 50.0, 20.0, BAD);
+        }
+        if let Some(dir) = replays::dir() {
+            draw_text(dir.display().to_string(), x, screen_height() - 22.0, 16.0, DIM);
+        }
+        self.screen = Screen::Replays { choice };
+        if is_key_pressed(KeyCode::Escape) {
+            self.code_error = None;
+            self.screen = Screen::Menu;
+        } else if is_key_pressed(KeyCode::Delete) && count > 0 {
+            let (path, _) = self.replay_list.remove(choice);
+            let _ = std::fs::remove_file(path);
+        } else if open {
+            let file = self.replay_list[choice].1.clone();
+            if let Err(error) = self.open_replay_file(file) {
+                self.code_error = Some(error);
+            }
+        }
+    }
+
+    fn code_frame(&mut self) {
+        self.sounds.silence();
+        clear_background(BACKGROUND);
+        while let Some(c) = get_char_pressed() {
+            if (c.is_ascii_alphanumeric() || c == '-') && self.code_text.len() < 32 {
+                self.code_text.push(c.to_ascii_uppercase());
+                self.code_error = None;
+            }
+        }
+        let pasted = (input::ctrl_down() && is_key_pressed(KeyCode::V))
+            .then(macroquad::miniquad::window::clipboard_get)
+            .flatten();
+        if let Some(text) = pasted {
+            let text: String = text.trim().chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+            self.code_text = text.to_ascii_uppercase().chars().take(32).collect();
+            self.code_error = None;
+        }
+        if is_key_pressed(KeyCode::Backspace) {
+            self.code_text.pop();
+            self.code_error = None;
+        }
+        let x = 60.0;
+        draw_text("SHIFT CODE", x, 80.0, 56.0, TITLE);
+        draw_text("Type or paste (Ctrl+V) a code from a debrief, to play the same traffic.", x, 112.0, 20.0, DIM);
+        draw_text("ENTER play | ESC back", x, 136.0, 20.0, DIM);
+        let shown = format!("{}_", self.code_text);
+        draw_rectangle_lines(x - 10.0, 170.0, 560.0, 48.0, 1.5, DIM);
+        draw_text(&shown, x, 204.0, 30.0, TEXT);
+        let parsed = ShiftCode::parse(&self.code_text);
+        if let Some(error) = &self.code_error {
+            draw_text(error, x, 252.0, 22.0, BAD);
+        } else if let Ok(code) = &parsed {
+            let difficulty = Difficulty {
+                busyness: code.busyness,
+                emergencies: code.emergencies,
+                mistakes: code.mistakes,
+                weather: code.weather,
+            };
+            let real_data = self.airports.iter().find(|a| a.code == code.airport).is_some_and(|a| a.traffic.is_some());
+            let line = format!(
+                "{}  {}  {}{}",
+                code.airport,
+                code.staffing.label(),
+                shift::label(code.minutes),
+                if code.vfr && code.staffing.tower() { "  VFR" } else { "" },
+            );
+            draw_text(&line, x, 252.0, 22.0, TITLE);
+            draw_text(difficulty.summary(real_data), x, 280.0, 20.0, DIM);
+        }
+        if is_key_pressed(KeyCode::Escape) {
+            self.screen = Screen::Menu;
+        } else if start_pressed() {
+            match parsed {
+                Ok(code) => match self.airports.iter().position(|a| a.code == code.airport) {
+                    Some(index) => self.start_world(index, code.config()),
+                    None => self.code_error = Some(format!("This version has no airport {}", code.airport)),
+                },
+                Err(error) => self.code_error = Some(error.to_string()),
+            }
+        }
     }
 
     fn start_lesson(&mut self, kind: LessonKind) {
@@ -383,6 +736,10 @@ impl App {
         self.ui = gfx::laid_out_at(scale, || UiState::new(&self.world.airport, kind.staffing()));
         self.ui.lesson = true;
         self.world.set_clock_start(self.ui.clock_start);
+        self.recording = None;
+        self.code = None;
+        self.replay_path = None;
+        self.note = None;
         self.sounds.reset(&self.world);
         self.tutorial = Some(tutorial);
         self.accumulator = 0.0;
@@ -440,6 +797,19 @@ impl App {
                     self.screen = Screen::Settings { choice: 0 };
                     return;
                 }
+                if picked.code || is_key_pressed(KeyCode::C) {
+                    self.code_text.clear();
+                    self.code_error = None;
+                    while get_char_pressed().is_some() {}
+                    self.screen = Screen::Code;
+                    return;
+                }
+                if picked.replays || is_key_pressed(KeyCode::R) {
+                    self.replay_list = replays::list();
+                    self.code_error = None;
+                    self.screen = Screen::Replays { choice: 0 };
+                    return;
+                }
                 if let Some(minutes) = picked.shift_minutes {
                     self.shift_minutes = minutes;
                     self.typed = None;
@@ -475,15 +845,11 @@ impl App {
             Screen::Settings { choice } => self.settings_frame(choice),
             Screen::Playing => self.play_frame(),
             Screen::Paused { choice, show_controls } => self.pause_frame(choice, show_controls),
-            Screen::Ended(end) => {
-                self.sounds.silence();
-                draw_end(&self.world, end);
-                if start_pressed() {
-                    self.restart();
-                } else if is_key_pressed(KeyCode::Escape) {
-                    self.screen = Screen::Menu;
-                }
-            }
+            Screen::Debrief { end, choice, scroll } => self.debrief_frame(end, choice, scroll),
+            Screen::Replay { end } => self.replay_frame(end),
+            Screen::Rebuilding => self.rebuild_frame(),
+            Screen::Replays { choice } => self.replays_frame(choice),
+            Screen::Code => self.code_frame(),
         }
     }
 
@@ -521,6 +887,11 @@ impl App {
         }
         let labels: Vec<String> = PAUSE_ITEMS.iter().map(|&item| self.item_label(item, show_controls)).collect();
         let (hovered, clicked) = draw_pause(choice, &labels, show_controls, self.world.staffing());
+        if let Some(code) = self.code.as_ref().filter(|_| !show_controls) {
+            let text = format!("Shift code  {}", code.text());
+            let width = measure_text(&text, None, 18, 1.0).width;
+            draw_text(&text, (screen_width() - width) / 2.0, screen_height() - 24.0, 18.0, DIM);
+        }
         let item = PAUSE_ITEMS[choice];
         if is_key_pressed(KeyCode::Left) {
             self.adjust(item, -1);
@@ -673,8 +1044,11 @@ impl App {
             tutorial::draw(tutorial, &self.world, &self.ui);
         }
 
+        if let Some(recording) = &mut self.recording {
+            recording.update(&self.world);
+        }
         if let Some(end) = self.world.ended {
-            self.screen = Screen::Ended(end);
+            self.finish_shift(end);
         }
     }
 }
@@ -791,6 +1165,10 @@ struct MenuPick {
     lesson: Option<LessonKind>,
     /// The settings button was clicked.
     settings: bool,
+    /// The shift code button.
+    code: bool,
+    /// The replays button.
+    replays: bool,
     shift_minutes: Option<u32>,
 }
 
@@ -921,7 +1299,10 @@ fn draw_menu(airports: &[Airport], choice: usize, state: MenuState) -> MenuPick 
     ry += 26.0;
     pick.difficulty = difficulty::draw_summary(&difficulty, airport.traffic.is_some(), right, ry);
     draw_text("Press ENTER to start your shift", right, ry + 110.0, 30.0, TITLE);
-    pick.settings = menu_button("O  Settings: sound, UI scale, colours", right, ry + 132.0, false).0;
+    let (settings, width) = menu_button("O  Settings", right, ry + 132.0, false);
+    let (code, code_width) = menu_button("C  Shift code", right + width + 10.0, ry + 132.0, false);
+    let (replays, _) = menu_button("R  Replays", right + width + code_width + 20.0, ry + 132.0, false);
+    (pick.settings, pick.code, pick.replays) = (settings, code, replays);
 
     // The left: the briefing, wrapped clear of the right column, closer
     // together if it's long.
@@ -999,67 +1380,4 @@ fn draw_pause(choice: usize, labels: &[String], show_controls: bool, staffing: S
     }
 
     (hovered, clicked)
-}
-
-fn draw_end(world: &World, end: ShiftEnd) {
-    clear_background(BACKGROUND);
-    let x = 60.0;
-    let score = &world.score;
-    let headline = match end {
-        ShiftEnd::Completed => "SHIFT COMPLETE",
-        ShiftEnd::Decertified => "DECERTIFIED",
-        ShiftEnd::NearCollision => "NEAR COLLISION",
-    };
-    let color = if end == ShiftEnd::Completed { TITLE } else { BAD };
-    draw_text(headline, x, 90.0, 56.0, color);
-    draw_text(format!("Rating: {}", score.rating(end)), x, 130.0, 28.0, TEXT);
-    draw_text(
-        format!(
-            "Score {}   Landed {}   Parked {}   Handed off {}   Go-arounds {}   Separation losses {}",
-            score.points, score.landed, score.parked, score.exited, score.go_arounds, score.separation_losses
-        ),
-        x,
-        162.0,
-        22.0,
-        DIM,
-    );
-
-    draw_text("Incidents", x, 206.0, 24.0, TEXT);
-    let mut y = 232.0;
-    if score.incidents.is_empty() {
-        draw_text("None. A clean shift.", x, y, 20.0, DIM);
-    }
-    // Most recent first, as many as fit above the restart prompt.
-    let room = ((screen_height() - y - 70.0) / 22.0).max(0.0) as usize;
-    for incident in score.incidents.iter().rev().take(room) {
-        let line = format!(
-            "{:02}:{:02}  {:+5}  {}",
-            (incident.time / 60.0) as i32,
-            (incident.time % 60.0) as i32,
-            incident.points,
-            incident.text
-        );
-        draw_text(&line, x, y, 20.0, if incident.points < 0 { BAD } else { DIM });
-        y += 22.0;
-    }
-
-    // Each emergency and how it ended, in a column to the right.
-    if !score.emergencies.is_empty() {
-        let ex = (screen_width() * 0.55).max(x + 620.0);
-        draw_text("Emergencies", ex, 206.0, 24.0, TEXT);
-        let mut ey = 232.0;
-        let room = ((screen_height() - ey - 70.0) / 22.0).max(0.0) as usize;
-        for record in score.emergencies.iter().take(room) {
-            let line = format!(
-                "{:02}:{:02}  {}",
-                (record.declared_at / 60.0) as i32,
-                (record.declared_at % 60.0) as i32,
-                record.summary()
-            );
-            let bad = matches!(record.outcome, crate::sim::scoring::EmergencyOutcome::Diverted) || record.go_arounds > 0;
-            draw_text(&line, ex, ey, 20.0, if bad { BAD } else { DIM });
-            ey += 22.0;
-        }
-    }
-    draw_text("Press ENTER for another shift", x, screen_height() - 30.0, 28.0, TITLE);
 }

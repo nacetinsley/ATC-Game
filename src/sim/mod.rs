@@ -20,6 +20,7 @@ pub mod visibility;
 pub mod tower;
 pub mod ground_map;
 pub mod registration;
+pub mod replay;
 pub mod traffic;
 pub mod tutorial;
 pub mod units;
@@ -32,6 +33,7 @@ use clearance::RadioCall;
 use glam::Vec2;
 use scoring::{Credit, Score, ShiftEnd, SimEvent};
 use std::collections::{BTreeSet, VecDeque};
+use std::sync::Arc;
 use units::{Wind, heading_vec, vec_heading};
 
 /// Fixed simulation step, seconds.
@@ -152,8 +154,10 @@ impl Default for WorldConfig {
     }
 }
 
+#[derive(Clone)]
 pub struct World {
-    pub airport: Airport,
+    /// Shared, so a snapshot of the world doesn't copy the map.
+    pub airport: Arc<Airport>,
     pub wind: Wind,
     pub time: f32,
     pub aircraft: Vec<Aircraft>,
@@ -183,6 +187,10 @@ pub struct World {
     next_departure_time: f32,
     next_vfr_time: f32,
     departure_queue: VecDeque<Aircraft>,
+    /// Ticks run so far.
+    ticks: u32,
+    /// What the player has said, in order: a replay is the seed and these.
+    commands: Vec<replay::Command>,
 }
 
 impl World {
@@ -197,7 +205,7 @@ impl World {
         let storms = weather.storms_for(&airport, config.seed, config.shift_seconds, config.weather);
         let mut world = World {
             storms,
-            airport,
+            airport: Arc::new(airport),
             wind,
             time: 0.0,
             aircraft: Vec::new(),
@@ -220,6 +228,8 @@ impl World {
             next_departure_time: 0.0,
             next_vfr_time: FIRST_VFR_S,
             departure_queue: VecDeque::new(),
+            ticks: 0,
+            commands: Vec::new(),
         };
         let opening = format!("Shift start. {}", world.atis_text());
         world.say(Speaker::System, opening);
@@ -367,6 +377,7 @@ impl World {
             return;
         }
         self.time += TICK;
+        self.ticks += 1;
 
         self.run_weather();
         self.run_visibility();
