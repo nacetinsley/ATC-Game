@@ -409,6 +409,12 @@ fn draw_target(world: &World, ui: &UiState, ac: &Aircraft, track: &RadarTrack) {
             }
         }
         Some(tag) if timeshare() => text(tag, 2.0, CRITICAL),
+        // The code it's squawking, when it isn't the one assigned: a readback
+        // error Delivery let through, until radar has it reset.
+        None if crate::sim::delivery::wrong_code_showing(ac).is_some() => {
+            let code = crate::sim::delivery::wrong_code_showing(ac).unwrap_or_default();
+            text(&crate::sim::delivery::code_text(code), 2.0, WARNING);
+        }
         _ => text(&scratchpad(world, ac), 2.0, color),
     }
 }

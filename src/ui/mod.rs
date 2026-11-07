@@ -371,7 +371,7 @@ impl App {
                 if let Some(position) = picked.position {
                     self.position = position;
                 }
-                let lesson_keys = [KeyCode::F5, KeyCode::F6, KeyCode::F7];
+                let lesson_keys = [KeyCode::F5, KeyCode::F6, KeyCode::F7, KeyCode::F8];
                 let lesson = picked
                     .lesson
                     .or_else(|| lesson_keys.iter().position(|&k| is_key_pressed(k)).map(|i| LessonKind::ALL[i]));
@@ -721,13 +721,13 @@ fn draw_emergencies(rate: EmergencyRate, x: f32, y: f32) -> Option<EmergencyRate
 /// The lesson buttons. Returns the one clicked, if any.
 fn draw_lessons(x: f32, y: f32) -> Option<LessonKind> {
     const GAP: f32 = 10.0;
-    draw_text("TUTORIAL  F5 F6 F7 or click", x, y, 20.0, DIM);
+    draw_text("TUTORIAL  F5 to F8 or click", x, y, 20.0, DIM);
     let mouse = Vec2::from(mouse_position());
     let clicked = is_mouse_button_pressed(MouseButton::Left);
     let mut left = x;
     let mut picked = None;
-    for (kind, key) in LessonKind::ALL.into_iter().zip(["F5", "F6", "F7"]) {
-        let label = format!("{key} {}", kind.label());
+    for (kind, key) in LessonKind::ALL.into_iter().zip(["F5", "F6", "F7", "F8"]) {
+        let label = format!("{key} {}", kind.short_label());
         let width = measure_text(&label, None, 20, 1.0).width + 24.0;
         let rect = Rect::new(left, y + 10.0, width, 30.0);
         draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, DIM);

@@ -164,6 +164,10 @@ information Juliett." Its strip waits in the CLEARANCE bay, marked `CLNC`.
   kept waiting more than 3 minutes. Catching a filed mistake earns 40.
   Clearing one costs 100, and a wrong readback left uncorrected costs 75; the
   next controller sorts either out, so the flight still goes.
+- **A wrong code you missed shows on the radar.** Once airborne, the aircraft's
+  data block shows the code it's really squawking, in amber, until Departure
+  has it reset ("reset transponder, squawk 0415"). When you work Approach
+  too, that's your job: select it and press I, then Enter.
 - **F4** hides the course hint, for when you'd rather work it out yourself.
 
 With Delivery automated, departures are cleared as they reach the gate, as
@@ -314,7 +318,7 @@ python tools/make_voice.py
 ## Tutorials
 
 The start menu has a lesson for each position (F5 Approach, F6 Local, F7
-Ground). Each puts a few aircraft at Harrowgate and walks you through working
+Ground, F8 Clearance Delivery). Each puts a few aircraft at Harrowgate and walks you through working
 them, one instruction at a time, with a ring around the aircraft or spot it's
 about. Press S on any step to have it done for you. If a step goes wrong (an
 arrival goes around, say), the lesson takes you back and lets you try again.
@@ -401,7 +405,7 @@ the Actions tab and download the zips from the run.
 | H | On the ground: hold position, or continue. In the air: hold at the fix it's flying to |
 | Ctrl-drag onto a fix (Cmd on a Mac) | Hold at that fix |
 | X | Cross the runway ahead |
-| I | Delivery: the IFR clearance; again once cleared, repeat the code and altitude |
+| I | Delivery: the IFR clearance; again once cleared, repeat the code and altitude. Airborne: reset a wrong code |
 | Up / Down at Delivery | Amend the altitude to expect |
 | S at Delivery | The next SID in use |
 | F4 | Delivery: show or hide the course hint |
@@ -419,7 +423,7 @@ the Actions tab and download the zips from the run.
 | Backspace | Cancel the pending clearance |
 | Space | Pause |
 | Esc | Pause menu |
-| F5 / F6 / F7 | Start menu: Approach, Local or Ground tutorial |
+| F5 / F6 / F7 / F8 | Start menu: Approach, Local, Ground or Delivery tutorial |
 | E | Start menu: how often emergencies happen |
 | S | Tutorial: show me |
 | 1 / 2 / 4 | Sim speed |

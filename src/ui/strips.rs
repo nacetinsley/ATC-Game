@@ -542,6 +542,8 @@ pub fn marks(
                     ground.push(Pen::hand("CLR"));
                 }
             }
+            // A reset to the code already printed: nothing new to write.
+            Clearance::Squawk(_) => {}
         }
     }
     // Holding short now: written when it stopped at the line.

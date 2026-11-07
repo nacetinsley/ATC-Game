@@ -376,6 +376,7 @@ impl World {
         self.run_automated_approach();
         self.run_holding();
         self.run_delivery();
+        self.run_transponders();
         self.check_handoffs();
         self.check_sector();
         self.run_safety_net();

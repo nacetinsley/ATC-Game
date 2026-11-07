@@ -20,6 +20,9 @@ pub const READBACK_ERROR_ONE_IN: u32 = 10;
 /// On a combined Ground and Delivery position, a cleared pilot calls for taxi
 /// this long after the readback, seconds.
 pub const READY_TO_TAXI_S: f32 = 30.0;
+/// The automated Departure controller notices a wrong code this long after
+/// the aircraft checks in, and has it reset, seconds.
+pub const SQUAWK_RESET_S: f32 = 45.0;
 /// Waiting longer than this for a clearance is delay, seconds.
 pub const CLEARANCE_WAIT_S: f32 = 180.0;
 pub const MIN_CLEARED_ALTITUDE: f32 = 3000.0;
@@ -47,10 +50,16 @@ pub struct FlightPlan {
     pub cleared: Option<Cleared>,
     /// A wrong value the pilot read back and set.
     pub readback: Option<Readback>,
+    /// The code its transponder shows, when that isn't the one assigned: a
+    /// squawk readback nobody caught, until radar has it reset.
+    pub squawking: Option<u16>,
     /// Scored, once it has left Delivery.
     pub done: bool,
     /// Clearances it has been given, for the readback roll.
     pub issued: u32,
+    /// For the lesson: `Some(true)` makes the next readback get the code
+    /// wrong, `Some(false)` keeps every readback right.
+    pub mishear: Option<bool>,
 }
 
 impl FlightPlan {
@@ -320,8 +329,16 @@ pub(super) fn apply(
     plan.cleared = Some(Cleared { route: route.to_vec(), altitude, squawk, time: now });
     plan.readback = None;
     let mut rng = fastrand::Rng::with_seed(seed ^ 0xC1EA_0000 ^ ((id as u64) << 24) ^ plan.issued as u64);
-    if rng.u32(0..READBACK_ERROR_ONE_IN) == 0 {
-        plan.readback = Some(if rng.bool() {
+    let scripted = plan.mishear;
+    let wrong = match scripted {
+        Some(wrong) => wrong,
+        None => rng.u32(0..READBACK_ERROR_ONE_IN) == 0,
+    };
+    if scripted == Some(true) {
+        plan.mishear = Some(false);
+    }
+    if wrong {
+        plan.readback = Some(if scripted.is_some() || rng.bool() {
             Readback::Squawk(wrong_code(squawk, rng.u32(..)))
         } else {
             Readback::Altitude(plan.initial + if rng.bool() { 1000.0 } else { -1000.0 })
@@ -378,8 +395,10 @@ impl World {
             called_at: None,
             cleared: None,
             readback: None,
+            squawking: None,
             done: false,
             issued: 0,
+            mishear: None,
         });
     }
 
@@ -463,6 +482,10 @@ impl World {
         let choice = sid_choices(&self.airport, &config, &cleared.route).into_iter().next();
         let initial = plan.initial;
         let had_altitude_slip = matches!(plan.readback, Some(Readback::Altitude(_)));
+        let squawking = match plan.readback {
+            Some(Readback::Squawk(code)) => Some(code),
+            _ => None,
+        };
         let ac = &mut self.aircraft[index];
         if fix_route && let Some(route) = choice {
             ac.exit_fix = route.last().copied();
@@ -474,9 +497,34 @@ impl World {
         }
         let plan = ac.flight_plan.as_mut().expect("checked");
         plan.readback = None;
+        plan.squawking = squawking;
         plan.done = true;
         for event in events {
             self.emit(event);
+        }
+    }
+
+    /// The automated Departure controller has a wrong code reset once the
+    /// aircraft has been on its frequency a little while. A player working
+    /// Approach does that themselves.
+    pub(super) fn run_transponders(&mut self) {
+        if self.config.staffing.approach {
+            return;
+        }
+        let due: Vec<(u32, u16)> = self
+            .aircraft
+            .iter()
+            .filter(|a| !a.on_ground && a.frequency() == Position::Approach)
+            .filter(|a| self.time - a.freq_since >= SQUAWK_RESET_S)
+            .filter_map(|a| {
+                let plan = a.flight_plan.as_ref()?;
+                plan.squawking.map(|_| (a.id, plan.squawk))
+            })
+            .collect();
+        for (id, code) in due {
+            if !self.call_pending(id) {
+                self.issue(id, vec![super::clearance::Clearance::Squawk(code)], Position::Approach);
+            }
         }
     }
 
@@ -505,6 +553,24 @@ impl World {
     pub fn config_name(&self) -> &str {
         &self.config().name
     }
+}
+
+/// The code shown on the scope when it isn't the one assigned.
+pub fn wrong_code_showing(ac: &Aircraft) -> Option<u16> {
+    if ac.on_ground {
+        return None;
+    }
+    ac.flight_plan.as_ref().and_then(|p| p.squawking)
+}
+
+/// "Reset transponder, squawk 0415": the pilot sets the code given.
+pub(super) fn reset_squawk(ac: &mut Aircraft, code: u16) -> Result<(), String> {
+    if ac.on_ground {
+        return Err("we're on the ground".into());
+    }
+    let Some(plan) = ac.flight_plan.as_mut() else { return Err("no flight plan".into()) };
+    plan.squawking = (code != plan.squawk).then_some(code);
+    Ok(())
 }
 
 #[cfg(test)]

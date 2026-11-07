@@ -60,6 +60,8 @@ pub enum Clearance {
     /// An IFR clearance from Delivery: the departure route, the altitude to
     /// expect, and the beacon code.
     Ifr { route: Vec<usize>, altitude: f32, squawk: u16 },
+    /// Reset the transponder to this code: radar's fix for a wrong squawk.
+    Squawk(u16),
 }
 
 impl Clearance {
@@ -95,6 +97,7 @@ impl Clearance {
             Clearance::ContactGround => &[Local, Delivery],
             Clearance::Hold(_) => &[Approach, Local],
             Clearance::Ifr { .. } => &[Delivery],
+            Clearance::Squawk(_) => &[Approach],
         }
     }
 }
@@ -244,6 +247,7 @@ pub fn phrase(clearance: &Clearance, ac: &Aircraft, airport: &Airport) -> String
         Clearance::Ifr { route, altitude, squawk } => {
             super::delivery::phrase(ac, route, *altitude, *squawk, airport)
         }
+        Clearance::Squawk(code) => format!("reset transponder, squawk {}", super::delivery::code_text(*code)),
     }
 }
 
@@ -637,6 +641,7 @@ fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), 
         Clearance::Ifr { route, altitude, squawk } => {
             super::delivery::apply(ac, route, *altitude, *squawk, ctx.now, ctx.seed)?;
         }
+        Clearance::Squawk(code) => super::delivery::reset_squawk(ac, *code)?,
         Clearance::Taxi { to, via } => {
             let map = surface(ac, airport)?;
             if !matches!(ac.phase, Phase::Parked | Phase::Taxiing) {

@@ -71,3 +71,56 @@ fn an_arrival_left_without_a_landing_clearance_brings_the_step_back() {
     assert!(retried, "the go-around should restart the step");
     assert_eq!(tutorial.progress().0, 2, "back on the landing step");
 }
+
+#[test]
+fn the_delivery_lesson_can_be_finished() {
+    let (_, world) = play(LessonKind::Delivery, 1800.0);
+    // Catching the filed mistake is logged too, as a credit.
+    let penalties: Vec<_> = world.score.incidents.iter().filter(|i| i.points < 0).collect();
+    assert!(penalties.is_empty(), "{penalties:?}");
+    assert!(world.score.incidents.iter().any(|i| i.text.contains("corrected")), "{:?}", world.score.incidents);
+    assert_no_refusals(&world);
+    // The lesson's scripted mistakes were put right: the wrong altitude and the misheard code.
+    assert!(world.log.iter().any(|l| l.text.contains("I say again")), "repeated the clearance");
+}
+
+#[test]
+fn a_wrong_altitude_sent_on_to_ground_brings_the_delivery_step_back() {
+    use atcgame::sim::aircraft::Phase;
+    use atcgame::sim::clearance::Clearance;
+    use atcgame::sim::positions::Position;
+    let mut tutorial = Tutorial::new(LessonKind::Delivery);
+    let mut world = tutorial.world();
+    let (mut since_try, mut sent_wrong) = (0.0, false);
+    while !tutorial.finished() {
+        assert!(world.time < 1800.0, "stuck at step {:?}", tutorial.progress());
+        tutorial.update(&mut world);
+        if tutorial.current().is_some_and(|s| s.read) {
+            tutorial.acknowledge();
+        } else if tutorial.progress().0 == 4 && !sent_wrong {
+            // Clear the wrong plan as filed, then hand it straight to Ground.
+            let at_gate = world.aircraft.iter().find(|a| {
+                a.on_ground && a.phase == Phase::Parked && a.frequency() == Position::Delivery
+            });
+            let plan = at_gate.and_then(|a| Some((a.id, a.flight_plan.clone()?)));
+            if let Some((id, plan)) = plan.filter(|_| since_try >= 10.0) {
+                since_try = 0.0;
+                if plan.is_cleared() {
+                    world.transmit(id, vec![Clearance::ContactGround]);
+                    sent_wrong = true;
+                } else {
+                    let clearance = Clearance::Ifr { route: plan.route, altitude: plan.altitude, squawk: plan.squawk };
+                    world.transmit(id, vec![clearance]);
+                }
+            }
+        } else if since_try >= 5.0 {
+            since_try = 0.0;
+            tutorial.show_me(&mut world);
+        }
+        world.tick();
+        world.drain_events();
+        since_try += TICK;
+    }
+    assert!(sent_wrong);
+    assert!(world.log.iter().any(|l| l.text.contains("try that again")), "the step should restart");
+}

@@ -315,6 +315,66 @@ fn a_wrong_readback_left_alone_is_an_incident() {
 }
 
 #[test]
+fn a_wrong_code_left_alone_shows_on_the_scope_until_departure_resets_it() {
+    let mut world = harrowgate(Staffing::DELIVERY, 7);
+    let id = departure(&mut world);
+    let clearance = right_clearance(&world, id);
+    let Clearance::Ifr { squawk, .. } = clearance else { unreachable!() };
+    world.transmit(id, vec![clearance]);
+    run(&mut world, 8.0);
+    let wrong = squawk ^ 0o11;
+    world.find_mut(id).unwrap().flight_plan.as_mut().unwrap().readback = Some(Readback::Squawk(wrong));
+    world.transmit(id, vec![Clearance::ContactGround]);
+    let events = run(&mut world, 8.0);
+    assert!(events.iter().any(|e| matches!(e, SimEvent::ReadbackMissed { .. })), "{events:?}");
+    // Still at the gate: nothing on the scope yet.
+    assert_eq!(delivery::wrong_code_showing(world.find(id).unwrap()), None);
+
+    // Airborne, the wrong code shows until the automated Departure has it reset.
+    let mut shown = false;
+    for _ in 0..(1200.0 / TICK) as usize {
+        world.tick();
+        world.drain_events();
+        let Some(ac) = world.find(id) else { break };
+        if delivery::wrong_code_showing(ac) == Some(wrong) {
+            shown = true;
+        } else if shown {
+            break;
+        }
+    }
+    assert!(shown, "the wrong code should show once airborne");
+    let ac = world.find(id).expect("still in the sector");
+    assert_eq!(delivery::wrong_code_showing(ac), None);
+    assert!(said(&world, &format!("reset transponder, squawk {}", delivery::code_text(squawk))), "{:?}", world.log);
+}
+
+#[test]
+fn a_player_working_approach_resets_the_code_themselves() {
+    let mut world = harrowgate(Staffing::ALL, 7);
+    let id = departure(&mut world);
+    let clearance = right_clearance(&world, id);
+    let Clearance::Ifr { squawk, .. } = clearance else { unreachable!() };
+    world.transmit(id, vec![clearance]);
+    run(&mut world, 8.0);
+    let ac = world.find_mut(id).unwrap();
+    let plan = ac.flight_plan.as_mut().unwrap();
+    plan.squawking = Some(squawk ^ 0o11);
+    // On the ground the pilot can't help.
+    world.transmit(id, vec![Clearance::Squawk(squawk)]);
+    run(&mut world, 8.0);
+    assert!(said(&world, "unable"), "{:?}", world.log.last());
+    // Airborne, it can.
+    let ac = world.find_mut(id).unwrap();
+    ac.on_ground = false;
+    ac.altitude += 3000.0;
+    ac.phase = Phase::Controlled;
+    world.transmit(id, vec![Clearance::Squawk(squawk)]);
+    run(&mut world, 8.0);
+    assert!(said(&world, "reset transponder"));
+    assert_eq!(world.find(id).unwrap().flight_plan.as_ref().unwrap().squawking, None);
+}
+
+#[test]
 fn about_one_plan_in_six_is_filed_wrong_and_one_readback_in_ten_comes_back_wrong() {
     let (mut wrong_plans, mut wrong_readbacks, mut n) = (0, 0, 0);
     for seed in 0..360 {

@@ -5,6 +5,7 @@
 use super::aircraft::{Aircraft, Flow, Lateral, Leg, Phase, Taxi, VfrIntent};
 use super::airspace::Airport;
 use super::clearance::Clearance;
+use super::delivery;
 use super::ground_map::GroundMap;
 use super::performance::aircraft_type;
 use super::positions::{Position, Staffing};
@@ -30,16 +31,28 @@ pub enum LessonKind {
     Approach,
     Local,
     Ground,
+    Delivery,
 }
 
 impl LessonKind {
-    pub const ALL: [LessonKind; 3] = [LessonKind::Approach, LessonKind::Local, LessonKind::Ground];
+    pub const ALL: [LessonKind; 4] =
+        [LessonKind::Approach, LessonKind::Local, LessonKind::Ground, LessonKind::Delivery];
 
     pub fn label(self) -> &'static str {
         match self {
             LessonKind::Approach => "Approach",
             LessonKind::Local => "Local (Tower)",
             LessonKind::Ground => "Ground",
+            LessonKind::Delivery => "Clearance Delivery",
+        }
+    }
+
+    /// The name on the menu's lesson button.
+    pub fn short_label(self) -> &'static str {
+        match self {
+            LessonKind::Local => "Local",
+            LessonKind::Delivery => "Delivery",
+            _ => self.label(),
         }
     }
 
@@ -48,6 +61,7 @@ impl LessonKind {
             LessonKind::Approach => Staffing::APPROACH,
             LessonKind::Local => Staffing::LOCAL,
             LessonKind::Ground => Staffing::GROUND,
+            LessonKind::Delivery => Staffing::DELIVERY,
         }
     }
 }
@@ -134,6 +148,7 @@ impl Tutorial {
             LessonKind::Approach => approach_lesson(),
             LessonKind::Local => local_lesson(),
             LessonKind::Ground => ground_lesson(),
+            LessonKind::Delivery => delivery_lesson(),
         };
         Tutorial { kind, steps, step: 0, entered: false, acknowledged: false }
     }
@@ -289,6 +304,51 @@ fn request_departure(w: &mut World) {
     let route = w.airport.sids.iter().find(|s| s.config == "West").expect("West SID").fixes.clone();
     let route = w.airport.route_indices(&route);
     w.request_departure(aircraft_type("B738").expect("type"), route, DEPARTURE_ALTITUDE);
+}
+
+/// A departure that will call Delivery from the gate. Its plan is filed
+/// right or, with `wrong`, at an altitude wrong for its direction of flight,
+/// and then the pilot reads the code back wrong once.
+fn delivery_departure(w: &mut World, wrong: bool) {
+    request_departure(w);
+    let ac = w.departure_queue.back_mut().expect("just queued");
+    let course = delivery::course(&w.airport, &ac.route);
+    let route = ac.route.clone();
+    let plan = ac.flight_plan.as_mut().expect("IFR departures file a plan");
+    let right = delivery::level_for(plan.altitude, course);
+    plan.route = route;
+    plan.altitude = if wrong { delivery::step_altitude(right, -1) } else { right };
+    plan.mishear = Some(wrong);
+}
+
+/// The departure at the gate on Delivery's frequency.
+fn at_gate(w: &World) -> Option<&Aircraft> {
+    departures(w).find(|a| a.on_ground && a.phase == Phase::Parked && a.frequency() == Position::Delivery)
+}
+
+/// What a sharp controller clears it for: the filed SID, at an altitude
+/// right for its direction.
+fn right_clearance(w: &World, ac: &Aircraft) -> Option<Clearance> {
+    let plan = ac.flight_plan.as_ref()?;
+    let course = delivery::course(&w.airport, &plan.route);
+    let altitude = delivery::level_for(plan.altitude, course);
+    Some(Clearance::Ifr { route: plan.route.clone(), altitude, squawk: plan.squawk })
+}
+
+fn cleared_right(w: &World, ac: &Aircraft) -> bool {
+    let cleared = ac.flight_plan.as_ref().and_then(|p| p.cleared.as_ref());
+    cleared.is_some_and(|c| delivery::direction_ok(c.altitude, delivery::course(&w.airport, &c.route)))
+}
+
+fn gate_target(w: &World) -> Option<Target> {
+    at_gate(w).map(|a| Target::Aircraft(a.id))
+}
+
+/// Clear the departure at the gate as it should be cleared.
+fn clear_at_gate(w: &mut World) {
+    if let Some((id, c)) = at_gate(w).and_then(|a| Some((a.id, right_clearance(w, a)?))) {
+        w.transmit(id, vec![c]);
+    }
 }
 
 /// An arrival east of the field, being offered by Center.
@@ -667,6 +727,85 @@ fn ground_lesson() -> Vec<Step> {
         Step::read(
             "That's Ground. Keep taxiing traffic flowing, hand departures to Tower at the hold line, and \
              watch for two aircraft meeting head on. Press Enter to finish.",
+        ),
+    ]
+}
+
+fn delivery_lesson() -> Vec<Step> {
+    vec![
+        Step::read(
+            "You're Clearance Delivery. Every IFR departure calls you from its gate for its clearance \
+             before Ground will taxi it. Its strip waits in the CLEARANCE bay, marked CLNC. Press Enter.",
+        ),
+        Step::act(
+            "When it calls, select it. Its flight plan is in the side panel: route, altitude, and the \
+             course it flies. Eastbound (000 to 179) flies odd thousands, westbound even. This one is \
+             right: press I, then Enter, to read it its clearance.",
+            |w| first_departure(w).and_then(|a| a.flight_plan.as_ref()).is_some_and(|p| p.is_cleared()),
+            clear_at_gate,
+        )
+        .setup(|w| delivery_departure(w, false))
+        .highlight(|w| first_departure(w).map(|a| Target::Aircraft(a.id))),
+        Step::act(
+            "The pilot read back the route, altitude and squawk correctly. Send it to Ground, who will \
+             taxi it: press T, then Enter.",
+            |w| first_departure(w).is_none_or(|a| a.frequency() != Position::Delivery),
+            |w| {
+                if let Some(id) = first_departure(w).filter(|a| a.frequency() == Position::Delivery).map(|a| a.id) {
+                    w.transmit(id, vec![Clearance::ContactGround]);
+                }
+            },
+        )
+        .highlight(|w| first_departure(w).map(|a| Target::Aircraft(a.id))),
+        Step::act(
+            "The next one filed an altitude that's wrong for its direction of flight. Check its course, \
+             press Up or Down until the altitude is right, then I and Enter. Cleared it wrong? Fix the \
+             altitude and press I again: that's an amended clearance.",
+            |w| at_gate(w).is_some_and(|a| cleared_right(w, a)),
+            clear_at_gate,
+        )
+        .setup(|w| delivery_departure(w, true))
+        // Sent to Ground cleared wrong: another one files, to try again.
+        // (Not while the next one is still on its way to the gate.)
+        .fails(
+            |w| {
+                at_gate(w).is_none()
+                    && w.departure_queue.is_empty()
+                    && newest_departure(w).is_some_and(|a| a.frequency() != Position::Delivery && !cleared_right(w, a))
+            },
+            3,
+        )
+        .highlight(gate_target),
+        Step::act(
+            "Listen to that readback: the pilot got the squawk wrong. Compare it with the code in the \
+             side panel. Press I again, then Enter, to say the altitude and code again.",
+            // Put right, or sent on without it: Ground sorts it out then.
+            |w| newest_departure(w).and_then(|a| a.flight_plan.as_ref()).is_some_and(|p| p.readback.is_none()),
+            |w| {
+                let cleared = at_gate(w).and_then(|a| {
+                    let c = a.flight_plan.as_ref()?.cleared.as_ref()?;
+                    Some((a.id, Clearance::Ifr { route: c.route.clone(), altitude: c.altitude, squawk: c.squawk }))
+                });
+                if let Some((id, c)) = cleared {
+                    w.transmit(id, vec![c]);
+                }
+            },
+        )
+        .highlight(gate_target),
+        Step::act(
+            "Read back right this time. Send it to Ground: press T, then Enter.",
+            |w| at_gate(w).is_none(),
+            |w| {
+                if let Some(id) = at_gate(w).map(|a| a.id) {
+                    w.transmit(id, vec![Clearance::ContactGround]);
+                }
+            },
+        )
+        .highlight(gate_target),
+        Step::read(
+            "That's Clearance Delivery. Check every altitude against its course, and every SID against \
+             the runways in use (S picks another). Listen to every readback, and don't keep pilots \
+             waiting more than 3 minutes. Press Enter to finish.",
         ),
     ]
 }

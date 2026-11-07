@@ -226,9 +226,15 @@ impl UiState {
 
     /// I: the IFR clearance, as filed or amended. Again once cleared, it
     /// repeats the altitude and code, to put a wrong readback right.
+    /// I: the IFR clearance at Delivery; in the air, reset a wrong code.
     pub fn ifr(&mut self, world: &World) {
         if let Some((route, altitude, squawk)) = self.ifr_draft(world) {
             self.pending.add_tower(Clearance::Ifr { route, altitude, squawk });
+            return;
+        }
+        let airborne = self.selected.and_then(|id| world.find(id)).filter(|a| !a.on_ground);
+        if let Some(plan) = airborne.and_then(|a| a.flight_plan.as_ref()) {
+            self.pending.add_tower(Clearance::Squawk(plan.squawk));
         }
     }
 
