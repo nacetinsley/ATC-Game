@@ -506,3 +506,247 @@ fn ksus_clearances_name_the_sid_and_transition() {
     assert!(words.contains(&format!("via the LINDY9 departure, {exit} transition, then as filed")), "{words}");
     assert!(words.contains("squawk 0"), "{words}");
 }
+
+// Stress: whole shifts on Delivery, played carefully and sloppily.
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Bot {
+    /// Clears every plan right, re-clears one a runway change has made wrong,
+    /// repeats every wrong readback, then hands off.
+    Careful,
+    /// Clears every plan as filed and never listens to the readback.
+    Sloppy,
+}
+
+#[derive(Debug, Default)]
+struct ShiftStats {
+    cleared: usize,
+    caught: usize,
+    missed_plans: usize,
+    missed_readbacks: usize,
+    wrong_codes_reset: usize,
+    exited: usize,
+    /// Anything that shouldn't happen, for the assertion message.
+    problems: Vec<String>,
+}
+
+/// The clearance the careful bot gives: the filed plan put right for the
+/// runways in use now, or `None` if no SID in use serves its exit.
+fn careful_clearance(world: &World, id: u32) -> Option<Clearance> {
+    let plan = world.find(id)?.flight_plan.as_ref()?;
+    let config = world.config_name();
+    let route = if delivery::sid_in_use(&world.airport, config, &plan.route) {
+        plan.route.clone()
+    } else {
+        delivery::sid_choices(&world.airport, config, &plan.route).into_iter().next()?
+    };
+    let course = delivery::course(&world.airport, &route);
+    Some(Clearance::Ifr { altitude: delivery::level_for(plan.altitude, course), route, squawk: plan.squawk })
+}
+
+/// Standing still this long on the ground after Delivery is gridlock, seconds.
+/// (KSUS landing and departing 08R on a very busy shift can keep a departure
+/// at the hold line for 11 minutes waiting for a gap: that's the tower's.)
+const STUCK_AFTER_DELIVERY_S: f32 = 15.0 * 60.0;
+
+fn play_delivery_shift(airport: &Airport, config: WorldConfig, bot: Bot) -> ShiftStats {
+    use std::collections::HashMap;
+    let mut world = World::new(airport.clone(), WorldConfig { staffing: Staffing::DELIVERY, ..config });
+    let mut stats = ShiftStats::default();
+    let mut last_sent: HashMap<u32, f32> = HashMap::new();
+    let mut showed_wrong_code: HashMap<u32, bool> = HashMap::new();
+    // Where each departure on the ground after Delivery last moved, and when.
+    let mut last_moved: HashMap<u32, (glam::Vec2, f32)> = HashMap::new();
+    while world.ended.is_none() {
+        world.tick();
+        for event in world.drain_events() {
+            match event {
+                SimEvent::Cleared { .. } => stats.cleared += 1,
+                SimEvent::PlanCaught { .. } => stats.caught += 1,
+                SimEvent::PlanMissed { .. } => stats.missed_plans += 1,
+                SimEvent::ReadbackMissed { .. } => stats.missed_readbacks += 1,
+                SimEvent::MissedHandoff { callsign, to } => {
+                    stats.problems.push(format!("missed handoff of {callsign} to {to}"))
+                }
+                SimEvent::NearCollision { .. } | SimEvent::GroundConflict { .. } | SimEvent::RunwayIncursion { .. } => {
+                    stats.problems.push(format!("{event:?}"))
+                }
+                _ => {}
+            }
+        }
+        let now = world.time;
+        // Nobody leaves the sector still squawking the wrong code.
+        for (id, showing) in showed_wrong_code.iter_mut() {
+            if *showing && world.find(*id).is_none() {
+                stats.problems.push(format!("aircraft {id} left still squawking a wrong code"));
+                *showing = false;
+            }
+        }
+        let ids: Vec<u32> = world.aircraft.iter().map(|a| a.id).collect();
+        for id in ids {
+            let Some(ac) = world.find(id) else { continue };
+            // Handed on, a departure keeps moving. Long taxis and queues at
+            // the hold line are the airfield's; standing still for minutes
+            // on end is gridlock.
+            let done = ac.flight_plan.as_ref().is_some_and(|p| p.done && p.called_at.is_some());
+            if done && ac.on_ground {
+                let (at, since) = *last_moved.entry(id).or_insert((ac.pos, now));
+                if ac.pos.distance(at) > 0.01 {
+                    last_moved.insert(id, (ac.pos, now));
+                } else if now - since > STUCK_AFTER_DELIVERY_S {
+                    stats.problems.push(format!("{} standing still since {since:.0} ({:?})", ac.callsign, ac.phase));
+                    last_moved.insert(id, (ac.pos, f32::INFINITY));
+                }
+            }
+            // A wrong code on the scope is reset soon after Departure has it.
+            if let Some(code) = delivery::wrong_code_showing(ac) {
+                showed_wrong_code.insert(id, true);
+                let on_departure = ac.frequency() == Position::Approach;
+                if on_departure && now - ac.freq_since > delivery::SQUAWK_RESET_S + 30.0 {
+                    stats.problems.push(format!("{} still squawking {code:o} at {now:.0}", ac.callsign));
+                    showed_wrong_code.insert(id, false);
+                }
+            } else if showed_wrong_code.get(&id) == Some(&true) {
+                showed_wrong_code.insert(id, false);
+                stats.wrong_codes_reset += 1;
+            }
+            if ac.frequency() != Position::Delivery || ac.phase != Phase::Parked {
+                continue;
+            }
+            let Some(plan) = ac.flight_plan.clone() else { continue };
+            let called = plan.called_at.unwrap_or(now);
+            // Nobody waits long at the gate for a bot that answers in seconds.
+            if now - called > 300.0 && !last_sent.contains_key(&(id + 1_000_000)) {
+                stats.problems.push(format!("{} waiting at the gate since {called:.0}", ac.callsign));
+                last_sent.insert(id + 1_000_000, now);
+            }
+            if now - called < 15.0 || now - last_sent.get(&id).copied().unwrap_or(f32::MIN) < 10.0 {
+                continue;
+            }
+            let clearance = match (bot, &plan.cleared) {
+                (Bot::Careful, None) => careful_clearance(&world, id),
+                (Bot::Careful, Some(c)) => {
+                    let config = world.config_name();
+                    let still_right = delivery::problem(&world.airport, config, &c.route, c.altitude).is_none();
+                    if !still_right {
+                        // The runways changed under it: an amended clearance.
+                        careful_clearance(&world, id)
+                    } else if plan.readback.is_some() {
+                        Some(Clearance::Ifr { route: c.route.clone(), altitude: c.altitude, squawk: c.squawk })
+                    } else {
+                        Some(Clearance::ContactGround)
+                    }
+                }
+                (Bot::Sloppy, None) => Some(as_filed(&world, id)),
+                (Bot::Sloppy, Some(_)) => Some(Clearance::ContactGround),
+            };
+            if let Some(clearance) = clearance {
+                world.transmit(id, vec![clearance]);
+                last_sent.insert(id, now);
+            }
+        }
+    }
+    stats.exited = world.score.exited as usize;
+    if bot == Bot::Careful {
+        let refused = world.log.iter().filter(|l| l.text.contains("unable")).map(|l| l.text.clone());
+        stats.problems.extend(refused);
+    }
+    stats
+}
+
+/// Conflicts in the same shift with every position automated: those aren't
+/// Delivery's doing. (Its exits aren't comparable: every radio call draws on
+/// the sim's random numbers, so the traffic itself differs.)
+fn automated_trouble(airport: &Airport, config: WorldConfig) -> Vec<String> {
+    let mut world = World::new(airport.clone(), WorldConfig { staffing: Staffing::NONE, ..config });
+    let mut trouble = Vec::new();
+    while world.ended.is_none() {
+        world.tick();
+        for event in world.drain_events() {
+            if matches!(
+                event,
+                SimEvent::NearCollision { .. } | SimEvent::GroundConflict { .. } | SimEvent::RunwayIncursion { .. }
+            ) {
+                trouble.push(format!("{event:?}"));
+            }
+        }
+    }
+    trouble
+}
+
+fn delivery_stress(shifts: impl Iterator<Item = (Airport, WorldConfig)>) {
+    let mut totals = [ShiftStats::default(), ShiftStats::default()];
+    let mut failures = Vec::new();
+    for (airport, config) in shifts {
+        let what = format!("{} seed {} {:?}", airport.code, config.seed, config.busyness);
+        let baseline_trouble = automated_trouble(&airport, config);
+        for (i, bot) in [Bot::Careful, Bot::Sloppy].into_iter().enumerate() {
+            let s = play_delivery_shift(&airport, config, bot);
+            let mut problems = s.problems.clone();
+            // Trouble the automated tower has on its own isn't Delivery's doing.
+            if !baseline_trouble.is_empty() {
+                problems.retain(|p| !p.starts_with("NearCollision") && !p.starts_with("GroundConflict") && !p.starts_with("RunwayIncursion"));
+            }
+            if bot == Bot::Careful {
+                if s.missed_plans + s.missed_readbacks > 0 {
+                    problems.push(format!("{} plans and {} readbacks missed", s.missed_plans, s.missed_readbacks));
+                }
+            } else if s.caught > 0 {
+                problems.push(format!("{} caught by a bot that never checks", s.caught));
+            }
+            if !problems.is_empty() {
+                failures.push(format!("{what} {bot:?}: {problems:?}"));
+            }
+            let t = &mut totals[i];
+            t.cleared += s.cleared;
+            t.caught += s.caught;
+            t.missed_plans += s.missed_plans;
+            t.missed_readbacks += s.missed_readbacks;
+            t.wrong_codes_reset += s.wrong_codes_reset;
+            t.exited += s.exited;
+        }
+    }
+    println!("careful: {:?}", totals[0]);
+    println!("sloppy:  {:?}", totals[1]);
+    assert!(failures.is_empty(), "{failures:#?}");
+    let [careful, sloppy] = &totals;
+    assert!(careful.cleared > 0 && careful.caught > 0, "{careful:?}");
+    assert!(sloppy.missed_plans > 0, "{sloppy:?}");
+}
+
+fn ksus() -> Airport {
+    use atcgame::sim::airspace::{KSUS_AIRPORT, KSUS_GROUND};
+    Airport::load(KSUS_AIRPORT, Some(KSUS_GROUND)).unwrap()
+}
+
+/// Seed `seed`'s shift: the airport's two flows, and every third shift with
+/// changing weather (and so runway changes mid-shift).
+fn stress_config(seed: u64, winds: [f32; 2]) -> WorldConfig {
+    use atcgame::sim::traffic::Busyness;
+    let busy = [Busyness::Quiet, Busyness::RealWorld, Busyness::Busy, Busyness::VeryBusy];
+    WorldConfig {
+        seed,
+        wind: (!seed.is_multiple_of(3)).then(|| Wind { from: winds[seed as usize % 2], speed: 8.0 }),
+        busyness: busy[seed as usize % 4],
+        shift_seconds: 45.0 * 60.0,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn delivery_shifts_played_carefully_and_sloppily_hold_up() {
+    let shifts = (0..3u64)
+        .map(|seed| (Airport::default_airport(), stress_config(seed, [270.0, 90.0])))
+        .chain((0..3u64).map(|seed| (ksus(), stress_config(seed, [250.0, 80.0]))));
+    delivery_stress(shifts);
+}
+
+/// The long run: `cargo test --release -- --ignored delivery_stress`.
+#[test]
+#[ignore]
+fn delivery_stress_two_hundred_shifts() {
+    let shifts = (0..100u64)
+        .map(|seed| (Airport::default_airport(), stress_config(seed, [270.0, 90.0])))
+        .chain((0..100u64).map(|seed| (ksus(), stress_config(seed, [250.0, 80.0]))));
+    delivery_stress(shifts);
+}

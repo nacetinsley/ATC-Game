@@ -166,7 +166,7 @@ information Juliett." Its strip waits in the CLEARANCE bay, marked `CLNC`.
   next controller sorts either out, so the flight still goes.
 - **A wrong code you missed shows on the radar.** Once airborne, the aircraft's
   data block shows the code it's really squawking, in amber, until Departure
-  has it reset ("reset transponder, squawk 0415"). When you work Approach
+  has it reset at radar contact ("reset transponder, squawk 0415"). When you work Approach
   too, that's your job: select it and press I, then Enter.
 - **F4** hides the course hint, for when you'd rather work it out yourself.
 

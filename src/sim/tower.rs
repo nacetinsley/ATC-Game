@@ -520,6 +520,8 @@ impl World {
             let gone = !ac.on_ground
                 && ac.phase == Phase::Controlled
                 && !matches!(ac.lateral, Lateral::Hold(_))
+                // Not until a wrong code Delivery let through has been reset.
+                && super::delivery::wrong_code_showing(ac).is_none()
                 && ac.pos.length() > AUTOMATED_APPROACH_RANGE_NM;
             if gone {
                 let ac = self.aircraft.remove(index);

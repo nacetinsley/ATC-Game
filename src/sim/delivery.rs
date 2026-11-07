@@ -20,9 +20,9 @@ pub const READBACK_ERROR_ONE_IN: u32 = 10;
 /// On a combined Ground and Delivery position, a cleared pilot calls for taxi
 /// this long after the readback, seconds.
 pub const READY_TO_TAXI_S: f32 = 30.0;
-/// The automated Departure controller notices a wrong code this long after
-/// the aircraft checks in, and has it reset, seconds.
-pub const SQUAWK_RESET_S: f32 = 45.0;
+/// The automated Departure controller notices a wrong code at radar contact,
+/// this long after the aircraft checks in, and has it reset, seconds.
+pub const SQUAWK_RESET_S: f32 = 15.0;
 /// Waiting longer than this for a clearance is delay, seconds.
 pub const CLEARANCE_WAIT_S: f32 = 180.0;
 pub const MIN_CLEARED_ALTITUDE: f32 = 3000.0;
