@@ -21,12 +21,17 @@ const PILOT: Color = Color::new(0.55, 0.85, 1.00, 1.0);
 const SYSTEM: Color = Color::new(0.95, 0.80, 0.45, 1.0);
 const EMERGENCY: Color = Color::new(1.00, 0.35, 0.30, 1.0);
 const UNABLE: Color = Color::new(1.00, 0.62, 0.20, 1.0);
+/// Controllers on the landline.
+const LANDLINE: Color = Color::new(0.80, 0.70, 1.00, 1.0);
 
 const PADDING: f32 = 12.0;
 const STATUS_HEIGHT: f32 = 92.0;
 const CLEARANCE_HEIGHT: f32 = 212.0;
 const LOG_HEIGHT: f32 = 230.0;
 const LOG_LINE: f32 = 17.0;
+/// Landline requests shown above the log, at most, and the height of each.
+const LANDLINE_ROWS: usize = 3;
+const LANDLINE_ROW: f32 = 26.0;
 const LOG_FONT: f32 = 16.0;
 /// Approximate width of one character at `LOG_FONT`, for wrapping.
 const LOG_CHAR_WIDTH: f32 = 7.2;
@@ -70,7 +75,51 @@ pub fn draw(world: &mut World, ui: &mut UiState) {
     divider(x, clearance_top);
     draw_clearance(world, ui, x, clearance_top);
     divider(x, log_top);
-    draw_log(world, x, log_top);
+    let landline = draw_landline(world, ui, x, log_top);
+    draw_log(world, x, log_top + landline);
+}
+
+/// Requests from other controllers waiting on the player, each with Approve
+/// and Unable buttons, at the top of the log. Returns the height used.
+fn draw_landline(world: &mut World, ui: &mut UiState, x: f32, top: f32) -> f32 {
+    use crate::sim::coordination::{CoordKind, CoordState};
+    let left = x + PADDING;
+    let rows: Vec<(u32, String, bool)> = world
+        .incoming()
+        .take(LANDLINE_ROWS)
+        .map(|c| {
+            let callsign = world.find(c.aircraft).map(|a| a.callsign.clone()).unwrap_or_default();
+            let what = match c.kind {
+                CoordKind::Crossing { runway } => {
+                    let map = world.airport.surface.as_ref().expect("crossings need a ground layout");
+                    let name = crate::sim::clearance::spoken_runway(&world.airport, map, runway, &world.ends_in_use());
+                    format!("{callsign} cross {name}?")
+                }
+            };
+            let pending = c.state == CoordState::Pending;
+            let text = if pending { format!("{}: {what}", c.from.name()) } else { format!("{}: {what} (unable)", c.from.name()) };
+            (c.aircraft, text, pending)
+        })
+        .collect();
+    if rows.is_empty() {
+        return 0.0;
+    }
+    let bw = 86.0;
+    let mut y = top + 6.0;
+    for (id, text, pending) in rows {
+        let selected = ui.selected == Some(id);
+        label(&text, left, y + 17.0, 17.0, if selected { TEXT } else { LANDLINE });
+        let right = x + PANEL_WIDTH - PADDING;
+        if button("Unable N", right - bw, y, bw, LANDLINE_ROW - 4.0) && pending && !ui.replay {
+            world.answer_coordination(id, false);
+        }
+        if button("Approve Y", right - bw * 2.0 - 6.0, y, bw, LANDLINE_ROW - 4.0) && !ui.replay {
+            world.answer_coordination(id, true);
+        }
+        y += LANDLINE_ROW;
+    }
+    divider(x, y + 2.0);
+    y + 4.0 - top
 }
 
 fn draw_status(world: &World, ui: &UiState, x: f32) {
@@ -330,7 +379,8 @@ fn draw_tower_buttons(world: &mut World, ui: &mut UiState, left: f32, top: f32) 
     if button("Hold H", col(0.0), y, w, bh) {
         ui.hold(world);
     }
-    if button("Cross X", col(1.0), y, w, bh) {
+    let cross = ui.cross_label(world);
+    if button(cross, col(1.0), y, w, bh) {
         ui.cross(world);
     }
     if button("Line up W", col(2.0), y, w, bh) {
@@ -370,7 +420,7 @@ fn draw_pending_words(world: &World, ui: &UiState, left: f32, y: f32, lines: usi
         label("No clearance pending", left, y, 16.0, DIM);
     } else if let Some(ac) = ui.selected.and_then(|id| world.find(id)) {
         let words: Vec<String> =
-            pending.iter().map(|c| phrase(c, ac, &world.airport)).collect();
+            pending.iter().map(|c| phrase(c, ac, &world.airport, &world.ends_in_use())).collect();
         let text = words.join(", ");
         for (i, line) in wrap(&text, 52).iter().take(lines).enumerate() {
             label(line, left, y - 6.0 + i as f32 * 15.0, 16.0, TEXT);
@@ -408,6 +458,7 @@ fn draw_log(world: &World, x: f32, top: f32) {
             Speaker::Pilot => PILOT,
             Speaker::System => SYSTEM,
             Speaker::Emergency => EMERGENCY,
+            Speaker::Landline => LANDLINE,
         };
         for line in wrap(&entry.text, width).iter().rev() {
             if y < top + LOG_LINE {

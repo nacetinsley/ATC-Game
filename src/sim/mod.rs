@@ -7,6 +7,7 @@ pub mod autopilot;
 pub mod awaiting;
 pub mod clearance;
 pub mod conflict;
+pub mod coordination;
 pub mod delivery;
 pub mod emergency;
 pub mod ground;
@@ -57,6 +58,8 @@ pub enum Speaker {
     System,
     /// Mayday and pan-pan calls, and radio-failure notices.
     Emergency,
+    /// Controllers talking to each other on the landline.
+    Landline,
 }
 
 #[derive(Debug, Clone)]
@@ -179,6 +182,8 @@ pub struct World {
     pub emergencies: emergency::Emergencies,
     /// An ILS failure this shift, if there is one.
     pub ils_outage: Option<approach::IlsOutage>,
+    /// Open landline coordination between controllers.
+    pub coordination: Vec<coordination::Coordination>,
 
     config: WorldConfig,
     config_index: usize,
@@ -222,6 +227,7 @@ impl World {
             weather,
             emergencies: emergency::Emergencies::new(config.seed),
             ils_outage: approach::IlsOutage::roll(config.seed, config.shift_seconds, config.weather),
+            coordination: Vec::new(),
             config,
             config_index,
             rng,
@@ -256,6 +262,19 @@ impl World {
             text += &format!(", VFR {vfr}");
         }
         text
+    }
+
+    /// Runway ends in use now (landing, departing, VFR and the long-runway
+    /// departure end), so a physical runway is named by the end that's active.
+    pub fn ends_in_use(&self) -> Vec<usize> {
+        let mut ends = vec![self.arrival_runway(), self.departure_runway()];
+        if self.vfr_enabled() {
+            ends.push(self.pattern_runway());
+        }
+        if let Some(id) = &self.config().departure_long {
+            ends.extend(self.airport.runway_index(id).map(|e| self.avoiding_closure(e)));
+        }
+        ends
     }
 
     pub fn config(&self) -> &Config {
@@ -404,6 +423,7 @@ impl World {
         self.run_approaches();
         self.run_emergencies();
         self.run_pattern();
+        self.run_coordination();
         self.run_local();
         self.run_ground();
         self.run_automated_approach();
@@ -522,10 +542,11 @@ impl World {
     /// Everything that should be identical for two runs with the same seed and commands.
     pub fn state_digest(&self) -> String {
         format!(
-            "{:.3} {:?} {:?} {} {:?} {:?}",
+            "{:.3} {:?} {:?} {:?} {} {:?} {:?}",
             self.time,
             self.aircraft,
             self.departure_queue,
+            self.coordination,
             self.score.points,
             self.score.incidents,
             self.log.iter().map(|l| &l.text).collect::<Vec<_>>(),

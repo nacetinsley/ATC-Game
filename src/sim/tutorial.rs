@@ -589,26 +589,16 @@ fn local_lesson() -> Vec<Step> {
         .highlight(|w| first_departure(w).map(|a| Target::Aircraft(a.id))),
         Step::act(
             "A cargo aircraft is taxiing from the ramp to the terminal and will stop short of 27L. Nobody \
-             crosses a runway without you. When it calls, cross it: press X, then Enter.",
+             crosses a runway without you: Ground asks on the landline. When its request shows above the \
+             log, approve it: press Y.",
             |w| w.find(CARGO).is_some_and(|a| a.taxi.as_ref().is_some_and(|t| t.cleared.contains(&physical(w, "27L")))),
             |w| {
-                let calling = w.find(CARGO).filter(|a| a.frequency() == Position::Local);
-                if let Some(r) = calling.and_then(|a| a.taxi.as_ref()).and_then(|t| t.holding_short) {
-                    w.transmit(CARGO, vec![Clearance::CrossRunway(r)]);
+                if w.incoming().any(|c| c.aircraft == CARGO) {
+                    w.answer_coordination(CARGO, true);
                 }
             },
         )
         .setup(cargo_to_the_terminal)
-        .highlight(cargo_target),
-        Step::act(
-            "Once it's across and clear of the runway, send it back to Ground: press T, then Enter.",
-            |w| w.find(CARGO).is_none_or(|a| a.frequency() == Position::Ground),
-            |w| {
-                if w.find(CARGO).is_some_and(|a| a.frequency() == Position::Local) {
-                    w.transmit(CARGO, vec![Clearance::ContactGround]);
-                }
-            },
-        )
         .highlight(cargo_target),
         Step::act(
             "A light aircraft is calling inbound and will hold outside until you say how to join. Tell it \

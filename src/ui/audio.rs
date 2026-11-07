@@ -709,7 +709,7 @@ impl Sounds {
         }
         for event in events {
             match event {
-                SimEvent::HandoffOffered { .. } => cues.push(Cue::Handoff),
+                SimEvent::HandoffOffered { .. } | SimEvent::CoordinationRequest { .. } => cues.push(Cue::Handoff),
                 SimEvent::Landed { callsign, .. }
                 | SimEvent::Parked { callsign }
                 | SimEvent::Exited { callsign }
@@ -747,7 +747,8 @@ fn asdex_hazards(world: &World, events: &[SimEvent], selected: Option<u32>) -> V
     let Some(map) = world.airport.surface.as_ref() else {
         return Vec::new();
     };
-    let named = |physical: usize| spoken_runway(&world.airport, map, physical);
+    let in_use = world.ends_in_use();
+    let named = |physical: usize| spoken_runway(&world.airport, map, physical, &in_use);
     let find = |callsign: &str| world.aircraft.iter().find(|a| a.callsign == callsign);
     let rolling_on = |physical: usize| {
         world.aircraft.iter().any(|a| {

@@ -282,17 +282,48 @@ impl UiState {
     }
 
     /// Cross the runway it's holding short of, or the next one on its route.
-    pub fn cross(&mut self, world: &World) {
-        let Some(ac) = self.selected.and_then(|id| world.find(id)) else { return };
-        let (Some(taxi), Some(map)) = (&ac.taxi, world.airport.surface.as_ref()) else { return };
-        let ahead = taxi.holding_short.or_else(|| {
-            taxi.path[taxi.index.min(taxi.path.len())..]
-                .iter()
-                .flat_map(|&n| map.nodes[n].zones.iter().copied())
-                .find(|z| !taxi.cleared.contains(z))
+    /// X: cross the next runway ahead. On Ground without Local, the first
+    /// press asks Tower on the landline; with Tower's approval (or pressed
+    /// again regardless) it's the crossing clearance.
+    pub fn cross(&mut self, world: &mut World) {
+        let Some(id) = self.selected else { return };
+        let Some(runway) = world.find(id).and_then(|ac| crossing_ahead(world, ac)) else { return };
+        if self.needs_request(world, id, runway) {
+            if !self.replay {
+                world.request_crossing(id, runway);
+            }
+            return;
+        }
+        self.pending.add_tower(Clearance::CrossRunway(runway));
+    }
+
+    /// X would ask Tower rather than cross.
+    fn needs_request(&self, world: &World, id: u32, runway: usize) -> bool {
+        use crate::sim::coordination::{CoordKind, CoordState};
+        let asked = world.coordination_for(id).is_some_and(|c| {
+            c.kind == CoordKind::Crossing { runway }
+                && matches!(c.state, CoordState::Pending | CoordState::Unable { callback: true })
         });
-        if let Some(runway) = ahead {
-            self.pending.add_tower(Clearance::CrossRunway(runway));
+        world.needs_crossing_approval(id, runway) && !asked
+    }
+
+    /// The X button's label: a request on Ground before Tower has agreed.
+    pub fn cross_label(&self, world: &World) -> &'static str {
+        let request = self.selected.is_some_and(|id| {
+            world.find(id).and_then(|ac| crossing_ahead(world, ac)).is_some_and(|r| self.needs_request(world, id, r))
+        });
+        if request { "Req cross X" } else { "Cross X" }
+    }
+
+    /// Y or N: answer a landline request, about the selected aircraft if
+    /// there's one, else the oldest.
+    pub fn coordinate(&mut self, world: &mut World, approve: bool) {
+        if self.replay {
+            return;
+        }
+        let selected = self.selected.filter(|&id| world.incoming().any(|c| c.aircraft == id));
+        if let Some(id) = selected.or_else(|| world.incoming().next().map(|c| c.aircraft)) {
+            world.answer_coordination(id, approve);
         }
     }
 
@@ -585,6 +616,12 @@ impl UiState {
         if is_key_pressed(KeyCode::T) {
             self.handoff(world);
         }
+        if is_key_pressed(KeyCode::Y) {
+            self.coordinate(world, true);
+        }
+        if is_key_pressed(KeyCode::N) {
+            self.coordinate(world, false);
+        }
         if (is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter)) && !self.enter_taken {
             self.transmit(world);
         }
@@ -802,4 +839,15 @@ pub fn ctrl_down() -> bool {
     [KeyCode::LeftControl, KeyCode::RightControl, KeyCode::LeftSuper, KeyCode::RightSuper]
         .into_iter()
         .any(is_key_down)
+}
+
+/// The next runway an aircraft has to cross that it isn't cleared across.
+fn crossing_ahead(world: &World, ac: &crate::sim::aircraft::Aircraft) -> Option<usize> {
+    let (Some(taxi), Some(map)) = (&ac.taxi, world.airport.surface.as_ref()) else { return None };
+    taxi.holding_short.or_else(|| {
+        taxi.path[taxi.index.min(taxi.path.len())..]
+            .iter()
+            .flat_map(|&n| map.nodes[n].zones.iter().copied())
+            .find(|z| !taxi.cleared.contains(z))
+    })
 }

@@ -58,6 +58,34 @@ to, so it happens silently. Without Approach, arrivals turn up established on
 the ILS about 10 miles out. Tower positions get a surface map with a radar
 inset; with all of them, F1 and F2 swap which is full size.
 
+### Coordination
+
+Controllers also talk to each other on the landline. Their calls are in
+purple in the log. You only need the landline between a position you work
+and an automated one. On a combined position you're both ends.
+- **On Ground, with Tower automated:**
+  - Tower owns the runways, so ask before crossing one. Press X once ("Req
+    cross X") to call Tower: "Ground to Tower: request crossing runway 27L
+    for TRL300".
+  - Tower either approves, or says unable with the reason and calls you back
+    when the runway is clear.
+  - Once it's approved, the crossing shows dashed cyan on the surface map.
+    X then gives the crossing clearance as usual.
+  - An approval you don't use within 90 seconds lapses, or Tower cancels it
+    for traffic on short final.
+  - Crossing without approval goes ahead but costs points.
+  - An arrival that Tower can't cross straight away after landing comes to
+    you holding short between runways, and Tower calls you with the
+    crossing when it can.
+- **On Local, with Ground automated:**
+  - Ground holds aircraft short of your runways and asks you instead of
+    sending them over.
+  - Requests show above the log, and the strip shows `LL`. Approve with Y,
+    or say unable with N.
+  - Ground crosses the aircraft itself once you approve, and asks again a
+    minute after an unable.
+  - Leaving a request unanswered for 45 seconds costs points.
+
 ### VFR traffic
 
 On any tower position the start menu has a VFR toggle (V), on by default.
@@ -516,7 +544,7 @@ Blocks 10 to 18 are set by each facility. This game's facility directive:
 | 15 | Approach: `ILS`, `RNAV`, `VIS`, or `VIS FOL` following traffic, the approach cleared; `H ALDER 35` holding at ALDER, expect further clearance at 35 past the hour |
 | 16 | Time of the block 14 mark |
 | 17 | Handoff: the next position, struck through once it has the aircraft |
-| 18 | What it's waiting for from you |
+| 18 | What it's waiting for from you; `LL` is another controller asking about it on the landline |
 
 What the flight data computer printed is in black and stays put. What
 controllers write afterwards is in blue pen, struck through when superseded:
@@ -741,7 +769,8 @@ but not notarized.
 | Ctrl-click a taxiway | Add it to the taxi route ("via") |
 | H | On the ground: hold position, or continue. In the air: hold at the fix it's flying to |
 | Ctrl-drag onto a fix (Cmd on a Mac) | Hold at that fix |
-| X | Cross the runway ahead |
+| X | Cross the runway ahead. On Ground with Tower automated: first ask Tower on the landline |
+| Y / N | Approve, or say unable to, a landline request (the selected aircraft's, else the oldest) |
 | D | Approve a deviation round weather (`WX` on the strip) |
 | I | Delivery: the IFR clearance; again once cleared, repeat the code and altitude. Airborne: say the assigned altitude and heading again, and reset a wrong code |
 | Up / Down at Delivery | Amend the altitude to expect |

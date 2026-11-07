@@ -47,6 +47,8 @@ pub enum Awaiting {
     ClearanceLate,
     /// Asking to deviate round weather.
     Deviation,
+    /// Another controller is asking you about it on the landline.
+    Coordination,
 }
 
 impl Awaiting {
@@ -64,6 +66,7 @@ impl Awaiting {
             Awaiting::Efc => "EFC",
             Awaiting::ClearanceRequest | Awaiting::ClearanceLate => "CLNC",
             Awaiting::Deviation => "WX",
+            Awaiting::Coordination => "LL",
         }
     }
 
@@ -87,6 +90,10 @@ impl World {
         let staffing = self.config.staffing;
         if ac.phase == Phase::Offered {
             return staffing.approach.then_some(Awaiting::Accept);
+        }
+        // Asked about on the landline, even if it's on someone else's frequency.
+        if self.incoming().any(|c| c.aircraft == ac.id && c.state == super::coordination::CoordState::Pending) {
+            return Some(Awaiting::Coordination);
         }
         if !self.is_players(ac) {
             return None;

@@ -97,8 +97,9 @@ impl Clearance {
             Clearance::Taxi { .. } | Clearance::HoldPosition | Clearance::ContinueTaxi => {
                 &[Ground, Local]
             }
-            Clearance::CrossRunway(_)
-            | Clearance::LineUpAndWait(_)
+            // Ground crosses runways too, having asked Local first.
+            Clearance::CrossRunway(_) => &[Local, Ground],
+            Clearance::LineUpAndWait(_)
             | Clearance::ClearedForTakeoff(_)
             | Clearance::ClearedToLand(_)
             | Clearance::ContactDeparture
@@ -166,16 +167,20 @@ pub fn taxi_origin(ac: &Aircraft, map: &GroundMap) -> usize {
     }
 }
 
-/// A runway as a controller names it: the end in use if one is.
-pub fn spoken_runway(airport: &Airport, map: &GroundMap, physical: usize) -> String {
+/// A runway as a controller names it: the end in use now (`in_use`, from
+/// `World::ends_in_use`), else an end some configuration uses, else the first.
+pub fn spoken_runway(airport: &Airport, map: &GroundMap, physical: usize, in_use: &[usize]) -> String {
     let ends = &map.runways[physical].ends;
-    ends.iter()
-        .map(|&e| airport.runways[e].id.clone())
-        .find(|id| airport.configs.iter().any(|c| c.arrival == *id || c.departure == *id))
-        .unwrap_or_else(|| airport.runways[ends[0]].id.clone())
+    let end = ends.iter().copied().find(|e| in_use.contains(e)).or_else(|| {
+        ends.iter().copied().find(|&e| {
+            let id = &airport.runways[e].id;
+            airport.configs.iter().any(|c| c.arrival == *id || c.departure == *id)
+        })
+    });
+    airport.runways[end.unwrap_or(ends[0])].id.clone()
 }
 
-fn taxi_phrase(to: usize, via: &[String], ac: &Aircraft, airport: &Airport) -> String {
+fn taxi_phrase(to: usize, via: &[String], ac: &Aircraft, airport: &Airport, in_use: &[usize]) -> String {
     let Some(map) = airport.surface.as_ref() else { return "taxi".into() };
     let target = if let Some(spot) = map.parking.iter().find(|p| p.node == to) {
         format!("taxi to {}", spot.name)
@@ -193,13 +198,14 @@ fn taxi_phrase(to: usize, via: &[String], ac: &Aircraft, airport: &Airport) -> S
         words += &format!(" via {}", route.taxiways.join(", "));
     }
     for &r in &route.runways_entered {
-        words += &format!(", hold short of runway {}", spoken_runway(airport, map, r));
+        words += &format!(", hold short of runway {}", spoken_runway(airport, map, r, in_use));
     }
     words
 }
 
 /// The controller's wording, as sent. Decided from the aircraft's state at transmission.
-pub fn phrase(clearance: &Clearance, ac: &Aircraft, airport: &Airport) -> String {
+/// `in_use` names runway ends the way `spoken_runway` does.
+pub fn phrase(clearance: &Clearance, ac: &Aircraft, airport: &Airport, in_use: &[usize]) -> String {
     match clearance {
         Clearance::Heading(h) => {
             let dir = if heading_diff(ac.heading, *h) >= 0.0 { "right" } else { "left" };
@@ -224,11 +230,11 @@ pub fn phrase(clearance: &Clearance, ac: &Aircraft, airport: &Airport) -> String
         Clearance::GoAround => "go around".into(),
         Clearance::HandoffTower => "contact tower".into(),
         Clearance::HandoffCenter => "contact center".into(),
-        Clearance::Taxi { to, via } => taxi_phrase(*to, via, ac, airport),
+        Clearance::Taxi { to, via } => taxi_phrase(*to, via, ac, airport, in_use),
         Clearance::HoldPosition => "hold position".into(),
         Clearance::ContinueTaxi => "continue taxi".into(),
         Clearance::CrossRunway(r) => match airport.surface.as_ref() {
-            Some(map) => format!("cross runway {}", spoken_runway(airport, map, *r)),
+            Some(map) => format!("cross runway {}", spoken_runway(airport, map, *r, in_use)),
             None => "cross the runway".into(),
         },
         Clearance::LineUpAndWait(e) => {
@@ -378,8 +384,9 @@ impl World {
         let Some(ac) = self.aircraft.iter().find(|a| a.id == id) else {
             return false;
         };
+        let in_use = self.ends_in_use();
         let words: Vec<String> =
-            clearances.iter().map(|(c, _)| phrase(c, ac, &self.airport)).collect();
+            clearances.iter().map(|(c, _)| phrase(c, ac, &self.airport, &in_use)).collect();
         // Automated controllers are only heard when the player works in the tower.
         let logged = automated.is_none() || self.config.staffing.tower();
         let line = match automated {
@@ -414,6 +421,21 @@ impl World {
             return;
         }
         let staffing = self.config.staffing;
+        // Ground crossing a runway Local hasn't agreed to.
+        let uncoordinated: Vec<bool> = call
+            .clearances
+            .iter()
+            .map(|(c, issuer)| match c {
+                Clearance::CrossRunway(r) => {
+                    *issuer == Some(Position::Ground)
+                        && staffing.ground
+                        && !staffing.local
+                        && !self.crossing_approved(call.aircraft, *r)
+                }
+                _ => false,
+            })
+            .collect();
+        let in_use = self.ends_in_use();
         let ctx = Context {
             approaches: self.approach_facts(index, &call.clearances),
             airport: &self.airport,
@@ -427,9 +449,9 @@ impl World {
         let mut rolled = false;
         let mut new_frequency = None;
         let mut player_go_around = None;
-        for (clearance, issuer) in &call.clearances {
+        for (n, (clearance, issuer)) in call.clearances.iter().enumerate() {
             let ac = &mut self.aircraft[index];
-            let words = phrase(clearance, ac, ctx.airport);
+            let words = phrase(clearance, ac, ctx.airport, &in_use);
             let repeat = match clearance {
                 Clearance::Ifr { route, altitude, squawk } => {
                     super::delivery::is_repeat(ac, route, *altitude, *squawk)
@@ -467,6 +489,9 @@ impl World {
                     readback.push(words);
                     if let Some(by) = *issuer {
                         ac.strip.push(StripMark { time: ctx.now, by, clearance: clearance.clone() });
+                    }
+                    if uncoordinated[n] {
+                        events.push(SimEvent::UncoordinatedCrossing { callsign: ac.callsign.clone() });
                     }
                     if *clearance == Clearance::GoAround {
                         let callsign = ac.callsign.clone();
@@ -1208,10 +1233,10 @@ mod tests {
     fn phrasing_picks_turn_and_altitude_direction() {
         let airport = Airport::default_airport();
         let a = ac();
-        assert_eq!(phrase(&Clearance::Heading(200.0), &a, &airport), "turn left heading 200");
-        assert_eq!(phrase(&Clearance::Heading(300.0), &a, &airport), "turn right heading 300");
+        assert_eq!(phrase(&Clearance::Heading(200.0), &a, &airport, &[]), "turn left heading 200");
+        assert_eq!(phrase(&Clearance::Heading(300.0), &a, &airport, &[]), "turn right heading 300");
         assert_eq!(
-            phrase(&Clearance::Altitude(3000.0), &a, &airport),
+            phrase(&Clearance::Altitude(3000.0), &a, &airport, &[]),
             "descend and maintain 3,000"
         );
     }

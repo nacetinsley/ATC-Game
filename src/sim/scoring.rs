@@ -34,6 +34,10 @@ pub const PENALTY_RUNWAY_SEPARATION: i32 = -300;
 pub const PENALTY_GROUND_CONFLICT: i32 = -200;
 pub const PENALTY_DEADLOCK: i32 = -100;
 pub const PENALTY_MISSED_HANDOFF: i32 = -25;
+/// Ground crossed a runway without Local's say-so.
+pub const PENALTY_UNCOORDINATED_CROSSING: i32 = -100;
+/// Left another controller waiting on the landline.
+pub const PENALTY_COORDINATION_LATE: i32 = -25;
 /// A pilot asked to go round weather and had to go without an answer.
 pub const PENALTY_DEVIATION_IGNORED: i32 = -50;
 pub const POINTS_TOUCH_AND_GO: i32 = 20;
@@ -129,6 +133,12 @@ pub enum SimEvent {
     Diverted { callsign: String },
     /// Asked to deviate round weather, heard nothing, and went anyway.
     DeviationIgnored { callsign: String },
+    /// Another controller is asking the player something on the landline.
+    CoordinationRequest { callsign: String },
+    /// The player, on Ground, crossed a runway without Local's approval.
+    UncoordinatedCrossing { callsign: String },
+    /// A landline request to the player went unanswered too long.
+    CoordinationLate { callsign: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -402,6 +412,20 @@ impl Score {
                     PENALTY_GROUND_CONFLICT,
                 );
             }
+            SimEvent::UncoordinatedCrossing { callsign } => {
+                self.incident(
+                    time,
+                    format!("{callsign} crossed a runway without Tower's approval"),
+                    PENALTY_UNCOORDINATED_CROSSING,
+                );
+            }
+            SimEvent::CoordinationLate { callsign } => {
+                self.incident(
+                    time,
+                    format!("Kept another controller waiting about {callsign}"),
+                    PENALTY_COORDINATION_LATE,
+                );
+            }
             SimEvent::TaxiDeadlock { a, b } => {
                 self.incident(
                     time,
@@ -498,7 +522,8 @@ impl Score {
             SimEvent::ConflictAlert { .. }
             | SimEvent::EmergencyDeclared { .. }
             | SimEvent::ShiftEnded { .. }
-            | SimEvent::HandoffOffered { .. } => {}
+            | SimEvent::HandoffOffered { .. }
+            | SimEvent::CoordinationRequest { .. } => {}
         }
     }
 

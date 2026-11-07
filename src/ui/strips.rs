@@ -513,7 +513,7 @@ pub fn marks(
                     .airport
                     .surface
                     .as_ref()
-                    .map(|m| spoken_runway(&world.airport, m, *r))
+                    .map(|m| spoken_runway(&world.airport, m, *r, &world.ends_in_use()))
                     .unwrap_or_default();
                 ground
                     .iter_mut()
@@ -557,7 +557,7 @@ pub fn marks(
         ac.taxi.as_ref().and_then(|t| t.holding_short),
         world.airport.surface.as_ref(),
     ) {
-        let mark = format!("HS{}", spoken_runway(&world.airport, map, r));
+        let mark = format!("HS{}", spoken_runway(&world.airport, map, r, &world.ends_in_use()));
         if !ground.iter().any(|p| p.text == mark) {
             ground.push(Pen::hand(mark));
         }
@@ -1279,6 +1279,7 @@ fn awaiting_text(w: crate::sim::awaiting::Awaiting) -> &'static str {
         ClearanceRequest => "Calling for its IFR clearance.",
         ClearanceLate => "Has waited long enough for its clearance to count as delay.",
         Deviation => "Asking to deviate round weather.",
+        Coordination => "Another controller is asking about it on the landline: Y approves, N says unable.",
     }
 }
 

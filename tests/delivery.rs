@@ -283,7 +283,7 @@ fn a_wrong_readback_put_right_with_a_repeat_costs_nothing() {
     world.find_mut(id).unwrap().flight_plan.as_mut().unwrap().readback = Some(Readback::Squawk(wrong));
 
     // Pressing I again repeats the altitude and the code.
-    let words = atcgame::sim::clearance::phrase(&clearance, world.find(id).unwrap(), &world.airport);
+    let words = atcgame::sim::clearance::phrase(&clearance, world.find(id).unwrap(), &world.airport, &world.ends_in_use());
     assert!(words.starts_with("I say again"), "{words}");
     world.transmit(id, vec![clearance]);
     run(&mut world, 8.0);
@@ -501,7 +501,7 @@ fn ksus_clearances_name_the_sid_and_transition() {
     world.tick();
     let id = world.aircraft.iter().find(|a| a.flow == Flow::Departure).unwrap().id;
     let clearance = right_clearance(&world, id);
-    let words = atcgame::sim::clearance::phrase(&clearance, world.find(id).unwrap(), &world.airport);
+    let words = atcgame::sim::clearance::phrase(&clearance, world.find(id).unwrap(), &world.airport, &world.ends_in_use());
     let exit = sid.last().unwrap();
     assert!(words.contains(&format!("via the LINDY9 departure, {exit} transition, then as filed")), "{words}");
     assert!(words.contains("squawk 0"), "{words}");

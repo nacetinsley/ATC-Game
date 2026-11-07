@@ -80,7 +80,7 @@ fn an_unpublished_hold_is_on_the_course_flown_with_right_turns() {
     assert_eq!(spec.leg, HoldLeg::Standard);
     // Ten minutes on, at a whole minute: 1410 when the shift starts at 1400.
     assert_eq!(spec.efc_hhmm, 1410);
-    let words = phrase(&Clearance::Hold(spec), w.find(1).unwrap(), &w.airport);
+    let words = phrase(&Clearance::Hold(spec), w.find(1).unwrap(), &w.airport, &[]);
     assert_eq!(
         words,
         "hold west of TOPAZ on the 090 course inbound, right turns, 1-minute legs, expect further clearance 1410"
@@ -93,7 +93,7 @@ fn a_published_hold_is_said_as_published() {
     let fix = w.airport.fix_index("ALDER").unwrap();
     let ac = inbound(&w, fix, 216.0);
     let spec = w.hold_for(&ac, fix);
-    let words = phrase(&Clearance::Hold(spec), &ac, &w.airport);
+    let words = phrase(&Clearance::Hold(spec), &ac, &w.airport, &[]);
     assert_eq!(words, "hold northeast of ALDER as published, expect further clearance 1410");
 }
 

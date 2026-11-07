@@ -31,7 +31,7 @@ const LANDING_CLEARANCE_NM: f32 = 8.0;
 /// whatever its speed.
 const SHORT_FINAL_HOLD_NM: f32 = 2.5;
 /// Or send an aircraft across a runway with an arrival closer than this.
-const CROSSING_HOLD_NM: f32 = 5.0;
+pub(super) const CROSSING_HOLD_NM: f32 = 5.0;
 /// Minimum time between departures, seconds.
 pub const DEPARTURE_INTERVAL: f32 = 90.0;
 pub const DEPARTURE_INTERVAL_AFTER_HEAVY: f32 = 150.0;
@@ -54,7 +54,7 @@ pub const VFR_INCURSION_NM: f32 = 1.0;
 /// the runway, NM.
 const VFR_RELEASE_NM: f32 = 1.6;
 /// Time a crossing takes, with margin, for VFR traffic about to land, seconds.
-const VFR_CROSSING_S: f32 = 75.0;
+pub(super) const VFR_CROSSING_S: f32 = 75.0;
 /// A departure must be airborne this long before the next arrival lands, seconds.
 const TAKEOFF_MARGIN_S: f32 = 15.0;
 /// Time from the hold line to starting the roll, seconds.
@@ -337,9 +337,13 @@ impl World {
                 Some(runway) => format!("Tower, {}, holding short runway {runway}.", ac.callsign),
                 None => format!("Tower, {}, with you.", ac.callsign),
             },
-            Position::Ground => match self.taxi_in_name(ac) {
-                Some(spot) => format!("Ground, {}, clear of the runway, for {spot}.", ac.callsign),
-                None => format!("Ground, {}, with you.", ac.callsign),
+            Position::Ground => match (self.holding_short_of(ac), self.taxi_in_name(ac)) {
+                (Some(runway), Some(spot)) => {
+                    format!("Ground, {}, holding short runway {runway}, for {spot}.", ac.callsign)
+                }
+                (Some(runway), None) => format!("Ground, {}, holding short runway {runway}.", ac.callsign),
+                (None, Some(spot)) => format!("Ground, {}, clear of the runway, for {spot}.", ac.callsign),
+                (None, None) => format!("Ground, {}, with you.", ac.callsign),
             },
             Position::Center | Position::Delivery | Position::Ramp => return,
         };
@@ -350,7 +354,7 @@ impl World {
         let map = self.surface();
         let taxi = ac.taxi.as_ref()?;
         if let Some(r) = taxi.holding_short {
-            return Some(super::clearance::spoken_runway(&self.airport, map, r));
+            return Some(super::clearance::spoken_runway(&self.airport, map, r, &self.ends_in_use()));
         }
         let end = ac.departure_end?;
         (taxi.done() && map.departure_hold(end) == Some(taxi.node))
@@ -440,10 +444,14 @@ impl World {
         let map = self.surface();
         let taxi = ac.taxi.as_ref().filter(|_| ac.phase == Phase::Taxiing)?;
         if let Some(r) = taxi.holding_short {
-            let safe = !self.runway_occupied(r, ac.id)
-                && self.arrivals_within(r, CROSSING_HOLD_NM, 0.0).is_empty()
-                && !self.landing_within(r, VFR_CROSSING_S, false);
-            return safe.then_some(Clearance::CrossRunway(r));
+            if self.crossing_blocker(r, ac.id).is_none() {
+                return Some(Clearance::CrossRunway(r));
+            }
+            // An arrival stuck between runways goes over to the player on
+            // Ground, and Tower calls back with the crossing.
+            let staffing = self.config.staffing;
+            let to_player = staffing.ground && ac.flow == Flow::Arrival;
+            return to_player.then_some(Clearance::ContactGround);
         }
         if self.at_departure_hold(ac) {
             let end = ac.departure_end?;
@@ -454,6 +462,8 @@ impl World {
             let safe = !launched
                 && self.time >= self.next_departure_time
                 && !self.runway_occupied(r, ac.id)
+                // Ground has been promised a crossing.
+                && !self.crossing_reserved(r)
                 && self.arrivals_within(r, short_final, VFR_RELEASE_NM).is_empty()
                 // Airborne with a margin before anyone lands.
                 && !self.landing_within(r, takeoff_window(ac), true)
@@ -493,6 +503,10 @@ impl World {
                 // Hold the next release until this one is rolling.
                 self.next_departure_time = self.time + interval;
             }
+            let holding_short = self.find(id).and_then(|a| a.taxi.as_ref()).and_then(|t| t.holding_short);
+            if let (Clearance::ContactGround, Some(r)) = (&clearance, holding_short) {
+                self.hand_over_holding_short(id, r);
+            }
             self.issue(id, vec![clearance], Position::Local);
         }
     }
@@ -527,13 +541,28 @@ impl World {
         }
         self.assign_parking();
         let mut calls = Vec::new();
+        let mut asks = Vec::new();
         for ac in &self.aircraft {
             if !ac.on_ground || ac.frequency() != Position::Ground || self.call_pending(ac.id) {
+                continue;
+            }
+            // The player works Local: Ground asks before crossing, rather
+            // than handing the aircraft over.
+            let short = ac.taxi.as_ref().filter(|_| ac.phase == Phase::Taxiing).and_then(|t| t.holding_short);
+            if let Some(r) = short.filter(|_| self.config.staffing.local) {
+                if self.crossing_approved(ac.id, r) {
+                    calls.push((ac.id, Clearance::CrossRunway(r)));
+                } else if self.coordination_for(ac.id).is_none() {
+                    asks.push((ac.id, r));
+                }
                 continue;
             }
             if let Some(c) = self.ground_decision(ac) {
                 calls.push((ac.id, c));
             }
+        }
+        for (id, runway) in asks {
+            self.ask(super::coordination::CoordKind::Crossing { runway }, id, Position::Ground, Position::Local);
         }
         for (id, clearance) in calls {
             self.issue(id, vec![clearance], Position::Ground);
@@ -647,8 +676,11 @@ impl World {
                 let cleared = ac.flight_plan.as_ref().is_some_and(|p| p.is_cleared());
                 (cleared && !self.call_pending(ac.id), "Ground", Position::Ground)
             } else if freq == Position::Ground && !staffing.local {
+                // Holding short while Ground works the crossing out with
+                // Tower on the landline isn't a forgotten handoff.
                 let w = self.at_departure_hold(ac)
-                    || ac.taxi.as_ref().is_some_and(|t| t.holding_short.is_some());
+                    || (ac.taxi.as_ref().is_some_and(|t| t.holding_short.is_some())
+                        && self.coordination_for(ac.id).is_none());
                 (w, "Tower", Position::Local)
             } else {
                 (false, "", freq)

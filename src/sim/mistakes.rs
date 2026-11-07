@@ -299,13 +299,13 @@ pub(super) fn after_instruction(
                 let wrong = misheard_altitude(*assigned, rng.u32(..));
                 ac.target_altitude = wrong;
                 ac.slip = Some(Slip::new(SlipKind::Altitude { assigned: *assigned, heard: wrong }, now));
-                heard.readback = Some(phrase(&Clearance::Altitude(wrong), ac, airport));
+                heard.readback = Some(phrase(&Clearance::Altitude(wrong), ac, airport, &[]));
             }
         }
         Clearance::Heading(assigned) if used || roll < rate.instruction_chance() => {
             let wrong = misheard_heading(airport.to_magnetic(*assigned), rng.u32(..));
             let wrong = airport.to_true(wrong);
-            heard.readback = Some(phrase(&Clearance::Heading(wrong), ac, airport));
+            heard.readback = Some(phrase(&Clearance::Heading(wrong), ac, airport, &[]));
             ac.lateral = Lateral::Heading(wrong);
             ac.slip = Some(Slip::new(SlipKind::Heading { assigned: *assigned, heard: wrong }, now));
         }

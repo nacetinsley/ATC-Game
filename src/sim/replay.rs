@@ -33,6 +33,10 @@ pub struct Command {
 pub enum Action {
     Transmit(Vec<Clearance>),
     AcceptHandoff,
+    /// On Ground, asking Local on the landline to cross this physical runway.
+    RequestCrossing(usize),
+    /// Answering a landline request about the aircraft.
+    Coordinate { approve: bool },
 }
 
 impl World {
@@ -55,6 +59,8 @@ impl World {
         match &command.action {
             Action::Transmit(clearances) => self.transmit(command.id, clearances.clone()),
             Action::AcceptHandoff => self.accept_handoff(command.id),
+            Action::RequestCrossing(runway) => self.request_crossing(command.id, *runway),
+            Action::Coordinate { approve } => self.answer_coordination(command.id, *approve),
         }
     }
 

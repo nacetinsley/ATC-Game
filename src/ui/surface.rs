@@ -25,6 +25,8 @@ const RUNWAY_MARK: Color = Color::new(0.90, 0.90, 0.90, 1.0);
 const TAXIWAY: Color = Color::new(0.20, 0.20, 0.20, 1.0);
 /// Lanes on a ramp Ground hands off at: the ramp's, so drawn fainter.
 const RAMP_LANE: Color = Color::new(0.14, 0.24, 0.29, 1.0);
+/// A crossing Tower has approved.
+const CROSSING: Color = Color::new(0.30, 0.90, 1.00, 1.0);
 /// A ramp's name, written across it.
 const RAMP_LABEL: Color = Color::new(0.80, 0.85, 0.88, 1.0);
 const TAXIWAY_LABEL: Color = Color::new(0.95, 0.80, 0.25, 1.0);
@@ -210,6 +212,19 @@ fn draw_layout(world: &World, map: &GroundMap, cam: &Camera) {
         let lit = active.contains(&runway);
         let w = thick(cam, 0.002, if lit { 3.0 } else { 2.0 });
         draw_line(a.x, a.y, b.x, b.y, w, if lit { HOLD_ACTIVE } else { HOLD });
+    }
+
+    // Crossings Tower has agreed to: the way across, dashed.
+    for c in world.coordination.iter().filter(|c| c.live()) {
+        let crate::sim::coordination::CoordKind::Crossing { runway } = c.kind;
+        let Some(taxi) = world.find(c.aircraft).and_then(|a| a.taxi.as_ref()) else { continue };
+        let rest = &taxi.path[taxi.index.min(taxi.path.len())..];
+        let Some(first) = rest.iter().position(|&n| map.in_zone(n, runway)) else { continue };
+        let last = rest[first..].iter().position(|&n| !map.in_zone(n, runway)).map_or(rest.len() - 1, |i| first + i);
+        let from = if first == 0 { taxi.node } else { rest[first - 1] };
+        let points: Vec<glam::Vec2> =
+            std::iter::once(from).chain(rest[first..=last].iter().copied()).map(|n| map.nodes[n].pos).collect();
+        polyline(cam, &points, thick(cam, 0.003, 3.0), CROSSING, true);
     }
 
     // Stands behind a ramp spot are the ramp's to hand out: the ramp's name
@@ -459,7 +474,7 @@ pub fn safety_alerts(world: &World) -> Vec<SafetyAlert> {
             }
         }
         if let Some(SlipKind::Incursion { runway, conflict: true, entered: true }) = ac.slip.as_ref().map(|s| &s.kind) {
-            push(SafetyAlert { area: spoken_runway(airport, map, *runway), ids: vec![ac.id], text: "RWY INCURSION" });
+            push(SafetyAlert { area: spoken_runway(airport, map, *runway, &world.ends_in_use()), ids: vec![ac.id], text: "RWY INCURSION" });
         }
     }
     out
@@ -532,7 +547,7 @@ pub fn status(world: &World, ac: &Aircraft) -> String {
         Phase::Taxiing => {
             let Some(taxi) = &ac.taxi else { return "TAXI".into() };
             if let Some(r) = taxi.holding_short {
-                return format!("HOLD {}", spoken_runway(airport, map, r));
+                return format!("HOLD {}", spoken_runway(airport, map, r, &world.ends_in_use()));
             }
             if taxi.holding {
                 return "HOLD POSN".into();
