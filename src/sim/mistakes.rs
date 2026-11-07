@@ -302,7 +302,7 @@ pub(super) fn after_instruction(
                 heard.readback = Some(phrase(&Clearance::Altitude(wrong), ac, airport, &[]));
             }
         }
-        Clearance::Heading(assigned) if used || roll < rate.instruction_chance() => {
+        Clearance::Heading(assigned) if !ac.on_ground && (used || roll < rate.instruction_chance()) => {
             let wrong = misheard_heading(airport.to_magnetic(*assigned), rng.u32(..));
             let wrong = airport.to_true(wrong);
             heard.readback = Some(phrase(&Clearance::Heading(wrong), ac, airport, &[]));

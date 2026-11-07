@@ -117,6 +117,27 @@ and an automated one. On a combined position you're both ends.
   - Tower calls you about each go-around. Acknowledge with Y; leaving it 45
     seconds costs points.
 
+### Tower headings
+
+On Local you can give an IFR departure or a go-around a heading, to keep it
+clear of other traffic. It's optional: without one, departures fly runway
+heading and go-arounds climb straight out.
+
+- **Departures:** select one at the hold line or lined up and use Left/Right
+  (or the panel's Hdg buttons), then send it, alone or with the takeoff
+  clearance: "fly heading 240, runway 27R, cleared for takeoff."
+  - It flies runway heading until 400 feet above the field, then turns.
+  - Tower can only give a heading within 90 degrees of the runway.
+  - Once it's switched to Departure, an automated Approach turns it on
+    course. If you work Approach too, it keeps the heading until you
+    vector it or send it on its route.
+- **Go-arounds:** press G, then Left/Right, to send "go around, turn left
+  heading 220." An aircraft already going around can be given one as well.
+  The call to Approach passes the heading on: "go-around NVA101, runway 27L,
+  heading 220, 3,000."
+- A heading on its own doesn't take an arrival off final: the pilot answers
+  "unable, on final".
+
 ### VFR traffic
 
 On any tower position the start menu has a VFR toggle (V), on by default.
@@ -789,7 +810,7 @@ but not notarized.
 |---|---|
 | Click or Tab | Select an aircraft |
 | Drag from a target | Assign a heading, or drop on a fix to go direct |
-| Left / Right | Heading -5 / +5 (Shift for 1) |
+| Left / Right | Heading -5 / +5 (Shift for 1). On Local: a departure's heading after takeoff, or a go-around's |
 | Up / Down | Altitude +1,000 / -1,000 ft |
 | `+` / `-` | Speed +10 / -10 kt |
 | C | Step through the approaches: ILS, RNAV, visual, then the parallel's |

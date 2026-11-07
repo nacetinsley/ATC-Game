@@ -3,7 +3,8 @@
 use super::camera::{PANEL_WIDTH, scope_width};
 use super::input::UiState;
 use super::strips;
-use crate::sim::aircraft::{Aircraft, Landing, Phase};
+use crate::sim::aircraft::{Aircraft, Flow, Landing, Phase};
+use crate::sim::units::{format_heading, heading_diff};
 use crate::sim::clearance::{Clearance, phrase};
 use crate::sim::delivery;
 use crate::sim::positions::Position;
@@ -424,8 +425,19 @@ fn draw_tower_buttons(world: &mut World, ui: &mut UiState, left: f32, top: f32) 
     let w = (PANEL_WIDTH - PADDING * 2.0 - 18.0) / 4.0;
     let col = |i: f32| left + (w + 6.0) * i;
     let y = top + 36.0;
-    let in_pattern = ui.selected.and_then(|id| world.find(id)).is_some_and(|a| a.vfr.is_some() && !a.on_ground);
-    if in_pattern {
+    let selected = ui.selected.and_then(|id| world.find(id));
+    let in_pattern = selected.is_some_and(|a| a.vfr.is_some() && !a.on_ground);
+    let tower_heading = selected.and_then(|a| tower_heading_shown(world, a, ui.pending.heading, ui.pending.go_around));
+    if let Some(shown) = tower_heading {
+        // An IFR departure with Tower, or a go-around: Tower's heading.
+        label(&shown, col(0.0), y + 26.0, 17.0, TEXT);
+        if button("Hdg -5", col(2.0), y + 8.0, w, bh) {
+            ui.nudge_heading(world, -5.0);
+        }
+        if button("Hdg +5", col(3.0), y + 8.0, w, bh) {
+            ui.nudge_heading(world, 5.0);
+        }
+    } else if in_pattern {
         // VFR in the air: pattern instructions where the taxi hints would be.
         if button("Enter/Ext E", col(0.0), y + 8.0, w, bh) {
             ui.enter_or_extend(world);
@@ -481,6 +493,37 @@ fn draw_tower_buttons(world: &mut World, ui: &mut UiState, left: f32, top: f32) 
         ui.cancel();
     }
     draw_pending_words(world, ui, left, y + 44.0, 2);
+}
+
+/// For an IFR departure with Tower, or one going around: the heading it will
+/// fly (or is about to be given), for the heading buttons. `None` for anything else.
+fn tower_heading_shown(world: &World, ac: &Aircraft, pending: Option<f32>, go_around: bool) -> Option<String> {
+    let heading = pending.or(ac.assigned_heading());
+    if ac.vfr.is_some() || ac.frequency() != Position::Local {
+        return None;
+    }
+    let runway = match ac.phase {
+        Phase::LinedUp | Phase::Taxiing | Phase::TowerRelease if ac.flow == Flow::Departure => ac.departure_end?,
+        Phase::GoAround => return Some(heading_words(world, heading, None)),
+        // A go-around about to be sent: the heading to go with it.
+        Phase::TowerHandedOff if go_around && !ac.on_ground => {
+            let runway = ac.approach_runway.map(|r| world.airport.runways[r].heading);
+            return Some(heading_words(world, pending, runway));
+        }
+        _ => return None,
+    };
+    let after = if ac.on_ground { " after takeoff" } else { "" };
+    let heading = heading_words(world, heading, Some(world.airport.runways[runway].heading));
+    Some(format!("{heading}{after}"))
+}
+
+fn heading_words(world: &World, heading: Option<f32>, runway: Option<f32>) -> String {
+    match heading {
+        Some(h) if runway.is_none_or(|r| heading_diff(r, h).abs() > 1.0) => {
+            format!("Heading {}", format_heading(world.airport.to_magnetic(h)))
+        }
+        _ => "Runway heading".to_string(),
+    }
 }
 
 /// What will be said if the player transmits now.

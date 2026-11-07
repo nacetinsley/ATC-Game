@@ -82,8 +82,7 @@ impl Clearance {
     pub fn issuers(&self) -> &'static [Position] {
         use Position::*;
         match self {
-            Clearance::Heading(_)
-            | Clearance::Altitude(_)
+            Clearance::Altitude(_)
             | Clearance::Speed(_)
             | Clearance::DirectFix(_)
             | Clearance::ResumeRoute
@@ -93,6 +92,8 @@ impl Clearance {
             | Clearance::HandoffTower
             | Clearance::HandoffCenter
             | Clearance::Deviation => &[Approach],
+            // Tower assigns headings too: to a departure, or a go-around.
+            Clearance::Heading(_) => &[Approach, Local],
             Clearance::GoAround => &[Local, Approach],
             Clearance::Taxi { .. } | Clearance::HoldPosition | Clearance::ContinueTaxi => {
                 &[Ground, Local]
@@ -205,8 +206,12 @@ fn taxi_phrase(to: usize, via: &[String], ac: &Aircraft, airport: &Airport, in_u
 
 /// The controller's wording, as sent. Decided from the aircraft's state at transmission.
 /// `in_use` names runway ends the way `spoken_runway` does.
+/// Tower's heading for a departure is at most this far off the runway, degrees.
+pub const MAX_TOWER_TURN: f32 = 90.0;
+
 pub fn phrase(clearance: &Clearance, ac: &Aircraft, airport: &Airport, in_use: &[usize]) -> String {
     match clearance {
+        Clearance::Heading(h) if ac.on_ground => format!("fly heading {}", format_heading(airport.to_magnetic(*h))),
         Clearance::Heading(h) => {
             let dir = if heading_diff(ac.heading, *h) >= 0.0 { "right" } else { "left" };
             format!("turn {dir} heading {}", format_heading(airport.to_magnetic(*h)))
@@ -316,6 +321,8 @@ struct Context<'a> {
     storms: &'a super::storms::Storms,
     /// The approaches on offer, and what this pilot can see.
     approaches: ApproachFacts,
+    /// The player works Approach, and takes over Tower's headings.
+    player_approach: bool,
 }
 
 impl World {
@@ -453,6 +460,7 @@ impl World {
             seed: self.config.seed,
             mistakes: self.config.mistakes,
             storms: &self.storms,
+            player_approach: staffing.approach,
         };
         let mut readback = Vec::new();
         let mut events = Vec::new();
@@ -589,6 +597,22 @@ pub(super) fn break_approach(ac: &mut Aircraft) {
     }
 }
 
+/// A departure leaving Tower: on course, unless it's flying a heading Tower
+/// gave and the player, working Approach, takes over the vector.
+pub(super) fn on_course(ac: &mut Aircraft, airport: &Airport, player_approach: bool) {
+    if let Some(h) = ac.tower_heading.take() {
+        ac.lateral = Lateral::Heading(h);
+    }
+    if ac.flow != Flow::Departure || ac.route_index >= ac.route.len() {
+        return;
+    }
+    let runway = ac.departure_end.map(|e| airport.runways[e].heading);
+    let vectored = matches!((ac.lateral, runway), (Lateral::Heading(h), Some(r)) if heading_diff(r, h).abs() > 1.0);
+    if !(vectored && player_approach) {
+        ac.lateral = Lateral::Route;
+    }
+}
+
 /// Start the takeoff roll from where the aircraft is lined up.
 pub(super) fn start_roll(ac: &mut Aircraft, airport: &Airport) {
     let Some(end) = ac.departure_end else { return };
@@ -653,13 +677,24 @@ fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), 
         return Err(reason);
     }
     // Radar vectors don't apply to VFR traffic flying its own pattern.
-    if ac.vfr.is_some() && clearance.issuers() == [Position::Approach] {
+    if ac.vfr.is_some() && (clearance.issuers() == [Position::Approach] || matches!(clearance, Clearance::Heading(_))) {
         return Err("we're VFR".into());
     }
     match clearance {
         Clearance::Heading(h) => {
             if ac.on_ground {
-                return Err("we're on the ground".into());
+                // Tower's heading for after takeoff.
+                let end = ac.departure_end.filter(|_| ac.flow == Flow::Departure);
+                let Some(end) = end else { return Err("we're on the ground".into()) };
+                let runway = &airport.runways[end];
+                if heading_diff(runway.heading, *h).abs() > MAX_TOWER_TURN {
+                    return Err(format!("too far off runway {}", runway.id));
+                }
+                ac.tower_heading = Some(normalize_heading(*h));
+                return Ok(());
+            }
+            if matches!(ac.phase, Phase::TowerHandedOff | Phase::Rollout) {
+                return Err("on final".into());
             }
             if super::storms::weather_ahead(ctx.storms, ac.pos, *h, super::storms::LOOKAHEAD_NM) {
                 return Err("weather ahead".into());
@@ -1008,9 +1043,7 @@ fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), 
                 return Err("not departing".into());
             }
             ac.phase = Phase::Controlled;
-            if ac.flow == Flow::Departure && ac.route_index < ac.route.len() {
-                ac.lateral = Lateral::Route;
-            }
+            on_course(ac, airport, ctx.player_approach);
             ac.freq_since = ctx.now;
         }
     }
@@ -1151,6 +1184,9 @@ impl PendingClearance {
     /// The radio call, ordered so a vector and an approach clearance can go in one call.
     pub fn to_clearances(&self) -> Vec<Clearance> {
         let mut out = Vec::new();
+        if self.go_around {
+            out.push(Clearance::GoAround);
+        }
         if let Some(h) = self.heading {
             out.push(Clearance::Heading(h));
         }
@@ -1176,9 +1212,6 @@ impl PendingClearance {
                 out.push(Clearance::ClearedVisual { runway, follow: self.follow.clone() })
             }
             None => {}
-        }
-        if self.go_around {
-            out.push(Clearance::GoAround);
         }
         if self.handoff_tower {
             out.push(Clearance::HandoffTower);

@@ -25,6 +25,8 @@ const VISUAL_TOO_HIGH_FT: f32 = 300.0;
 const VISUAL_OFF_CENTRELINE_NM: f32 = 0.2;
 /// Departures and go-arounds go to Approach above this height over the field.
 const CHECK_IN_AGL: f32 = 1500.0;
+/// A departure turns to Tower's heading above this height, feet.
+const TOWER_TURN_AGL: f32 = 400.0;
 /// The automated Tower clears arrivals to land inside this distance.
 const LANDING_CLEARANCE_NM: f32 = 8.0;
 /// Tower never launches a departure in front of an arrival closer than this,
@@ -286,6 +288,12 @@ impl World {
             self.vfr_airborne(index);
             return;
         }
+        // Tower's heading, flown once clear of the ground.
+        if ac.tower_heading.is_some() && ac.altitude >= self.airport.elevation + TOWER_TURN_AGL {
+            let ac = &mut self.aircraft[index];
+            ac.lateral = Lateral::Heading(ac.tower_heading.take().expect("checked"));
+        }
+        let ac = &self.aircraft[index];
         let staffing = self.config.staffing;
         let high = ac.altitude >= self.airport.elevation + CHECK_IN_AGL;
         if !staffing.local || staffing.approach {
@@ -310,9 +318,7 @@ impl World {
         let ac = &mut self.aircraft[index];
         ac.phase = Phase::Controlled;
         ac.freq_since = self.time;
-        if ac.flow == Flow::Departure && ac.route_index < ac.route.len() {
-            ac.lateral = Lateral::Route;
-        }
+        super::clearance::on_course(ac, &self.airport, self.config.staffing.approach);
         if !self.config.staffing.local {
             self.check_in(index, Position::Approach);
         }

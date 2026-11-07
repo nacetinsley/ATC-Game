@@ -271,6 +271,8 @@ pub struct Aircraft {
     pub cleared_takeoff: bool,
     /// Departures only: the runway end it will take off from.
     pub departure_end: Option<usize>,
+    /// A heading Tower gave before takeoff, flown once clear of the ground.
+    pub tower_heading: Option<f32>,
     /// Arrivals only: where it's parking.
     pub parking: Option<usize>,
     /// Sim time it was last handed to a new controller, for missed-handoff checks.
@@ -344,6 +346,7 @@ impl Aircraft {
             cleared_to_land: false,
             cleared_takeoff: false,
             departure_end: None,
+            tower_heading: None,
             parking: None,
             freq_since: 0.0,
             handoff_flagged: false,
@@ -375,6 +378,7 @@ impl Aircraft {
         use super::mistakes::SlipKind;
         match (self.slip.as_ref().map(|s| &s.kind), self.lateral) {
             (Some(SlipKind::Heading { assigned, .. }), _) => Some(*assigned),
+            _ if self.tower_heading.is_some() => self.tower_heading,
             (_, Lateral::Heading(h)) => Some(h),
             _ => None,
         }

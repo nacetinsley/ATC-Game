@@ -9,12 +9,12 @@
 //! a combined position the player is both ends, and two automated positions
 //! agree silently, as they always have.
 
-use super::aircraft::{Aircraft, Flow, Phase};
+use super::aircraft::{Aircraft, Flow, Lateral, Phase};
 use super::clearance::spoken_runway;
 use super::positions::Position;
 use super::replay::Action;
 use super::scoring::SimEvent;
-use super::units::vec_heading;
+use super::units::{format_heading, heading_diff, vec_heading};
 use super::{Speaker, World};
 
 /// An automated controller answers the landline after this long, seconds.
@@ -218,10 +218,19 @@ impl World {
     }
 
     /// Tower's call to Approach about a go-around.
-    fn go_around_text(&self, end: usize, callsign: &str) -> String {
+    fn go_around_text(&self, end: usize, id: u32) -> String {
+        let callsign = self.callsign(id);
         let feet = self.airport.go_around_altitude as i32;
         let altitude = if feet >= 1000 { format!("{},{:03}", feet / 1000, feet % 1000) } else { feet.to_string() };
-        format!("go-around {callsign}, runway {}, runway heading, {altitude}.", self.airport.runways[end].id)
+        let runway = &self.airport.runways[end];
+        // A heading Tower gave it, or straight out.
+        let heading = match self.find(id).map(|a| a.lateral) {
+            Some(Lateral::Heading(h)) if heading_diff(runway.heading, h).abs() > 1.0 => {
+                format!("heading {}", format_heading(self.airport.to_magnetic(h)))
+            }
+            _ => "runway heading".to_string(),
+        };
+        format!("go-around {callsign}, runway {}, {heading}, {altitude}.", runway.id)
     }
 
     /// The player, on Local, still has to tell Approach about this go-around.
@@ -336,7 +345,7 @@ impl World {
             CoordKind::Release { end } => {
                 format!("request release {callsign}, runway {}.", self.airport.runways[end].id)
             }
-            CoordKind::GoAround { end } => self.go_around_text(end, &callsign),
+            CoordKind::GoAround { end } => self.go_around_text(end, id),
         };
         self.landline(from, to, text);
         if self.config.staffing.works(to) {
@@ -562,7 +571,7 @@ impl World {
                             format!("{callsign} still holding short runway {}.", self.runway_name(runway))
                         }
                         CoordKind::Release { .. } => format!("{callsign} still waiting for release."),
-                        CoordKind::GoAround { end } => self.go_around_text(end, &callsign),
+                        CoordKind::GoAround { end } => self.go_around_text(end, c.aircraft),
                     };
                     let item = &mut self.coordination[index];
                     item.state = CoordState::Pending;
