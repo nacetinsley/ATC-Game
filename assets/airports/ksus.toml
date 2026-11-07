@@ -167,6 +167,11 @@ x = 19.0711
 y = 13.2355
 
 [[fixes]]
+name = "DTOWN"
+x = -6.0364
+y = -1.4737
+
+[[fixes]]
 name = "DWEES"
 x = -2.5324
 y = -4.8385
@@ -195,6 +200,16 @@ y = -18.27
 name = "EXESS"
 x = -11.4455
 y = -2.1598
+
+[[fixes]]
+name = "FASHE"
+x = 18.3342
+y = 28.2932
+
+[[fixes]]
+name = "FAVOG"
+x = 5.6135
+y = 0.9982
 
 [[fixes]]
 name = "FTZ"
@@ -247,6 +262,11 @@ x = -0.5672
 y = -87.824
 
 [[fixes]]
+name = "PAMUW"
+x = 4.2149
+y = 1.173
+
+[[fixes]]
 name = "PATEY"
 x = 13
 y = -9.2283
@@ -255,6 +275,11 @@ y = -9.2283
 name = "PLESS"
 x = 79.1241
 y = -51.1523
+
+[[fixes]]
+name = "RAPCO"
+x = -3.4813
+y = -0.9287
 
 [[fixes]]
 name = "SAGZA"
@@ -270,6 +295,11 @@ y = -27.9757
 name = "SEDDN"
 x = -14.6393
 y = 29.462
+
+[[fixes]]
+name = "SHEGZ"
+x = 3.8855
+y = 0.6337
 
 [[fixes]]
 name = "SLVER"
@@ -300,6 +330,11 @@ y = -30.4827
 name = "WEIZZ"
 x = 34.3604
 y = 29.2015
+
+[[fixes]]
+name = "WIDNR"
+x = -5.5833
+y = -0.9047
 
 [[stars]]
 name = "BUUDD3"
@@ -481,6 +516,38 @@ inbound = 258.2
 turns = "right"
 leg_nm = 4
 altitude = 4000
+
+[[approaches]]
+runway = "08L"
+name = "RNAV (GPS) RWY 08L"
+fixes = ["EXESS", "WIDNR"]
+altitudes = [3000, 2100]
+glidepath_deg = 3
+transitions = [["DERDF", "EXESS"], ["FTZ", "EXESS"]]
+
+[[approaches]]
+runway = "08R"
+name = "RNAV (GPS) RWY 08R"
+fixes = ["JOBRK", "DTOWN", "RAPCO"]
+altitudes = [3000, 2400, 1540]
+glidepath_deg = 3
+transitions = [["DERDF", "JOBRK"], ["FTZ", "JOBRK"]]
+
+[[approaches]]
+runway = "26L"
+name = "RNAV (GPS) RWY 26L"
+fixes = ["CHADD", "FAVOG", "SHEGZ"]
+altitudes = [4000, 2100, 1540]
+glidepath_deg = 3
+transitions = [["EMKAA", "CHADD"], ["FASHE", "CSX", "CHADD"]]
+
+[[approaches]]
+runway = "26R"
+name = "RNAV (GPS) RWY 26R"
+fixes = ["KORNN", "PAMUW"]
+altitudes = [4000, 2100]
+glidepath_deg = 3.5
+transitions = [["EMKAA", "KORNN"], ["FASHE", "CSX", "KORNN"]]
 
 [[mva]]
 altitude = 2000

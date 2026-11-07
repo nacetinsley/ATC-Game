@@ -21,6 +21,9 @@ const SPEED_LIMIT_ALTITUDE: f32 = 10000.0;
 const SPEED_LIMIT: f32 = 250.0;
 /// Light aircraft get up to speed quicker than their cruise acceleration suggests.
 const LIGHT_ROLL_ACCEL: f32 = 3.0;
+/// On a visual approach a pilot will descend this much faster than usual to
+/// get down to the glidepath.
+const VISUAL_DESCENT_FACTOR: f32 = 1.3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flow {
@@ -215,6 +218,8 @@ pub enum Lateral {
     Localizer,
     /// Holding at a fix.
     Hold(super::holding::HoldState),
+    /// On a visual approach to this runway end: making its own way onto final.
+    Visual(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -245,6 +250,10 @@ pub struct Aircraft {
 
     /// Runway this aircraft is cleared to, once cleared.
     pub approach_runway: Option<usize>,
+    /// The approach it's cleared for, or last was.
+    pub approach: super::approach::ApproachKind,
+    /// On a visual approach following this aircraft: visual separation.
+    pub visual_follow: Option<u32>,
     pub on_glideslope: bool,
 
     pub spawn_time: f32,
@@ -322,6 +331,8 @@ impl Aircraft {
             route_index: 0,
             route_end_heading: None,
             approach_runway: None,
+            approach: super::approach::ApproachKind::Ils,
+            visual_follow: None,
             on_glideslope: false,
             spawn_time: 0.0,
             entered_sector: false,
@@ -499,7 +510,7 @@ impl Aircraft {
         if let Lateral::Hold(_) = self.lateral {
             speed = speed.min(super::holding::max_speed(self.altitude));
         }
-        if let (Lateral::Localizer, Some(rwy)) = (self.lateral, self.approach_runway) {
+        if let (Lateral::Localizer | Lateral::Visual(_), Some(rwy)) = (self.lateral, self.approach_runway) {
             let along = airport.runways[rwy].along(self.pos);
             let schedule = if along > 10.0 {
                 180.0
@@ -518,13 +529,25 @@ impl Aircraft {
         if self.on_glideslope
             && let Some(rwy) = self.approach_runway {
                 let along = airport.runways[rwy].along(self.pos);
-                let desired = airport.glideslope_altitude(rwy, along);
+                let desired = airport.approach_altitude(rwy, along, self.approach);
                 let limit = self.ty.descent_fpm * minutes;
                 let change = (desired - self.altitude).clamp(-limit, limit);
                 self.altitude += change;
                 self.vertical_speed = change / minutes;
                 return;
             }
+        // A visual approach: down toward the glidepath, steeper than usual if
+        // it has to be, but never climbing to meet it.
+        if let (Lateral::Visual(rwy), false) = (self.lateral, self.on_ground) {
+            let along = airport.runways[rwy].along(self.pos);
+            let path = airport.approach_altitude(rwy, along, self.approach);
+            self.target_altitude = self.target_altitude.min(self.altitude.max(path));
+            let limit = self.ty.descent_fpm * VISUAL_DESCENT_FACTOR * minutes;
+            let change = (path.min(self.altitude) - self.altitude).max(-limit);
+            self.altitude += change;
+            self.vertical_speed = change / minutes;
+            return;
+        }
 
         let diff = self.target_altitude - self.altitude;
         // Climb performance falls away with altitude.
@@ -537,6 +560,12 @@ impl Aircraft {
         let change = diff.clamp(-limit, limit);
         self.altitude += change;
         self.vertical_speed = change / minutes;
+    }
+
+    /// Forget the approach it was cleared for.
+    pub fn clear_approach(&mut self) {
+        self.approach = super::approach::ApproachKind::Ils;
+        self.visual_follow = None;
     }
 
     /// Abandon the approach: fly runway heading and climb to the published altitude.
@@ -553,6 +582,7 @@ impl Aircraft {
             self.on_glideslope = false;
             return;
         }
+        self.clear_approach();
         let course = self
             .approach_runway
             .map(|r| airport.runways[r].heading)

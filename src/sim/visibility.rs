@@ -4,6 +4,8 @@
 //! hold, go around at minimums, and in the end divert.
 
 use super::aircraft::{Aircraft, Flow, Landing, Phase, VfrIntent};
+use super::approach::ApproachKind;
+
 use super::mistakes::SlipKind;
 use super::performance::AircraftType;
 use super::scoring::{GoAroundReason, SimEvent};
@@ -36,9 +38,16 @@ pub fn lands_below_cat1(ac: &Aircraft) -> bool {
 }
 
 impl World {
-    /// Can an arrival of this type land in the weather now?
+    /// Can an arrival of this type land on the landing runway in the weather
+    /// now, by the approach the automated Approach would give it?
     pub(super) fn can_land(&self, ty: &AircraftType) -> bool {
-        ty.cat3 || !self.weather.sky.below_cat1()
+        let sky = self.weather.sky;
+        match self.default_approach(self.arrival_runway()) {
+            Some(ApproachKind::Ils) => ty.cat3 || !sky.below_cat1(),
+            Some(ApproachKind::Rnav) => !sky.below(super::approach::RNAV_CEILING_FT, super::approach::RNAV_VISIBILITY_SM),
+            Some(ApproachKind::Visual) => true,
+            None => false,
+        }
     }
 
     pub(super) fn run_visibility(&mut self) {
@@ -52,7 +61,7 @@ impl World {
         if sky.lvp() && self.config.staffing.local {
             self.protect_critical_area();
         }
-        self.run_weather_diversions(sky.below_cat1());
+        self.run_weather_diversions();
     }
 
     /// Cloud and visibility below VFR minimums: VFR departures that haven't
@@ -135,9 +144,11 @@ impl World {
         }
     }
 
-    /// At decision altitude in fog it can't land in: go around.
+    /// At decision altitude in weather below the minimums for its approach:
+    /// go around.
     pub(super) fn below_minimums(&self, index: usize) -> bool {
-        self.config.weather != WeatherKind::Good && self.weather.sky.below_cat1() && !lands_below_cat1(&self.aircraft[index])
+        let ac = &self.aircraft[index];
+        self.config.weather != WeatherKind::Good && self.below_approach_minimums(ac.approach, ac)
     }
 
     pub(super) fn minimums_go_around(&mut self, index: usize) {
@@ -151,12 +162,15 @@ impl World {
 
     /// Arrivals that can't land in the weather give up in the end and go to
     /// their alternate.
-    fn run_weather_diversions(&mut self, below: bool) {
+    fn run_weather_diversions(&mut self) {
         let now = self.time;
         let mut index = 0;
         while index < self.aircraft.len() {
+            let stuck = {
+                let ac = &self.aircraft[index];
+                ac.flow == Flow::Arrival && !ac.on_ground && ac.vfr.is_none() && !self.can_get_in(ac)
+            };
             let ac = &mut self.aircraft[index];
-            let stuck = below && ac.flow == Flow::Arrival && !ac.on_ground && ac.vfr.is_none() && !lands_below_cat1(ac);
             if !stuck {
                 ac.minimums_since = None;
                 index += 1;

@@ -11,6 +11,9 @@ const FIX_CAPTURE_NM: f32 = 1.5;
 /// Degrees of correction per mile off the localizer.
 const LOCALIZER_GAIN: f32 = 25.0;
 const LOCALIZER_MAX_CUT: f32 = 30.0;
+/// A visual approach joins final this share of its distance from the runway out.
+const VISUAL_JOIN_SHARE: f32 = 0.6;
+
 
 pub fn desired_heading(ac: &mut Aircraft, wind: Vec2, airport: &Airport, dt: f32) -> f32 {
     let tas = ac.tas();
@@ -60,7 +63,18 @@ pub fn desired_heading(ac: &mut Aircraft, wind: Vec2, airport: &Airport, dt: f32
             }
             None => ac.heading,
         },
+        Lateral::Visual(rwy) => {
+            let target = visual_join_point(ac.pos, &airport.runways[rwy]);
+            heading_for_track(vec_heading(target - ac.pos), tas, wind)
+        }
     }
+}
+
+/// Where a visual approach aims to join the final: some way out along the
+/// extended centreline, closer in the closer the aircraft already is.
+pub fn visual_join_point(pos: Vec2, runway: &Runway) -> Vec2 {
+    let out = (runway.threshold().distance(pos) * VISUAL_JOIN_SHARE).max(super::approach::VISUAL_MIN_NM);
+    runway.threshold() - super::units::heading_vec(runway.heading) * out
 }
 
 /// Should an aircraft cleared for the approach start turning onto the localizer now?

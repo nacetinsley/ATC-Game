@@ -296,9 +296,12 @@ impl World {
         let rwy = self.arrival_runway();
         let runway = self.airport.runways[rwy].clone();
         let pos = runway.threshold() - heading_vec(runway.heading) * FINAL_SPAWN_NM;
-        let altitude = self.airport.glideslope_altitude(rwy, FINAL_SPAWN_NM);
+        // The ILS, or the RNAV while it's out.
+        let approach = self.default_approach(rwy).unwrap_or_default();
+        let altitude = self.airport.approach_altitude(rwy, FINAL_SPAWN_NM, approach);
         let speed = ty.max_speed.min(180.0);
         let mut ac = Aircraft::new(id, callsign, Flow::Arrival, ty, pos, runway.heading, altitude, speed);
+        ac.approach = approach;
         ac.phase = Phase::TowerHandedOff;
         ac.lateral = Lateral::Localizer;
         ac.approach_runway = Some(rwy);

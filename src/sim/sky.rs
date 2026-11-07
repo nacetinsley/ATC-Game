@@ -32,7 +32,9 @@ impl Sky {
         self.ceiling.unwrap_or(NO_CEILING_FT)
     }
 
-    fn below(&self, ceiling: f32, visibility: f32) -> bool {
+    /// Is the ceiling (feet above the field) or visibility (SM) below these?
+    pub fn below(&self, ceiling: f32, visibility: f32) -> bool {
+
         self.ceiling_or_top() < ceiling || self.visibility < visibility
     }
 

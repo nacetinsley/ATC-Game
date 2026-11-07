@@ -161,6 +161,60 @@ class Procedures(unittest.TestCase):
         self.assertEqual([l["fix"] for l in sids[0]["legs"]], ["NEAR", "FAR"])
 
 
+R26L = [
+    "SUSAP KSUSK3FR26L  ACHADD 010CHADDK3PC0EE AR   HF                     25920040    + 04000     18000                 A JS   265231604",
+    "SUSAP KSUSK3FR26L  AEMKAA 010EMKAAK3EA0E  A    IF                                             18000                 A JS   265240909",
+    "SUSAP KSUSK3FR26L  AEMKAA 020CHADDK3PC0EE B 010TF                                 + 04000                           A JS   265252210",
+    "SUSAP KSUSK3FR26L  AFASHE 010FASHEK5EA0E       IF                                             18000                 A JS   265260909",
+    "SUSAP KSUSK3FR26L  AFASHE 020CSX  K3D 0V  A 010TF                                 + 04000                           A JS   265272210",
+    "SUSAP KSUSK3FR26L  AFASHE 030CHADDK3PC0EE B 010TF                                 + 04000                           A JS   265282210",
+    "SUSAP KSUSK3FR26L  R      010CHADDK3PC0E  I    IF                                 + 04000     18000                 A JS   265291310",
+    "SUSAP KSUSK3FR26L  R      020FAVOGK3PC1E  F 010TF                                 + 02100                 RW26L K3PGA JS   265302210",
+    "SUSAP KSUSK3FR26L  R      021SHEGZK3PC0E S  031TF                                 V 0154001540        -300          A JS   265322401",
+    "SUSAP KSUSK3FR26L  R      030RW26LK3PG0GY M 031TF                                   00517             -300          A JS   265332210",
+    "SUSAP KSUSK3FR26L  R      040         0  M     CA                     2591        + 00662                           A JS   265341604",
+    "SUSAP KSUSK3FR26L  R      050JOBRKK3PC0EY   010DF                                 + 03000                           A JS   265351903",
+    "SUSAP KSUSK3FR26L  R      060JOBRKK3PC0EE  R   HM                     07890040    + 03000                           A JS   265361604",
+]
+
+
+class Approaches(unittest.TestCase):
+    def fixes(self, far_iaf=False):
+        lat, lon = ORIGIN
+        near = lambda d: (lat, lon + d)
+        return {
+            ("PC", "CHADD", "K3"): near(0.2),
+            ("PC", "FAVOG", "K3"): near(0.1),
+            ("PC", "SHEGZ", "K3"): near(0.05),
+            ("EA", "EMKAA", "K3"): near(0.3),
+            # 3 degrees of longitude is well over 100 NM: outside the sector.
+            ("EA", "FASHE", "K5"): near(3.0 if far_iaf else 0.35),
+            ("D ", "CSX", "K3"): near(0.4),
+        }
+
+    def build(self, far_iaf=False):
+        legs = faa.legs_for(R26L, "F")
+        return faa.build_approaches(legs, self.fixes(far_iaf), ORIGIN, 40)
+
+    def test_final_segment_runs_from_the_intermediate_fix_to_the_runway(self):
+        (approach,) = self.build()
+        self.assertEqual(approach["runway"], "26L")
+        self.assertEqual(approach["name"], "RNAV (GPS) RWY 26L")
+        self.assertEqual([l["fix"] for l in approach["legs"]], ["CHADD", "FAVOG", "SHEGZ"])
+        self.assertEqual(approach["altitudes"], [4000.0, 2100.0, 1540.0])
+        self.assertAlmostEqual(approach["glidepath_deg"], 3.0)
+
+    def test_transitions_end_at_the_intermediate_fix_and_skip_the_hold(self):
+        (approach,) = self.build()
+        routes = [[l["fix"] for l in t] for t in approach["transitions"]]
+        # The CHADD "transition" is just its hold in lieu of a procedure turn.
+        self.assertEqual(routes, [["EMKAA", "CHADD"], ["FASHE", "CSX", "CHADD"]])
+
+    def test_transitions_from_outside_the_sector_are_left_out(self):
+        (approach,) = self.build(far_iaf=True)
+        self.assertEqual([t[0]["fix"] for t in approach["transitions"]], ["EMKAA"])
+
+
 MVA_XML = """<m xmlns:a="http://www.aixm.aero/schema/5.1" xmlns:g="http://www.opengis.net/gml/3.2">
 <a:Airspace><a:minimumLimit>2500</a:minimumLimit>
 <g:exterior><g:LinearRing><g:posList>-90.0 38.0 -89.0 38.0 -89.0 39.0</g:posList></g:LinearRing></g:exterior>

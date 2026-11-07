@@ -3,6 +3,7 @@
 //! isn't working.
 
 use super::aircraft::{Aircraft, Flow, Lateral, Phase};
+use super::approach::ApproachKind;
 use super::autopilot::should_capture_localizer;
 use super::clearance::{AT_NODE_NM, Clearance, PILOT_DELAY, issuer_for};
 use super::ground_map::GroundMap;
@@ -15,6 +16,12 @@ use super::{Speaker, World};
 pub const TOWER_HANDOFF_GATE_NM: f32 = 5.0;
 /// Tower checks the runway and landing clearance at this distance.
 pub(super) const RUNWAY_CHECK_NM: f32 = 1.0;
+/// A visual approach joins final closer in, so it can be with Tower later, NM.
+const VISUAL_HANDOFF_GATE_NM: f32 = 2.0;
+/// At the runway check, a visual approach this far above the glidepath or
+/// off the centreline is unstable.
+const VISUAL_TOO_HIGH_FT: f32 = 300.0;
+const VISUAL_OFF_CENTRELINE_NM: f32 = 0.2;
 /// Departures and go-arounds go to Approach above this height over the field.
 const CHECK_IN_AGL: f32 = 1500.0;
 /// The automated Tower clears arrivals to land inside this distance.
@@ -79,12 +86,31 @@ impl World {
                 _ => {}
             }
         }
+        self.space_visual_followers();
     }
+
 
     fn step_cleared(&mut self, index: usize) {
         let ac = &mut self.aircraft[index];
         let Some(rwy) = ac.approach_runway else { return };
         let runway = &self.airport.runways[rwy];
+        // On the RNAV's fixes, or just past the last of them: the autopilot
+        // drops out of route mode at the end of the route.
+        let faf = self.airport.rnav(rwy).and_then(|a| self.airport.fix_index(a.faf()));
+        let past_faf = faf.and_then(|f| ac.route.iter().position(|&r| r == f)).is_some_and(|i| ac.route_index > i);
+        if ac.approach == ApproachKind::Rnav && (ac.lateral == Lateral::Route || past_faf) {
+            self.step_rnav_fixes(index, rwy);
+            return;
+        }
+        if matches!(ac.lateral, Lateral::Visual(_)) {
+            if should_capture_localizer(ac, runway) {
+                ac.lateral = Lateral::Localizer;
+                ac.phase = Phase::Localizer;
+            } else if runway.along(ac.pos) < RUNWAY_CHECK_NM {
+                self.go_around(index, GoAroundReason::Unstable);
+            }
+            return;
+        }
         if should_capture_localizer(ac, runway) {
             ac.lateral = Lateral::Localizer;
             ac.phase = Phase::Localizer;
@@ -97,14 +123,51 @@ impl World {
         }
     }
 
+    /// On an RNAV approach from a fix: down to each fix's altitude in turn,
+    /// never climbing, and onto the final course once past the final
+    /// approach fix.
+    fn step_rnav_fixes(&mut self, index: usize, rwy: usize) {
+        let airport = &self.airport;
+        let ac = &mut self.aircraft[index];
+        let faf = airport.rnav(rwy).and_then(|a| airport.fix_index(a.faf()));
+        let past_faf = faf
+            .and_then(|f| ac.route.iter().position(|&r| r == f))
+            .is_none_or(|i| ac.route_index > i);
+        if past_faf {
+            ac.lateral = Lateral::Localizer;
+            ac.phase = Phase::Localizer;
+            return;
+        }
+        let Some(floor) = ac.active_fix().and_then(|f| airport.rnav_altitude(rwy, f)) else { return };
+        ac.target_altitude = ac.target_altitude.min(floor);
+    }
+
     fn step_final(&mut self, index: usize) {
         let ac = &self.aircraft[index];
         let Some(rwy) = ac.approach_runway else { return };
-        let along = self.airport.runways[rwy].along(ac.pos);
-        let gs_altitude = self.airport.glideslope_altitude(rwy, along);
+        let runway = &self.airport.runways[rwy];
+        let along = runway.along(ac.pos);
+        // Making its own way onto final, after the handoff to Tower.
+        if let Lateral::Visual(_) = ac.lateral {
+            if should_capture_localizer(ac, runway) {
+                self.aircraft[index].lateral = Lateral::Localizer;
+            } else if along < RUNWAY_CHECK_NM {
+                self.go_around(index, GoAroundReason::Unstable);
+                return;
+            }
+        }
+        let ac = &self.aircraft[index];
+        let gs_altitude = self.airport.approach_altitude(rwy, along, ac.approach);
         let phase = ac.phase;
         let on_glideslope = ac.on_glideslope;
-        let captures_glideslope = !on_glideslope && ac.altitude + 20.0 >= gs_altitude;
+        let joined = ac.lateral == Lateral::Localizer;
+        let visual = ac.approach == ApproachKind::Visual;
+        let captures_glideslope = (joined || !visual) && !on_glideslope && ac.altitude + 20.0 >= gs_altitude;
+        // Too high, or not lined up, on a visual: unstable.
+        let unstable_visual = visual
+            && (!joined
+                || ac.altitude > gs_altitude + VISUAL_TOO_HIGH_FT
+                || runway.cross(ac.pos).abs() > VISUAL_OFF_CENTRELINE_NM);
 
         if captures_glideslope {
             let ac = &mut self.aircraft[index];
@@ -115,7 +178,8 @@ impl World {
         }
 
         if phase != Phase::TowerHandedOff {
-            if along >= TOWER_HANDOFF_GATE_NM {
+            let gate = if visual { VISUAL_HANDOFF_GATE_NM } else { TOWER_HANDOFF_GATE_NM };
+            if along >= gate {
                 return;
             }
             let staffing = self.config.staffing;
@@ -135,7 +199,7 @@ impl World {
             return;
         }
         if along < RUNWAY_CHECK_NM {
-            if !(on_glideslope || captures_glideslope) {
+            if !(on_glideslope || captures_glideslope) || unstable_visual {
                 self.go_around(index, GoAroundReason::Unstable);
                 return;
             }

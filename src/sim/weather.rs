@@ -274,6 +274,12 @@ impl World {
         if let Some(closed) = self.closed_runway_name() {
             text += &format!(" Runway {closed} closed.");
         }
+        if let Some(end) = self.ils_outage.and_then(|o| o.end) {
+            text += &format!(" ILS runway {} out of service.", self.airport.runways[end].id);
+        }
+        if self.visual_weather() {
+            text += " Visual approaches in use.";
+        }
         text
     }
 

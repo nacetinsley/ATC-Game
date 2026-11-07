@@ -101,6 +101,8 @@ def parse_leg(line):
         "section": line[36:38],
         "path": line[47:49],
         "course": line[70:74].strip(),
+        "altitude": line[84:89].strip(),
+        "vertical_angle": line[102:106].strip(),
     }
 
 
@@ -195,10 +197,10 @@ def in_circle(point, radius):
     return math.hypot(*point) <= radius
 
 
-def dedupe_consecutive(items):
+def dedupe_consecutive(items, key=lambda item: item):
     out = []
     for item in items:
-        if not out or out[-1] != item:
+        if not out or key(out[-1]) != key(item):
             out.append(item)
     return out
 
@@ -261,6 +263,50 @@ def build_stars(legs, config_by_transition, variation):
                 heading = (int(final[-1]["course"]) / 10 + variation) % 360
             stars.append({"name": name, "config": config, "legs": route, "final_heading": heading})
     return stars
+
+
+def build_approaches(legs, fixes, origin, radius):
+    """RNAV (GPS) approaches: the final segment from the intermediate fix to
+    the runway, with each fix's at-or-above altitude and the glidepath, and
+    the transitions from initial approach fixes inside the sector."""
+    approaches = []
+    for name in dict.fromkeys(l["procedure"] for l in legs if l["procedure"].startswith("R")):
+        mine = [l for l in legs if l["procedure"] == name]
+        final = [l for l in mine if l["route_type"] == "R"]
+        runway_leg = next((l for l in final if l["fix"].startswith("RW")), None)
+        if runway_leg is None:
+            raise ImportError_(f"{name}: no runway fix in the final segment")
+        segment = final[: final.index(runway_leg)]
+        if not segment:
+            raise ImportError_(f"{name}: no fixes before the runway")
+        for leg in segment:
+            if not leg["altitude"].isdigit():
+                raise ImportError_(f"{name}: no altitude at {leg['fix']}")
+        angle = runway_leg["vertical_angle"]
+        glidepath = abs(int(angle)) / 100 if angle.lstrip("-").isdigit() else 3.0
+        intermediate = segment[0]["fix"]
+        transitions = []
+        for transition in dict.fromkeys(l["transition"] for l in mine if l["route_type"] == "A"):
+            route = dedupe_consecutive(
+                [l for l in mine if l["route_type"] == "A" and l["transition"] == transition],
+                key=lambda l: l["fix"],
+            )
+            names = [l["fix"] for l in route]
+            # A hold in lieu of a procedure turn at the intermediate fix is no route.
+            if len(names) < 2 or names[-1] != intermediate:
+                continue
+            if not in_circle(project(resolve(route[0], fixes), origin), radius):
+                continue
+            transitions.append(route)
+        approaches.append({
+            "runway": runway_leg["fix"][2:],
+            "name": f"RNAV (GPS) RWY {runway_leg['fix'][2:]}",
+            "legs": segment,
+            "altitudes": [float(l["altitude"]) for l in segment],
+            "glidepath_deg": glidepath,
+            "transitions": transitions,
+        })
+    return approaches
 
 
 def clip_to_sector(legs, fixes, origin, radius):
@@ -412,6 +458,13 @@ def render(data):
         for key in ("leg_minutes", "leg_nm", "altitude"):
             if key in hold:
                 out.append(f"{key} = {fmt(hold[key])}")
+    for approach in data.get("approaches", []):
+        out += ["", "[[approaches]]", f'runway = "{approach["runway"]}"', f'name = "{approach["name"]}"']
+        out.append(f"fixes = {toml_names(approach['fixes'])}")
+        out.append(f"altitudes = [{', '.join(fmt(a) for a in approach['altitudes'])}]")
+        out.append(f"glidepath_deg = {fmt(approach['glidepath_deg'])}")
+        if approach["transitions"]:
+            out.append("transitions = [" + ", ".join(toml_names(t) for t in approach["transitions"]) + "]")
     for area in data["mva"]:
         out += ["", "[[mva]]", f"altitude = {fmt(area['altitude'])}"]
         out.append(f"polygon = {toml_ring(area['polygon'])}")
@@ -490,6 +543,13 @@ def build(lines, nasr_lines, mva_root, overrides, airport_code, cycle, mva_descr
         for s in sids_raw
     ]
 
+    approaches = [
+        {"runway": a["runway"], "name": a["name"], "fixes": use(a["legs"]),
+         "altitudes": a["altitudes"], "glidepath_deg": a["glidepath_deg"],
+         "transitions": [use(t) for t in a["transitions"]]}
+        for a in build_approaches(legs_for(records, "F"), fixes, origin, radius)
+    ]
+
     # Published holds inside the sector, with their fixes.
     holds = []
     for hold in build_holds(records, variation):
@@ -564,6 +624,7 @@ def build(lines, nasr_lines, mva_root, overrides, airport_code, cycle, mva_descr
         "stars": stars,
         "sids": sids,
         "holds": holds,
+        "approaches": approaches,
         "mva": mva,
     }
 

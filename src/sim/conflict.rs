@@ -107,8 +107,37 @@ fn separation_applies(ac: &Aircraft, elevation: f32) -> bool {
         && !matches!(ac.phase, Phase::TowerHandedOff | Phase::TowerRelease | Phase::Rollout)
 }
 
-fn same_final(a: &Aircraft, b: &Aircraft) -> bool {
-    a.on_final() && b.on_final() && a.approach_runway == b.approach_runway
+/// How much lateral separation a pair needs between them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Needs {
+    /// None: spaced another way, or not at all.
+    Nothing,
+    /// The usual radar minimum, with conflict alerts.
+    Radar,
+    /// Established on dependent parallel finals: this diagonal, NM.
+    Diagonal(f32),
+}
+
+/// What separation applies between two aircraft both the player's to separate.
+fn needs(a: &Aircraft, b: &Aircraft, airport: &Airport) -> Needs {
+    // One following the other on a visual: the pilot keeps it apart.
+    if a.visual_follow == Some(b.id) || b.visual_follow == Some(a.id) {
+        return Needs::Nothing;
+    }
+    let (Some(ra), Some(rb), true) = (a.approach_runway, b.approach_runway, a.on_final() && b.on_final()) else {
+        return Needs::Radar;
+    };
+    // On the same final they're spaced by the wake rules instead.
+    if airport.same_lane(ra, rb) {
+        return Needs::Nothing;
+    }
+    match airport.parallel_minimum(ra, rb) {
+        Some(nm) => Needs::Diagonal(nm),
+        // Independent parallels.
+        None if airport.parallel(ra, rb) => Needs::Nothing,
+        // Finals that cross or converge.
+        None => Needs::Radar,
+    }
 }
 
 /// Is this aircraft low over terrain, on the player's watch?
@@ -117,6 +146,9 @@ pub fn is_below_mva(ac: &Aircraft, airport: &Airport) -> bool {
         && ac.vfr.is_none()
         && ac.msaw_armed
         && !ac.on_final()
+        // On a visual approach, or the published segment of an RNAV: the
+        // pilot keeps clear of terrain.
+        && (ac.phase != Phase::ClearedApproach || ac.approach == super::approach::ApproachKind::Ils)
         && !matches!(ac.phase, Phase::GoAround | Phase::TowerRelease | Phase::Rollout)
         // Without a radio it can't be given a safe altitude.
         && !ac.nordo()
@@ -159,21 +191,24 @@ impl World {
                     });
                 }
 
-                // Pairs on the same final are spaced by the wake rules instead.
                 // Two aircraft neither of which is talking to the player are
                 // someone else's problem: Center's, or an automated position's.
                 if !separation_applies(a, self.airport.elevation)
                     || !separation_applies(b, self.airport.elevation)
-                    || same_final(a, b)
                     || (!self.is_players(a) && !self.is_players(b))
                 {
                     continue;
                 }
+                let minimum = match needs(a, b, &self.airport) {
+                    Needs::Nothing => continue,
+                    Needs::Radar => SEPARATION_NM,
+                    Needs::Diagonal(nm) => nm,
+                };
 
                 let was_lost = self.alerts.separation.contains(&pair);
-                let lost = is_loss_of_separation(lateral, vertical)
+                let lost = (lateral < minimum && vertical < SEPARATION_FT)
                     || (was_lost
-                        && lateral < SEPARATION_NM + CLEAR_MARGIN_NM
+                        && lateral < minimum + CLEAR_MARGIN_NM
                         && vertical < SEPARATION_FT + CLEAR_MARGIN_FT);
                 if lost {
                     los.insert(pair);
@@ -185,7 +220,7 @@ impl World {
                             b: b.callsign.clone(),
                         });
                     }
-                } else if predicts_conflict(a, b) {
+                } else if minimum == SEPARATION_NM && predicts_conflict(a, b) {
                     stca.insert(pair);
                     if !self.alerts.conflict.contains(&pair) {
                         events.push(SimEvent::ConflictAlert {
@@ -237,18 +272,21 @@ impl World {
         self.alerts.terrain = active;
     }
 
-    /// Each IFR aircraft on final behind another on the same runway's final,
-    /// as (leader, follower, in-trail distance): indices into the aircraft.
+    /// Each IFR aircraft on final behind another on the same final, as
+    /// (leader, follower, in-trail distance): indices into the aircraft.
+    /// Parallels too close to fly side by side count as one final.
     fn final_pairs(&self) -> Vec<(usize, usize, f32)> {
         // Each runway's own final: after a runway change, the last arrivals
         // to the old runway still need spacing.
+        let airport = &self.airport;
+        let lane = |r: usize| (0..airport.runways.len()).find(|&o| airport.same_lane(o, r)).unwrap_or(r);
         let mut on_final: Vec<(usize, f32, usize)> = self
             .aircraft
             .iter()
             .enumerate()
             // VFR traffic self-spaces in the pattern, closer than IFR wake minima.
             .filter(|(_, a)| a.on_final() && a.vfr.is_none())
-            .filter_map(|(i, a)| a.approach_runway.map(|r| (r, self.airport.runways[r].along(a.pos), i)))
+            .filter_map(|(i, a)| a.approach_runway.map(|r| (lane(r), airport.runways[r].along(a.pos), i)))
             .collect();
         on_final.sort_by(|x, y| x.0.cmp(&y.0).then(x.1.total_cmp(&y.1)));
         on_final
@@ -265,7 +303,7 @@ impl World {
             .into_iter()
             .map(|(lead, follow, distance)| {
                 let (leader, follower) = (&self.aircraft[lead], &self.aircraft[follow]);
-                let required = wake_required_nm(leader.ty.wake, follower.ty.wake);
+                let required = self.in_trail_minimum(leader, follower);
                 // Closing speed, knots: the follower is faster than the leader.
                 let closing = follower.ground_speed() - leader.ground_speed();
                 let ahead = |seconds: f32| distance - closing.max(0.0) * seconds / SECONDS_PER_HOUR;
@@ -287,7 +325,7 @@ impl World {
         let mut go_arounds = Vec::new();
         for (lead, follow, gap) in self.final_pairs() {
             let (leader, follower) = (&self.aircraft[lead], &self.aircraft[follow]);
-            let required = wake_required_nm(leader.ty.wake, follower.ty.wake);
+            let required = self.in_trail_minimum(leader, follower);
             if gap < required {
                 let pair = pair_key(leader.id, follower.id);
                 active.insert(pair);
@@ -311,7 +349,18 @@ impl World {
         }
     }
 
+    /// The in-trail minimum on final: the wake or radar minimum, or for a
+    /// visual follower, the wake minimum only where one applies.
+    pub fn in_trail_minimum(&self, leader: &Aircraft, follower: &Aircraft) -> f32 {
+        if follower.visual_follow == Some(leader.id) {
+            self.visual_minimum(leader, follower)
+        } else {
+            wake_required_nm(leader.ty.wake, follower.ty.wake)
+        }
+    }
+
     pub(super) fn go_around(&mut self, index: usize, reason: GoAroundReason) {
+
         let ac = &mut self.aircraft[index];
         ac.start_go_around(&self.airport);
         let callsign = ac.callsign.clone();

@@ -2,6 +2,8 @@
 
 use super::aircraft::{Aircraft, Flow, Landing, Lateral, Leg, Phase, StripMark, Taxi, VfrIntent};
 use super::airspace::Airport;
+use super::approach::{ApproachFacts, ApproachKind, VISUAL_MIN_NM};
+
 use super::ground_map::GroundMap;
 use super::holding::{HoldSpec, HoldState};
 use super::positions::{Position, Staffing};
@@ -32,6 +34,12 @@ pub enum Clearance {
     DirectFix(usize),
     ResumeRoute,
     ClearedIls(usize),
+    /// The RNAV (GPS) approach to this runway end: from a published fix, or
+    /// on vectors to final.
+    ClearedRnav(usize),
+    /// A visual approach to this runway end, following traffic if there's
+    /// some: its id and the traffic call that names it.
+    ClearedVisual { runway: usize, follow: Option<(u32, String)> },
     GoAround,
     HandoffTower,
     HandoffCenter,
@@ -80,6 +88,8 @@ impl Clearance {
             | Clearance::DirectFix(_)
             | Clearance::ResumeRoute
             | Clearance::ClearedIls(_)
+            | Clearance::ClearedRnav(_)
+            | Clearance::ClearedVisual { .. }
             | Clearance::HandoffTower
             | Clearance::HandoffCenter
             | Clearance::Deviation => &[Approach],
@@ -201,6 +211,14 @@ pub fn phrase(clearance: &Clearance, ac: &Aircraft, airport: &Airport) -> String
         Clearance::DirectFix(f) => format!("direct {}", airport.fixes[*f].name),
         Clearance::ResumeRoute => "resume own navigation".into(),
         Clearance::ClearedIls(r) => format!("cleared ILS runway {}", airport.runways[*r].id),
+        Clearance::ClearedRnav(r) => format!("cleared RNAV runway {} approach", airport.runways[*r].id),
+        Clearance::ClearedVisual { runway, follow } => {
+            let cleared = format!("cleared visual approach runway {}", airport.runways[*runway].id);
+            match follow {
+                Some((_, traffic)) => format!("follow the {traffic}, {cleared}"),
+                None => cleared,
+            }
+        }
         Clearance::GoAround => "go around".into(),
         Clearance::HandoffTower => "contact tower".into(),
         Clearance::HandoffCenter => "contact center".into(),
@@ -283,14 +301,13 @@ fn hold_phrase(spec: &HoldSpec, airport: &Airport) -> String {
 /// What `apply` needs to know about the world.
 struct Context<'a> {
     airport: &'a Airport,
-    arrival_runway: usize,
     now: f32,
     /// For the pilot's own slips, decided from the seed.
     seed: u64,
     mistakes: super::mistakes::PilotMistakes,
     storms: &'a super::storms::Storms,
-    /// Fog below Category I minimums: only Category III aircraft can land.
-    below_cat1: bool,
+    /// The approaches on offer, and what this pilot can see.
+    approaches: ApproachFacts,
 }
 
 impl World {
@@ -396,12 +413,11 @@ impl World {
         }
         let staffing = self.config.staffing;
         let ctx = Context {
+            approaches: self.approach_facts(index, &call.clearances),
             airport: &self.airport,
-            arrival_runway: self.arrival_runway(),
             now: self.time,
             seed: self.config.seed,
             mistakes: self.config.mistakes,
-            below_cat1: self.sky().below_cat1(),
             storms: &self.storms,
         };
         let mut readback = Vec::new();
@@ -516,15 +532,19 @@ impl World {
     }
 }
 
-fn break_approach(ac: &mut Aircraft) {
+pub(super) fn break_approach(ac: &mut Aircraft) {
     if matches!(ac.phase, Phase::ClearedApproach | Phase::Localizer | Phase::Glideslope) {
         ac.phase = Phase::Controlled;
         ac.approach_runway = None;
         // Hold the altitude reached: the pilot stops descending on the glideslope.
-        if ac.on_glideslope {
+        if ac.on_glideslope || matches!(ac.lateral, Lateral::Visual(_)) {
             ac.target_altitude = ac.altitude;
         }
+        if matches!(ac.lateral, Lateral::Visual(_) | Lateral::Localizer) {
+            ac.lateral = Lateral::Heading(ac.heading.round());
+        }
         ac.on_glideslope = false;
+        ac.clear_approach();
     }
 }
 
@@ -661,16 +681,66 @@ fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), 
             break_approach(ac);
             ac.lateral = Lateral::Hold(HoldState::new(*spec));
         }
-        Clearance::ClearedIls(_) if matches!(ac.lateral, Lateral::Hold(_)) => {
+        Clearance::ClearedIls(_) | Clearance::ClearedRnav(_) | Clearance::ClearedVisual { .. }
+            if matches!(ac.lateral, Lateral::Hold(_)) =>
+        {
             return Err("in the hold, request vectors".into());
         }
         Clearance::ClearedIls(r) => {
-            check_ils(ac, *r, airport, ctx.arrival_runway)?;
-            if ctx.below_cat1 && !super::visibility::lands_below_cat1(ac) {
-                return Err("below our minimums, request holding".into());
+            check_approach(ac, *r, ApproachKind::Ils, ctx)?;
+            check_final(ac, *r, ApproachKind::Ils, airport)?;
+            ac.phase = Phase::ClearedApproach;
+            ac.approach_runway = Some(*r);
+            ac.approach = ApproachKind::Ils;
+            ac.visual_follow = None;
+        }
+        Clearance::ClearedRnav(r) => {
+            check_approach(ac, *r, ApproachKind::Rnav, ctx)?;
+            // Sent to one of the approach's fixes: it flies the rest of them.
+            match ac.active_fix().and_then(|f| airport.rnav_route_from(*r, f)) {
+                Some(route) => {
+                    ac.route = route;
+                    ac.route_index = 0;
+                    ac.route_end_heading = Some(airport.runways[*r].heading);
+                    ac.lateral = Lateral::Route;
+                }
+                None => check_final(ac, *r, ApproachKind::Rnav, airport)?,
             }
             ac.phase = Phase::ClearedApproach;
             ac.approach_runway = Some(*r);
+            ac.approach = ApproachKind::Rnav;
+            ac.visual_follow = None;
+        }
+        Clearance::ClearedVisual { runway, follow } => {
+            check_approach(ac, *runway, ApproachKind::Visual, ctx)?;
+            let facts = &ctx.approaches;
+            let leader = match follow {
+                Some((id, _)) => match facts.leaders.iter().find(|l| l.0 == *id) {
+                    Some(&(_, landing, true)) if landing == Some(*runway) => Some(*id),
+                    Some(&(_, Some(other), true)) => {
+                        return Err(format!("that traffic's landing {}", airport.runways[other].id));
+                    }
+                    _ => return Err("traffic not in sight".into()),
+                },
+                None => None,
+            };
+            if !facts.field_in_sight {
+                return Err("negative contact, field not in sight".into());
+            }
+            let rwy = &airport.runways[*runway];
+            let established = ac.on_final() && ac.approach_runway == Some(*runway);
+            if !established && (rwy.along(ac.pos) <= 0.0 || rwy.threshold().distance(ac.pos) < VISUAL_MIN_NM) {
+                return Err("too close in for that".into());
+            }
+            if !established {
+                ac.phase = Phase::ClearedApproach;
+                ac.lateral = Lateral::Visual(*runway);
+                ac.on_glideslope = false;
+                ac.deviation = None;
+            }
+            ac.approach_runway = Some(*runway);
+            ac.approach = ApproachKind::Visual;
+            ac.visual_follow = leader;
         }
         Clearance::GoAround => {
             let on_approach = matches!(
@@ -684,7 +754,8 @@ fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), 
             ac.start_go_around(airport);
         }
         Clearance::HandoffTower => {
-            if !matches!(ac.phase, Phase::Localizer | Phase::Glideslope) {
+            let visual = ac.phase == Phase::ClearedApproach && matches!(ac.lateral, Lateral::Visual(_));
+            if !matches!(ac.phase, Phase::Localizer | Phase::Glideslope) && !visual {
                 return Err("not established".into());
             }
             ac.phase = Phase::TowerHandedOff;
@@ -905,25 +976,36 @@ fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), 
     Ok(())
 }
 
-fn check_ils(
-    ac: &Aircraft,
-    rwy: usize,
-    airport: &Airport,
-    arrival_runway: usize,
-) -> Result<(), String> {
+/// An arrival, to a runway offering this approach, in weather it can fly it in.
+fn check_approach(ac: &Aircraft, rwy: usize, kind: ApproachKind, ctx: &Context) -> Result<(), String> {
     if ac.flow != Flow::Arrival {
         return Err("we're a departure".into());
     }
-    if rwy != arrival_runway {
-        return Err("that runway isn't landing".into());
+    if ac.on_ground {
+        return Err("we're on the ground".into());
     }
+    if let Some(reason) = ctx.approaches.refusal(kind, rwy, ctx.airport) {
+        return Err(reason);
+    }
+    if ctx.approaches.below(kind) {
+        return Err(match kind {
+            ApproachKind::Visual => "not in visual conditions".into(),
+            _ => "below our minimums, request holding".into(),
+        });
+    }
+    Ok(())
+}
+
+/// Placed to join the final course on vectors: far enough out, below the
+/// glidepath, and on a heading that will intercept.
+fn check_final(ac: &Aircraft, rwy: usize, kind: ApproachKind, airport: &Airport) -> Result<(), String> {
     let runway = &airport.runways[rwy];
     let along = runway.along(ac.pos);
     if !(MIN_APPROACH_CLEARANCE_NM..=MAX_APPROACH_CLEARANCE_NM).contains(&along) {
         return Err("position not suitable for the approach".into());
     }
-    if ac.altitude > airport.glideslope_altitude(rwy, along) + ABOVE_GLIDESLOPE_TOLERANCE {
-        return Err("above the glideslope".into());
+    if ac.altitude > airport.approach_altitude(rwy, along, kind) + ABOVE_GLIDESLOPE_TOLERANCE {
+        return Err(if kind == ApproachKind::Ils { "above the glideslope" } else { "above the glidepath" }.into());
     }
     let heading = match ac.lateral {
         Lateral::Heading(h) => h,
@@ -950,7 +1032,10 @@ pub struct PendingClearance {
     pub direct: Option<usize>,
     pub resume: bool,
     pub hold: Option<HoldSpec>,
-    pub ils: Option<usize>,
+    /// The approach clearance: which kind, to which runway end.
+    pub approach: Option<(ApproachKind, usize)>,
+    /// Traffic to follow on a visual approach, with the call that names it.
+    pub follow: Option<(u32, String)>,
     pub go_around: bool,
     pub handoff_tower: bool,
     pub handoff_center: bool,
@@ -1043,8 +1128,13 @@ impl PendingClearance {
         if let Some(s) = self.speed {
             out.push(Clearance::Speed(s));
         }
-        if let Some(r) = self.ils {
-            out.push(Clearance::ClearedIls(r));
+        match self.approach {
+            Some((ApproachKind::Ils, r)) => out.push(Clearance::ClearedIls(r)),
+            Some((ApproachKind::Rnav, r)) => out.push(Clearance::ClearedRnav(r)),
+            Some((ApproachKind::Visual, runway)) => {
+                out.push(Clearance::ClearedVisual { runway, follow: self.follow.clone() })
+            }
+            None => {}
         }
         if self.go_around {
             out.push(Clearance::GoAround);
@@ -1104,7 +1194,11 @@ mod tests {
 
     #[test]
     fn heading_is_ordered_before_the_approach_clearance() {
-        let p = PendingClearance { heading: Some(240.0), ils: Some(0), ..Default::default() };
+        let p = PendingClearance {
+            heading: Some(240.0),
+            approach: Some((ApproachKind::Ils, 0)),
+            ..Default::default()
+        };
         assert_eq!(p.to_clearances(), vec![Clearance::Heading(240.0), Clearance::ClearedIls(0)]);
     }
 

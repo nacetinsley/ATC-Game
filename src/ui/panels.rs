@@ -122,7 +122,7 @@ fn draw_status(world: &World, ui: &UiState, x: f32) {
         DIM,
     );
     // An announced runway change, a closed runway, or poor weather takes the bottom line.
-    match world.runway_change_line().or_else(|| world.closure_line()).or_else(|| world.sky_line()) {
+    match world.runway_change_line().or_else(|| world.closure_line()).or_else(|| world.ils_line()).or_else(|| world.sky_line()) {
         Some(change) => label(&change, left, 84.0, 18.0, SYSTEM),
         None => label(
             &format!(
@@ -211,8 +211,8 @@ fn draw_clearance(world: &mut World, ui: &mut UiState, x: f32, top: f32) {
     if button(handoff, left, y, action_w, bh) {
         ui.handoff(world);
     }
-    if button("ILS C", left + action_w + 6.0, y, action_w, bh) {
-        ui.clear_for_ils(world);
+    if button("Appr C", left + action_w + 6.0, y, action_w, bh) {
+        ui.cycle_approach(world);
     }
     if button("Route R", left + (action_w + 6.0) * 2.0, y, action_w, bh) {
         ui.pending.set_resume();

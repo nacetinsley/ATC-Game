@@ -377,7 +377,7 @@ fn strike_all_but_last(pens: &mut [Pen]) {
 /// - 14 local: `L` cleared to land and `MA` missed approach (JO 7110.65 TBL
 ///   2-3-11 and 2-3-12), `T→` cleared for takeoff, `LUAW`, `TG`, `OPT`,
 ///   and VFR pattern marks;
-/// - 15 approach: `ILS` cleared for the approach;
+/// - 15 approach: `ILS`, `RNAV`, `VIS` or `VIS FOL`, the approach cleared;
 /// - 16 time of the block 14 mark; 17 handoff, struck once taken;
 /// - 18 what it's waiting for from you (`World::awaiting`).
 pub fn marks(
@@ -466,6 +466,10 @@ pub fn marks(
                 revision += 1;
             }
             Clearance::ClearedIls(_) => approach.push(Pen::hand("ILS")),
+            Clearance::ClearedRnav(_) => approach.push(Pen::hand("RNAV")),
+            Clearance::ClearedVisual { follow, .. } => {
+                approach.push(Pen::hand(if follow.is_some() { "VIS FOL" } else { "VIS" }))
+            }
             Clearance::GoAround => local.push((Pen::hand("MA"), mark.time)),
             Clearance::HandoffTower => handoff = Some((Position::Local, Pen::hand("TWR"))),
             Clearance::HandoffCenter => handoff = Some((Position::Center, Pen::hand("CTR"))),
@@ -1382,7 +1386,7 @@ fn field_tip(world: &World, ac: &Aircraft, printed: &Printed, m: &Marks, field: 
                     now,
                     "L cleared to land. T→ cleared for takeoff. LUAW line up and wait. MA missed approach. TG touch-and-go. OPT the option. DW, EXT, B and FOL pattern instructions.",
                 ),
-                5 => ("Block 15: approach", now, "ILS: cleared for the approach."),
+                5 => ("Block 15: approach", now, "The approach it's cleared for: ILS, RNAV, or VIS for a visual, VIS FOL following traffic."),
                 6 => ("Block 16: time", now, "When the block 14 mark was made, UTC."),
                 7 => (
                     "Block 17: handoff",

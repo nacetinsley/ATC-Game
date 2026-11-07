@@ -1,6 +1,7 @@
 //! Headless simulation. Nothing in here may depend on macroquad.
 
 pub mod aircraft;
+pub mod approach;
 pub mod airspace;
 pub mod autopilot;
 pub mod awaiting;
@@ -175,6 +176,8 @@ pub struct World {
     pub storms: storms::Storms,
     /// Emergency state: closed runways, aircraft being brought back.
     pub emergencies: emergency::Emergencies,
+    /// An ILS failure this shift, if there is one.
+    pub ils_outage: Option<approach::IlsOutage>,
 
     config: WorldConfig,
     config_index: usize,
@@ -217,6 +220,7 @@ impl World {
             ended: None,
             weather,
             emergencies: emergency::Emergencies::new(config.seed),
+            ils_outage: approach::IlsOutage::roll(config.seed, config.shift_seconds, config.weather),
             config,
             config_index,
             rng,
@@ -380,7 +384,9 @@ impl World {
         self.ticks += 1;
 
         self.run_weather();
+        self.run_ils_outage();
         self.run_visibility();
+
         self.run_radio();
         if self.config.traffic {
             self.run_traffic();

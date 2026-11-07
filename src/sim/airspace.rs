@@ -140,6 +140,35 @@ pub struct Sid {
     pub exit_altitude: f32,
 }
 
+/// A published RNAV (GPS) approach to one runway end. The ILS is implied by
+/// `Runway::ils`; this is the other instrument approach.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Approach {
+    /// The runway end, such as "26L".
+    pub runway: String,
+    /// "RNAV (GPS) RWY 26L".
+    pub name: String,
+    /// The intermediate fix, the final approach fix, then any step-down fixes,
+    /// in order. The runway threshold follows the last.
+    pub fixes: Vec<String>,
+    /// At or above each fix, feet MSL.
+    pub altitudes: Vec<f32>,
+    /// The final approach's vertical path, degrees.
+    #[serde(default = "default_glideslope")]
+    pub glidepath_deg: f32,
+    /// Routes from each initial approach fix to the intermediate fix,
+    /// both ends included.
+    #[serde(default)]
+    pub transitions: Vec<Vec<String>>,
+}
+
+impl Approach {
+    /// The final approach fix: the second fix, after the intermediate fix.
+    pub fn faf(&self) -> &str {
+        self.fixes.get(1).unwrap_or(&self.fixes[0])
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct MvaArea {
     pub altitude: f32,
@@ -235,6 +264,9 @@ pub struct Airport {
     /// Published holding patterns.
     #[serde(default)]
     pub holds: Vec<super::holding::HoldData>,
+    /// Published RNAV approaches.
+    #[serde(default)]
+    pub approaches: Vec<Approach>,
     /// Taxiways, hold lines and parking, for the tower positions.
     pub ground: Option<GroundData>,
     /// `ground` built into a routing graph at load.
@@ -324,6 +356,27 @@ impl Airport {
                 }
             }
         }
+        for approach in &self.approaches {
+            if self.runway_index(&approach.runway).is_none() {
+                return Err(format!("{}: unknown runway {}", approach.name, approach.runway));
+            }
+            if approach.fixes.is_empty() || approach.fixes.len() != approach.altitudes.len() {
+                return Err(format!("{}: fixes and altitudes must match and not be empty", approach.name));
+            }
+            if self.approaches.iter().filter(|a| a.runway == approach.runway).count() > 1 {
+                return Err(format!("two RNAV approaches to runway {}", approach.runway));
+            }
+            for transition in &approach.transitions {
+                if transition.last() != approach.fixes.first() {
+                    return Err(format!("{}: a transition must end at the intermediate fix", approach.name));
+                }
+            }
+            for name in approach.fixes.iter().chain(approach.transitions.iter().flatten()) {
+                if self.fix_index(name).is_none() {
+                    return Err(format!("{}: unknown fix {name}", approach.name));
+                }
+            }
+        }
         for hold in &self.holds {
             if self.fix_index(&hold.fix).is_none() {
                 return Err(format!("hold at unknown fix {}", hold.fix));
@@ -393,9 +446,27 @@ impl Airport {
 
     /// Altitude of a runway's glideslope at a distance from its threshold.
     pub fn glideslope_altitude(&self, rwy: usize, along: f32) -> f32 {
+        self.glidepath_altitude(rwy, along, self.runways[rwy].glideslope_deg)
+    }
+
+    /// Altitude of a path at `deg` to a runway's threshold crossing height.
+    pub fn glidepath_altitude(&self, rwy: usize, along: f32, deg: f32) -> f32 {
         let runway = &self.runways[rwy];
-        let slope = runway.glideslope_deg.to_radians().tan();
+        let slope = deg.to_radians().tan();
         self.elevation + runway.threshold_crossing_height + along.max(0.0) * FT_PER_NM * slope
+    }
+
+    /// The RNAV approach to a runway end, if one is published.
+    pub fn rnav(&self, end: usize) -> Option<&Approach> {
+        let id = &self.runways.get(end)?.id;
+        self.approaches.iter().find(|a| &a.runway == id)
+    }
+
+    /// Distance between two runway ends' centrelines, feet: how far apart
+    /// parallel finals are.
+    pub fn centreline_spacing_ft(&self, a: usize, b: usize) -> f32 {
+        let (ra, rb) = (&self.runways[a], &self.runways[b]);
+        ra.cross(rb.threshold()).abs() * FT_PER_NM
     }
 }
 

@@ -203,6 +203,41 @@ name = "OAKEN"
 x = -14.0
 y = 30.0
 
+# RNAV approach fixes: the intermediate fix 10 NM out and the final
+# approach fix 5 NM out on each runway's extended centreline.
+[[fixes]]
+name = "SOLAN"
+x = 11.5
+y = -0.6
+[[fixes]]
+name = "TELLO"
+x = 6.5
+y = -0.6
+[[fixes]]
+name = "ROWAN"
+x = 11.5
+y = 0.6
+[[fixes]]
+name = "QUILL"
+x = 6.5
+y = 0.6
+[[fixes]]
+name = "VESPA"
+x = -11.5
+y = -0.6
+[[fixes]]
+name = "UMBER"
+x = -6.5
+y = -0.6
+[[fixes]]
+name = "WILLO"
+x = -11.5
+y = 0.6
+[[fixes]]
+name = "YARRO"
+x = -6.5
+y = 0.6
+
 # STARs end on a downwind fix; the player vectors them from there.
 [[stars]]
 config = "West"
@@ -264,6 +299,33 @@ exit_altitude = 13000.0
 config = "East"
 fixes = ["MAPLE", "OAKEN", "RENDL"]
 exit_altitude = 15000.0
+
+# RNAV (GPS) approaches, with transitions from the STARs' downwind fixes. The
+# final approach fix sits on the 3 degree path.
+[[approaches]]
+runway = "27L"
+name = "RNAV (GPS) RWY 27L"
+fixes = ["SOLAN", "TELLO"]
+altitudes = [3000, 1700]
+transitions = [["BRICK", "SOLAN"], ["ALDER", "SOLAN"]]
+[[approaches]]
+runway = "27R"
+name = "RNAV (GPS) RWY 27R"
+fixes = ["ROWAN", "QUILL"]
+altitudes = [3000, 1700]
+transitions = [["ALDER", "ROWAN"], ["BRICK", "ROWAN"]]
+[[approaches]]
+runway = "09R"
+name = "RNAV (GPS) RWY 09R"
+fixes = ["VESPA", "UMBER"]
+altitudes = [3000, 1700]
+transitions = [["FINCH", "VESPA"], ["ELMOR", "VESPA"]]
+[[approaches]]
+runway = "09L"
+name = "RNAV (GPS) RWY 09L"
+fixes = ["WILLO", "YARRO"]
+altitudes = [3000, 1700]
+transitions = [["ELMOR", "WILLO"], ["FINCH", "WILLO"]]
 
 # Holding patterns at the feeder fixes, on the arrival course from each gate,
 # with the racetrack on the gate side. The gates themselves sit on the sector

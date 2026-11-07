@@ -67,6 +67,8 @@ pub enum GoAroundReason {
     Weather,
     /// Something on the runway in low visibility upset the ILS signal.
     IlsInterference,
+    /// The ILS failed with it on short final: nobody's fault.
+    IlsOutage,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -288,7 +290,10 @@ impl Score {
             SimEvent::GoAround { callsign, reason } => {
                 self.go_arounds += 1;
                 // A late handoff is scored by its own event, so don't charge twice.
-                let points = if matches!(reason, GoAroundReason::LateHandoff | GoAroundReason::Weather) {
+                let points = if matches!(
+                    reason,
+                    GoAroundReason::LateHandoff | GoAroundReason::Weather | GoAroundReason::IlsOutage
+                ) {
                     0
                 } else {
                     PENALTY_GO_AROUND
@@ -302,6 +307,8 @@ impl Score {
                     GoAroundReason::NoLandingClearance => "no landing clearance",
                     GoAroundReason::Weather => "below minimums",
                     GoAroundReason::IlsInterference => "ILS critical area not protected",
+                    GoAroundReason::IlsOutage => "ILS out of service",
+
                 };
                 self.incident(time, format!("{callsign} went around: {why}"), points);
             }

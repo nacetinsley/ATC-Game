@@ -9,6 +9,7 @@ use crate::sim::aircraft::{Aircraft, Flow, Lateral, Phase};
 use crate::sim::conflict::{Atpa, AtpaStatus};
 use crate::sim::performance::WakeCategory;
 use crate::sim::airspace::Airport;
+use crate::sim::approach::ApproachKind;
 use crate::sim::holding::{self, HoldSpec};
 use crate::sim::positions::Position;
 use crate::sim::units::{format_heading, heading_vec, tas_from_ias};
@@ -292,22 +293,59 @@ fn draw_map(airport: &Airport, world: &World, ui: &UiState, inset: bool) {
         draw_line(a.x, a.y, b.x, b.y, 2.5, RUNWAY);
     }
 
-    // Extended centerline with a tick every mile and a longer one every five.
-    let runway = &airport.runways[world.arrival_runway()];
-    let outbound = -heading_vec(runway.heading);
-    let across = glam::Vec2::new(outbound.y, -outbound.x);
-    let a = ui.camera.to_screen(runway.threshold());
-    let b = ui.camera.to_screen(runway.threshold() + outbound * CENTERLINE_NM);
-    draw_dashed(a, b, CENTERLINE);
-    for mile in 1..=CENTERLINE_NM as i32 {
-        let half = if mile % 5 == 0 { 0.6 } else { 0.25 };
-        let at = runway.threshold() + outbound * mile as f32;
-        let p = ui.camera.to_screen(at - across * half);
-        let q = ui.camera.to_screen(at + across * half);
-        draw_line(p.x, p.y, q.x, q.y, 1.0, CENTERLINE);
+    // Each landing runway's extended centerline. One with a working ILS gets
+    // a tick every mile and a longer one every five; RNAV and visual only,
+    // just the dashes.
+    for end in world.landing_runways() {
+        let runway = &airport.runways[end];
+        let outbound = -heading_vec(runway.heading);
+        let across = glam::Vec2::new(outbound.y, -outbound.x);
+        let a = ui.camera.to_screen(runway.threshold());
+        let b = ui.camera.to_screen(runway.threshold() + outbound * CENTERLINE_NM);
+        draw_dashed(a, b, CENTERLINE);
+        if world.offers(end, ApproachKind::Ils) {
+            for mile in 1..=CENTERLINE_NM as i32 {
+                let half = if mile % 5 == 0 { 0.6 } else { 0.25 };
+                let at = runway.threshold() + outbound * mile as f32;
+                let p = ui.camera.to_screen(at - across * half);
+                let q = ui.camera.to_screen(at + across * half);
+                draw_line(p.x, p.y, q.x, q.y, 1.0, CENTERLINE);
+            }
+        }
+        let label = ui.camera.to_screen(runway.threshold() + outbound * (CENTERLINE_NM + 1.0));
+        draw_text(&runway.id, label.x, label.y, 16.0, CENTERLINE);
     }
-    let label = ui.camera.to_screen(runway.threshold() + outbound * (CENTERLINE_NM + 1.0));
-    draw_text(&runway.id, label.x, label.y, 16.0, CENTERLINE);
+}
+
+/// The RNAV approach an aircraft is cleared for, or about to be: the fixes
+/// still to fly, then the runway.
+fn draw_rnav_path(world: &World, ui: &UiState, ac: &Aircraft, start: Vec2) {
+    let airport = &world.airport;
+    let (end, fixes) = match ui.pending.approach {
+        Some((ApproachKind::Rnav, end)) => {
+            let fix = ui.pending.direct.or_else(|| ui.pending.heading.is_none().then(|| ac.active_fix()).flatten());
+            match fix.and_then(|f| airport.rnav_route_from(end, f)) {
+                Some(route) => (end, route),
+                None => (end, Vec::new()),
+            }
+        }
+        None if ac.approach == ApproachKind::Rnav && ac.phase == Phase::ClearedApproach => {
+            let Some(end) = ac.approach_runway else { return };
+            let rest = if ac.lateral == Lateral::Route { ac.route[ac.route_index.min(ac.route.len())..].to_vec() } else { Vec::new() };
+            (end, rest)
+        }
+        _ => return,
+    };
+    // On vectors there's no path to show: the final course is drawn already.
+    if fixes.is_empty() {
+        return;
+    }
+    let mut points = vec![start];
+    points.extend(fixes.iter().map(|&f| ui.camera.to_screen(airport.fixes[f].pos())));
+    points.push(ui.camera.to_screen(airport.runways[end].threshold()));
+    for pair in points.windows(2) {
+        draw_dashed(pair[0], pair[1], GHOST);
+    }
 }
 
 /// A holding pattern's racetrack, for an aircraft at `tas` and `altitude`.
@@ -371,7 +409,7 @@ fn scratchpad(world: &World, ac: &Aircraft) -> Option<(String, bool)> {
             if ac.approach_runway.is_some() || ac.phase != Phase::TowerHandedOff =>
         {
             let id = &airport.runways[ac.approach_runway.unwrap_or(world.arrival_runway())].id;
-            Some((format!("I{id}"), false))
+            Some((format!("{}{id}", ac.approach.letter()), false))
         }
         Phase::GoAround => Some(("GA".into(), false)),
         Phase::Controlled | Phase::OfferedToCenter => match ac.assigned_heading() {
@@ -627,6 +665,7 @@ fn draw_pending(world: &World, ui: &UiState) {
     let start = ui.camera.to_screen(track.pos);
 
     let Some(ac) = world.find(id) else { return };
+    draw_rnav_path(world, ui, ac, start);
     // Its hold, or the one about to be given.
     if let Lateral::Hold(state) = ac.lateral {
         draw_racetrack(ui, &world.airport, &state.spec, ac.tas(), ac.altitude, HOLD_BUSY);
@@ -704,7 +743,11 @@ fn draw_status_area(world: &World, ui: &UiState) {
     if let Some(closed) = world.closure_line() {
         line(&closed, WARNING);
     }
+    if let Some(ils) = world.ils_line() {
+        line(&ils, WARNING);
+    }
     let range = ui.camera.range_nm();
+
     let paused = if ui.paused { "  PAUSED" } else { "" };
     line(&format!("RNG {range:.0}  PTL 1.0  x{:.0}{paused}", ui.rate), SSA);
 

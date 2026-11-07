@@ -3,7 +3,7 @@
 A 2D top-down air traffic control game written in Rust with
 [macroquad](https://macroquad.rs). Work a shift, an hour by default, as Approach, Tower,
 Ground or Clearance Delivery, or combine positions the way a real facility does when it's quiet.
-Vector arrivals onto the ILS, clear them to land, taxi them to the gate, and
+Vector arrivals onto the ILS, RNAV or a visual approach, clear them to land, taxi them to the gate, and
 get departures from their IFR clearance at the gate to their exit fix, all without losing
 separation or putting two aircraft on one runway.
 
@@ -16,7 +16,7 @@ reply "unable", and the scope shows only what radar sees on each sweep.
 | Airport | Data |
 |---|---|
 | **XHGT** Harrowgate International | Fictional. Two parallel runways, airline traffic that builds through the shift. |
-| **KSUS** Spirit of St. Louis | Real runways, STARs, SIDs, ILS approaches and minimum vectoring altitudes from FAA data. Business jets and general aviation at an estimated real-world rate. |
+| **KSUS** Spirit of St. Louis | Real runways, STARs, SIDs, ILS and RNAV (GPS) approaches and minimum vectoring altitudes from FAA data. Business jets and general aviation at an estimated real-world rate. |
 
 Choose the airport and your position on the start screen. Press D (or click
 the Difficulty box) to set how hard the shift is:
@@ -117,7 +117,7 @@ NVA101        line 1: callsign; * after it for VFR
   blinks until you accept).
 - **After the speed:** `H` heavy, `F` Boeing 757, `V` VFR, `HL` holding.
 - **The scratchpad** is filled in as a controller would:
-  - `I27L` once cleared for the ILS;
+  - `I27L`, `R27R` or `V27L` once cleared for the ILS, RNAV or a visual approach;
   - `H270` for an assigned heading;
   - the fix it's flying to, in three letters;
   - `EFC` near the hold's EFC time;
@@ -246,6 +246,46 @@ within 30 miles ("Thunderstorm 18 miles west, moving east").
   weather ahead".
 - **Automated controllers, and Center,** approve deviations on their own
   frequencies.
+
+## Approaches
+
+Press **C** to step through the approaches on offer, then Enter to send it.
+The order is ILS, RNAV and visual to the landing runway, then RNAV and
+visual to its parallel, and then none. The parallel is the departure runway,
+so arrivals there mix with departures, which the automated Tower fits in.
+Each landing runway's extended centreline is drawn on the scope. One with a
+working ILS has a tick every mile; RNAV and visual only, just the dashes.
+
+| Approach | How it's flown | Needs |
+|---|---|---|
+| **ILS** | Vectored to intercept the localizer within 30°, 6 to 35 miles out, below the glideslope. | A runway with an ILS that's working, and Category I weather (or a Category III aircraft below it). |
+| **RNAV (GPS)** | Two ways in. **Via a fix:** drag the aircraft to an initial, intermediate or final approach fix, then press C, and the RNAV through that fix comes first ("direct BRICK, cleared RNAV runway 27L approach"). It flies the published fixes, steps down to each fix's at-or-above altitude (never climbing), and joins the final course at the final approach fix. **On vectors:** the same intercept as the ILS, onto the RNAV final. The scope draws the fixes still to fly. | A published RNAV approach (KSUS from the FAA CIFP; XHGT has fictional ones). A 300 ft ceiling and 1 mile visibility. |
+| **Visual** | The pilot makes their own way onto final, joining closer in than an ILS allows. It descends steeply if it has to, and may go to Tower as soon as it's cleared (by 2 miles). Too high or not lined up at 1 mile is an unstable go-around. | Visibility of 3 miles or more, a ceiling 500 ft above the MVA, the field in sight (below the cloud and within the visibility, up to 12 miles), and at least 3 miles from the runway. |
+
+**Following traffic:** with an IFR arrival selected, Shift-click another
+arrival on an approach: "follow the B738 on final, cleared visual approach
+runway 27L". The pilot needs the traffic in sight: ahead of it, and within the
+visibility, up to 8 miles. Once it has it, the follower keeps its own
+spacing. That's **visual separation**: the pair is exempt from loss of
+separation and conflict alerts, though a near collision still counts. The
+follower slows when it closes within a mile of its minimum. That minimum is
+the wake turbulence minimum behind a heavy, or for a small behind a large,
+and otherwise 2 miles.
+
+**Parallel finals** depend on how far apart the centrelines are:
+
+| Spacing | Treated as |
+|---|---|
+| Under 2,500 ft | One final, for wake spacing and ATPA. |
+| 2,500 to 4,300 ft (KSUS 26L/26R) | Dependent. Aircraft established on each final need 1.5 miles diagonally. |
+| 4,300 ft or more (XHGT, 7,300 ft) | Independent. No separation is needed between aircraft established on each. |
+
+**ILS outages:** on Variable or Low IFR weather the landing runway's ILS
+sometimes fails for 20 to 40 minutes. A new ATIS reports it, and the status
+area shows `ILS 26L OTS`. Arrivals on the ILS that are still with you report
+"localizer's gone, request vectors"; those already with Tower go around, at
+no cost to you. RNAV takes over: pilots refuse the ILS, and the automated
+Approach sends arrivals down the RNAV.
 
 ## Holding
 
@@ -446,7 +486,7 @@ Blocks 10 to 18 are set by each facility. This game's facility directive:
 | 10, 11, 12 | Runway, ATIS letter, taxi route |
 | 13 | Ground: `HP` hold position, `HS27L` holding short, `X27L` crossing; Delivery: `CLR` IFR clearance given |
 | 14 | Local: `L` cleared to land and `MA` missed approach (from the order's tables), `T→` takeoff, `LUAW`, `TG`, `OPT`, VFR pattern marks |
-| 15 | Approach: `ILS` cleared for the approach; `H ALDER 35` holding at ALDER, expect further clearance at 35 past the hour |
+| 15 | Approach: `ILS`, `RNAV`, `VIS`, or `VIS FOL` following traffic, the approach cleared; `H ALDER 35` holding at ALDER, expect further clearance at 35 past the hour |
 | 16 | Time of the block 14 mark |
 | 17 | Handoff: the next position, struck through once it has the aircraft |
 | 18 | What it's waiting for from you |
@@ -594,6 +634,10 @@ arrival goes around, say), the lesson takes you back and lets you try again.
   the runway at the first exit ahead they can stop for, never one that
   doubles back. Departures line up where their taxiway meets the runway, an
   intersection departure if there's enough runway left for the type.
+- **Approaches:** ILS, RNAV (GPS) from the published fixes or on vectors,
+  and visual approaches, alone or following traffic with visual separation,
+  to the landing runway or its parallel, with dependent and independent
+  parallel finals and ILS outages.
 - **Weather:** wind shifts and runway changes, low cloud and fog with
   low-visibility procedures and Category III, and thunderstorms pilots
   deviate round.
@@ -662,7 +706,7 @@ but not notarized.
 | Left / Right | Heading -5 / +5 (Shift for 1) |
 | Up / Down | Altitude +1,000 / -1,000 ft |
 | `+` / `-` | Speed +10 / -10 kt |
-| C | Clear for the ILS |
+| C | Step through the approaches: ILS, RNAV, visual, then the parallel's |
 | R | Resume the published route |
 | T | Accept a handoff, or hand off to the next controller |
 | G | Go around. On a takeoff roll: stop immediately |
@@ -681,7 +725,7 @@ but not notarized.
 | E | VFR: enter the downwind, or extend it once in the pattern |
 | B | VFR: turn base now |
 | O / U | VFR: cleared for the option / cleared touch-and-go |
-| Shift-click an aircraft | VFR: follow that traffic |
+| Shift-click an aircraft | VFR: follow that traffic. IFR arrival: follow it on a visual approach |
 | F1 / F2 | Radar or surface full size (all combined) |
 | F3 | Strip bay fills the side panel |
 | Click a strip | Select that aircraft, and silence its alarms |

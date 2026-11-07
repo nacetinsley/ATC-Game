@@ -5,6 +5,7 @@ use super::scope::{self, BLOCK_SIZE};
 use super::surface;
 use crate::sim::World;
 use crate::sim::airspace::Airport;
+use crate::sim::approach::ApproachKind;
 use crate::sim::aircraft::{Flow, Landing, Leg, Phase};
 use crate::sim::clearance::{Clearance, PendingClearance};
 use crate::sim::positions::{Position, Staffing};
@@ -355,10 +356,20 @@ impl UiState {
         let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
         let Some(ac) = self.selected.and_then(|id| world.find(id)) else { return false };
         let Some(lead) = world.find(leader) else { return false };
-        if !shift || ac.vfr.is_none() || ac.on_ground || ac.id == leader {
+        if !shift || ac.on_ground || ac.id == leader {
             return false;
         }
         let traffic = crate::sim::vfr::traffic_description(lead);
+        if ac.vfr.is_none() {
+            // An IFR arrival: a visual approach behind it, to its runway.
+            if ac.flow != Flow::Arrival || lead.vfr.is_some() {
+                return false;
+            }
+            let runway = lead.approach_runway.unwrap_or_else(|| world.arrival_runway());
+            self.pending.approach = Some((ApproachKind::Visual, runway));
+            self.pending.follow = Some((leader, traffic));
+            return true;
+        }
         self.pending.add_tower(Clearance::Follow { id: leader, traffic });
         true
     }
@@ -377,8 +388,29 @@ impl UiState {
         }
     }
 
-    pub fn clear_for_ils(&mut self, world: &World) {
-        self.pending.ils = Some(world.arrival_runway());
+    /// Step through the approaches on offer: ILS, RNAV and visual to the
+    /// landing runway, then the parallel's, then none. With the aircraft
+    /// sent to one of an RNAV approach's fixes, that approach comes first.
+    pub fn cycle_approach(&mut self, world: &World) {
+        let mut options = world.approach_options();
+        let fix = self.pending.direct.or_else(|| {
+            let ac = self.selected.and_then(|id| world.find(id))?;
+            if self.pending.heading.is_some() { None } else { ac.active_fix() }
+        });
+        if let Some(fix) = fix
+            && let Some(i) = options
+                .iter()
+                .position(|&(k, e)| k == ApproachKind::Rnav && world.airport.rnav_route_from(e, fix).is_some())
+        {
+            let first = options.remove(i);
+            options.insert(0, first);
+        }
+        let next = match self.pending.approach.and_then(|p| options.iter().position(|&o| o == p)) {
+            Some(i) => options.get(i + 1).copied(),
+            None => options.first().copied(),
+        };
+        self.pending.approach = next;
+        self.pending.follow = None;
     }
 
     pub fn nudge_heading(&mut self, world: &World, degrees: f32) {
@@ -492,8 +524,9 @@ impl UiState {
         }
         if self.selected.is_some() {
             if is_key_pressed(KeyCode::C) {
-                self.clear_for_ils(world);
+                self.cycle_approach(world);
             }
+
             if is_key_pressed(KeyCode::R) {
                 self.pending.set_resume();
             }

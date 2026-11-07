@@ -735,6 +735,9 @@ fn draw_status(world: &World, ui: &UiState) {
     if let Some(closed) = world.closure_line() {
         line(&closed, WARNING);
     }
+    if let Some(ils) = world.ils_line() {
+        line(&ils, WARNING);
+    }
     let paused = if ui.paused { "  PAUSED" } else { "" };
     line(&format!("x{:.0}{paused}", ui.rate), STATUS);
     if !ui.via.is_empty() {
