@@ -25,7 +25,7 @@ use crate::sim::emergency::EmergencyKind;
 use crate::sim::positions::Position;
 use crate::sim::units::vec_heading;
 use macroquad::prelude::*;
-use super::gfx::{draw_line, draw_rectangle, draw_rectangle_lines, draw_text, draw_triangle, measure_text, mouse_position};
+use super::gfx::{draw_line, draw_rectangle, draw_rectangle_lines, draw_text, draw_triangle, measure_text, mouse_position, screen_height};
 use std::collections::HashMap;
 
 const PAPER: Color = Color::new(0.87, 0.85, 0.77, 1.0);
@@ -318,8 +318,9 @@ pub fn print(world: &World, ac: &Aircraft, clock_start: f64) -> Printed {
             b6: origin,
             b7: gate.map(|f| f.name.clone()).unwrap_or_default(),
             b8: hhmm(clock_start, eta),
+            // A VFR arrival: the side of the field it's calling from.
             b9: if vfr.is_some() {
-                "VFR".into()
+                format!("VFR {}", compass_short(vec_heading(ac.pos)))
             } else {
                 format!("{:03.0}", (ac.assigned_altitude() / 100.0).round())
             },
@@ -579,6 +580,10 @@ pub fn marks(
                 m.b9.push(Pen::hand(route));
             }
             m.b9.extend(altitudes);
+            // Closed traffic: what the pilot wants from this circuit.
+            if let Some(v) = ac.vfr.as_ref().filter(|v| v.intent == VfrIntent::Closed) {
+                m.b9.push(Pen::hand(if v.circuits > 0 { format!("{} TG", v.circuits) } else { "FS".into() }));
+            }
         }
     }
     strike_all_but_last(&mut altitude_amended);
@@ -593,6 +598,11 @@ pub fn marks(
     m.b9a.extend(vectors);
     m.b9a.extend(speeds);
     m.b9b = directs;
+    // Block 9c: the gate, for Ground: where an arrival will park, or where a
+    // departure is waiting to push.
+    if let Some(gate) = gate(world, ac) {
+        m.b9c.push(Pen::hand(gate));
+    }
 
     // Block 10: runways assigned, the latest standing.
     let mut rwys: Vec<Pen> = runways.iter().map(Pen::hand).collect();
@@ -621,6 +631,20 @@ pub fn marks(
         }];
     }
     m
+}
+
+/// An arrival's assigned gate (known from touchdown), or the gate a departure
+/// is parked at.
+fn gate(world: &World, ac: &Aircraft) -> Option<String> {
+    let map = world.airport.surface.as_ref()?;
+    match ac.flow {
+        Flow::Arrival => ac.parking.and_then(|p| map.parking.get(p)).map(|p| p.name.clone()),
+        Flow::Departure if ac.phase == Phase::Parked => {
+            let node = ac.taxi.as_ref()?.node;
+            map.parking.iter().find(|p| p.node == node).map(|p| p.name.clone())
+        }
+        Flow::Departure => None,
+    }
 }
 
 /// The runway the strip shows in block 10 right now.
@@ -923,6 +947,31 @@ fn draw_holder(world: &World, ac: &Aircraft, x: f32, y: f32, w: f32, h: f32) {
     }
 }
 
+/// A full strip's column edges, from the holder's left edge `x`.
+struct Columns {
+    /// The paper's left edge and width.
+    px: f32,
+    pw: f32,
+    /// Blocks 1-5, 6/7/2a, 8, then 9 from `c4` to the grid of blocks 10-18.
+    c1: f32,
+    c2: f32,
+    c3: f32,
+    c4: f32,
+    grid: f32,
+    c9w: f32,
+}
+
+fn columns(x: f32) -> Columns {
+    let width = PANEL_WIDTH - MARGIN * 2.0;
+    let px = x + HOLDER;
+    let pw = width - HOLDER;
+    let c2 = px + COL_ID;
+    let c3 = c2 + COL_6;
+    let c4 = c3 + COL_8;
+    let grid = px + pw - GRID_CELL * 3.0;
+    Columns { px, pw, c1: px, c2, c3, c4, grid, c9w: grid - c4 }
+}
+
 fn draw_strip(world: &World, ui: &mut UiState, ac: &Aircraft, x: f32, y: f32) {
     let clock = ui.clock_start;
     let printed = ui.board.strip(world, ac, clock).clone();
@@ -934,9 +983,7 @@ fn draw_strip(world: &World, ui: &mut UiState, ac: &Aircraft, x: f32, y: f32) {
     let mine = world.is_players(ac) || ac.phase == Phase::Offered;
     let faded = !mine;
     let width = PANEL_WIDTH - MARGIN * 2.0;
-
-    let px = x + HOLDER;
-    let pw = width - HOLDER;
+    let Columns { px, pw, c1, c2, c3, c4, grid, c9w } = columns(x);
     draw_rectangle(
         px,
         y,
@@ -945,14 +992,6 @@ fn draw_strip(world: &World, ui: &mut UiState, ac: &Aircraft, x: f32, y: f32) {
         if mine { PAPER } else { PAPER_OTHER },
     );
     draw_holder(world, ac, x, y, width, STRIP_HEIGHT);
-
-    // Column edges.
-    let c1 = px;
-    let c2 = c1 + COL_ID;
-    let c3 = c2 + COL_6;
-    let c4 = c3 + COL_8;
-    let grid = px + pw - GRID_CELL * 3.0;
-    let c9w = grid - c4;
     for edge in [c2, c3, c4, grid, grid + GRID_CELL, grid + GRID_CELL * 2.0] {
         draw_line(edge, y, edge, y + STRIP_HEIGHT, 1.0, RULE);
     }
@@ -1137,6 +1176,250 @@ fn live_status(world: &World, ac: &Aircraft) -> String {
     )
 }
 
+/// A block on the strip, for its tooltip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Field {
+    Id,
+    Revision,
+    Originator,
+    Type,
+    Cid,
+    Beacon,
+    B6,
+    B7,
+    B8,
+    B9,
+    B9a,
+    B9b,
+    B9c,
+    /// Blocks 10 to 18, as an index into `Marks::grid`.
+    Grid(usize),
+}
+
+/// The block under the mouse on a strip drawn at `(x, y)`.
+fn field_at(mouse: Vec2, x: f32, y: f32, compact: bool) -> Option<Field> {
+    let Columns { px, pw, c1, c2, c3, c4, grid, c9w } = columns(x);
+    if mouse.x < px || mouse.x > px + pw {
+        return None;
+    }
+    if compact {
+        return Some(match mouse.x - px {
+            d if d < 66.0 => Field::Id,
+            d if d < 136.0 => Field::Type,
+            d if d < 192.0 => Field::Beacon,
+            _ if mouse.x < grid => Field::B9,
+            _ if mouse.x < grid + GRID_CELL * 2.0 => Field::Grid(4),
+            _ => Field::Grid(8),
+        });
+    }
+    let row = (((mouse.y - y - 1.0) / ROW).floor().max(0.0) as usize).min(2);
+    Some(if mouse.x < c2 {
+        match row {
+            0 if mouse.x > c2 - 14.0 => Field::Revision,
+            0 => Field::Id,
+            1 => Field::Type,
+            _ if mouse.x < c1 + 30.0 => Field::Cid,
+            _ => Field::Beacon,
+        }
+    } else if mouse.x < c3 {
+        [Field::B6, Field::B7, Field::Originator][row]
+    } else if mouse.x < c4 {
+        // 8a and 8b are unused here: the whole column explains block 8.
+        Field::B8
+    } else if mouse.x < grid {
+        match row {
+            0 | 1 => Field::B9,
+            _ if mouse.x < c4 + c9w / 3.0 => Field::B9a,
+            _ if mouse.x < c4 + c9w * 2.0 / 3.0 => Field::B9b,
+            _ => Field::B9c,
+        }
+    } else {
+        let col = (((mouse.x - grid) / GRID_CELL) as usize).min(2);
+        Field::Grid(col * 3 + row)
+    })
+}
+
+/// A block's entries as they read now: the standing ones, then what they
+/// replaced.
+fn reading(pens: &[Pen]) -> String {
+    let standing: Vec<&str> = pens.iter().filter(|p| !p.struck).map(|p| p.text.as_str()).collect();
+    let struck: Vec<&str> = pens.iter().filter(|p| p.struck).map(|p| p.text.as_str()).collect();
+    let mut out = if standing.is_empty() { "blank".to_string() } else { standing.join("  ") };
+    if !struck.is_empty() {
+        out.push_str(&format!("  (struck: {})", struck.join(" ")));
+    }
+    out
+}
+
+/// What block 18's mark means.
+fn awaiting_text(w: crate::sim::awaiting::Awaiting) -> &'static str {
+    use crate::sim::awaiting::Awaiting::*;
+    match w {
+        Accept => "Center is offering it to you: accept the handoff.",
+        LandingClearance => "Close in without a landing clearance.",
+        HandoffDue => "Hand it to the next controller now.",
+        ReadyForTakeoff => "Ready for departure at the hold line or lined up.",
+        HoldingShort => "Stopped short of a runway it has to cross.",
+        ReadyToTaxi => "Waiting for taxi instructions.",
+        FrequencyChange => "A VFR departure asking to leave the frequency.",
+        CheckIn => "Just called you and hasn't had a reply.",
+        Efc => "Holding, and its EFC time is close or gone.",
+        ClearanceRequest => "Calling for its IFR clearance.",
+        ClearanceLate => "Has waited long enough for its clearance to count as delay.",
+        Deviation => "Asking to deviate round weather.",
+    }
+}
+
+/// The tooltip for one block: its number and name, what it says now, and
+/// how to read it.
+fn field_tip(world: &World, ac: &Aircraft, printed: &Printed, m: &Marks, field: Field) -> Vec<String> {
+    let departure = printed.form == Form::Departure;
+    let vfr = ac.vfr.is_some();
+    let (title, now, help): (&str, String, &str) = match field {
+        Field::Id => ("Block 1: aircraft identification", ac.callsign.clone(), "The callsign the pilot answers to."),
+        Field::Revision => (
+            "Block 2: revision number",
+            m.revision.map_or("blank".into(), |r| r.to_string()),
+            "How many times the route has been amended. Blank until it is.",
+        ),
+        Field::Originator => (
+            "Block 2a: printed for",
+            printed.originator.to_string(),
+            "CD Clearance Delivery, LC Local control (VFR), AR arrival radar.",
+        ),
+        Field::Type => {
+            let wake = match ac.ty.wake {
+                crate::sim::performance::WakeCategory::Small => "small",
+                crate::sim::performance::WakeCategory::Large => "large",
+                crate::sim::performance::WakeCategory::Heavy => "heavy",
+            };
+            (
+                "Block 3: aircraft type",
+                format!("{}, {wake} wake", printed.ty),
+                "H/ before the type marks a heavy. After it, /L means RNAV (GNSS) and RVSM, and /G means RNAV (GNSS) without RVSM.",
+            )
+        }
+        Field::Cid => ("Block 4: computer ID", printed.cid.clone(), "The flight's number in the flight data computer."),
+        Field::Beacon => (
+            "Block 5: beacon code",
+            reading(&m.beacon),
+            if vfr {
+                "1200 is the VFR code. 7700 (emergency) or 7600 (radio failure) is written in red beside it."
+            } else {
+                "The assigned squawk. 7700 (emergency) or 7600 (radio failure) is written in red beside it."
+            },
+        ),
+        Field::B6 if departure => (
+            "Block 6: proposed departure time",
+            printed.b6.clone(),
+            "P and the time, UTC, it filed to leave.",
+        ),
+        Field::B6 => ("Block 6: previous fix", printed.b6.clone(), "Where it's coming from: the point before the coordination fix."),
+        Field::B7 if departure => (
+            "Block 7: requested altitude",
+            reading(&m.b7),
+            "The altitude filed, in hundreds of feet, or VFR. Delivery strikes it and writes the amended one beside it.",
+        ),
+        Field::B7 => ("Block 7: coordination fix", printed.b7.clone(), "Where it's handed from Center into the terminal area."),
+        Field::B8 if departure => ("Block 8: departure airport", printed.b8.clone(), "Where it's departing from."),
+        Field::B8 => (
+            "Block 8: time at the coordination fix",
+            format!("{}Z", printed.b8),
+            "When it's due over the fix in block 7, UTC.",
+        ),
+        Field::B9 if departure => (
+            "Block 9: route and destination",
+            reading(&m.b9),
+            if vfr {
+                "The direction of flight and destination, or CLOSED TFC for pattern work, with the touch-and-goes still wanted (2 TG) or FS for the full stop. Emergencies are written in red."
+            } else {
+                "SID and exit fix, then the destination; an amended route is written after it. ↑050 climb and ↓050 descend are altitudes assigned, the latest standing. Emergencies are written in red."
+            },
+        ),
+        Field::B9 => (
+            "Block 9: altitude and remarks",
+            reading(&m.b9),
+            "The altitude Center assigned and the STAR, or VFR and the side of the field it called from. ↑050 climb and ↓050 descend are altitudes assigned since, the latest standing. Emergencies are written in red.",
+        ),
+        Field::B9a => (
+            "Block 9a: vectors and speeds",
+            reading(&m.b9a),
+            "H270 heading, S210 speed, the latest standing. MIN FUEL in red.",
+        ),
+        Field::B9b => (
+            "Block 9b: direct, hold, resume",
+            reading(&m.b9b),
+            "D and a fix: direct. H, a fix and minutes: hold, expect further clearance at those minutes past the hour. RTE: resume own navigation.",
+        ),
+        Field::B9c => (
+            "Block 9c: gate",
+            reading(&m.b9c),
+            "Where an arrival will park (known once it lands), or the gate a departure is waiting at.",
+        ),
+        Field::Grid(i) => {
+            let pens = &m.grid[i];
+            let now = reading(pens);
+            match i {
+                0 => ("Block 10: runway", now, "The runway assigned; earlier ones are struck through."),
+                1 => {
+                    let current = world.weather.letter().to_string();
+                    let help = if current == printed.atis {
+                        "The ATIS current when the strip was printed."
+                    } else {
+                        "The ATIS current when the strip was printed. It has changed since."
+                    };
+                    let now = if current == printed.atis { now } else { format!("{now}  (now {current})") };
+                    ("Block 11: ATIS", now, help)
+                }
+                2 => ("Block 12: taxi route", now, "The taxiways given, then the gate or runway."),
+                3 => (
+                    "Block 13: ground control",
+                    now,
+                    "CLR IFR clearance issued. HP hold position. HS27L holding short. X27L cleared to cross.",
+                ),
+                4 => (
+                    "Block 14: local control",
+                    now,
+                    "L cleared to land. T→ cleared for takeoff. LUAW line up and wait. MA missed approach. TG touch-and-go. OPT the option. DW, EXT, B and FOL pattern instructions.",
+                ),
+                5 => ("Block 15: approach", now, "ILS: cleared for the approach."),
+                6 => ("Block 16: time", now, "When the block 14 mark was made, UTC."),
+                7 => (
+                    "Block 17: handoff",
+                    now,
+                    "Who it was sent to: TWR, GND, DEP, CTR, or FREQ for a VFR frequency change. Struck once they have it.",
+                ),
+                _ => (
+                    "Block 18: waiting for you",
+                    now,
+                    world.awaiting(ac).map_or("Blank while it needs nothing from you. Red when it's about to cost points.", awaiting_text),
+                ),
+            }
+        }
+    };
+    let now = if now.trim().is_empty() { "blank".to_string() } else { now };
+    vec![title.to_string(), format!("Now: {now}"), help.to_string()]
+}
+
+/// Break text into lines no wider than `width` at `size`.
+fn wrap(text: &str, width: f32, size: f32) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split(' ') {
+        let candidate = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+        if !line.is_empty() && measure(&candidate, size) > width {
+            lines.push(std::mem::take(&mut line));
+            line = word.to_string();
+        } else {
+            line = candidate;
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
 /// One row of the bay: a header or a strip.
 enum Item<'a> {
     Header(Bay, usize),
@@ -1228,7 +1511,7 @@ pub fn draw(world: &World, ui: &mut UiState, panel_x: f32, top: f32, bottom: f32
                     }
                     let rect = Rect::new(x, y, width, h - GAP);
                     if rect.contains(mouse) {
-                        hovered = Some(*ac);
+                        hovered = Some((*ac, field_at(mouse, x, y, *compact)));
                         if clicked {
                             ui.select(Some(ac.id));
                         }
@@ -1257,21 +1540,43 @@ pub fn draw(world: &World, ui: &mut UiState, panel_x: f32, top: f32, bottom: f32
         );
     }
 
-    // Hover: point the aircraft out on the scope, and show what the strip doesn't.
-    if let Some(ac) = hovered {
+    // Hover: point the aircraft out on the scope, show what the strip doesn't
+    // (where it is now), and explain the block under the mouse.
+    if let Some((ac, field)) = hovered {
         ui.hovered = Some(ac.id);
-        let tip = format!("{}  {}", ac.callsign, live_status(world, ac));
-        let tw = measure_text(&tip, None, 16, 1.0).width;
-        let (tx, ty) = (panel_x - tw - 18.0, mouse.y - 10.0);
-        draw_rectangle(tx, ty, tw + 12.0, 22.0, Color::new(0.05, 0.07, 0.08, 0.92));
-        draw_rectangle_lines(tx, ty, tw + 12.0, 22.0, 1.0, BAY_RULE);
-        draw_text(
-            &tip,
-            tx + 6.0,
-            ty + 16.0,
-            16.0,
-            Color::new(0.85, 0.90, 0.88, 1.0),
-        );
+        let printed = ui.board.strip(world, ac, ui.clock_start).clone();
+        let runways = ui.board.runway_history(ac, current_runway(world, ac)).to_vec();
+        let m = marks(world, ac, &printed, &runways, ui.clock_start);
+        draw_tip(world, ac, field.map(|f| field_tip(world, ac, &printed, &m, f)), panel_x, mouse.y);
+    }
+}
+
+const TIP_SIZE: f32 = 16.0;
+const TIP_WIDTH: f32 = 380.0;
+const TIP_TEXT: Color = Color::new(0.85, 0.90, 0.88, 1.0);
+const TIP_TITLE: Color = Color::new(0.98, 0.85, 0.45, 1.0);
+
+/// The hover box left of the panel: the aircraft's live state, then the block.
+fn draw_tip(world: &World, ac: &Aircraft, block: Option<Vec<String>>, panel_x: f32, mouse_y: f32) {
+    let mut lines: Vec<(String, Color)> = vec![(format!("{}  {}", ac.callsign, live_status(world, ac)), TIP_TEXT)];
+    if let Some(block) = block {
+        let mut parts = block.into_iter();
+        if let Some(title) = parts.next() {
+            lines.push((title, TIP_TITLE));
+        }
+        for part in parts {
+            lines.extend(wrap(&part, TIP_WIDTH, TIP_SIZE).into_iter().map(|l| (l, TIP_TEXT)));
+        }
+    }
+    let line_h = TIP_SIZE + 3.0;
+    let w = lines.iter().map(|(l, _)| measure(l, TIP_SIZE)).fold(0.0, f32::max) + 12.0;
+    let h = lines.len() as f32 * line_h + 6.0;
+    let tx = panel_x - w - 6.0;
+    let ty = (mouse_y - 10.0).min(screen_height() - h - 4.0).max(4.0);
+    draw_rectangle(tx, ty, w, h, Color::new(0.05, 0.07, 0.08, 0.94));
+    draw_rectangle_lines(tx, ty, w, h, 1.0, BAY_RULE);
+    for (i, (line, color)) in lines.iter().enumerate() {
+        write(line, tx + 6.0, ty + 3.0 + (i as f32 + 1.0) * line_h - 4.0, TIP_SIZE, *color);
     }
 }
 
@@ -1386,6 +1691,63 @@ mod tests {
         assert_eq!(p.b7, "BOLTE", "block 7: coordination fix");
         assert_eq!(p.b8.len(), 4, "block 8: ETA at the coordination fix");
         assert_eq!(p.b9, "130", "block 9: altitude in hundreds");
+    }
+
+    #[test]
+    fn block_9c_shows_an_arrivals_gate_once_it_has_one() {
+        let w = world();
+        let mut ac = arrival(&w);
+        let p = print(&w, &ac, 0.0);
+        assert!(marks(&w, &ac, &p, &[], 0.0).b9c.is_empty());
+        ac.parking = Some(0);
+        let name = w.airport.surface.as_ref().unwrap().parking[0].name.clone();
+        assert_eq!(marks(&w, &ac, &p, &[], 0.0).b9c, vec![Pen::hand(name)]);
+    }
+
+    #[test]
+    fn closed_traffic_shows_the_touch_and_goes_left_then_the_full_stop() {
+        let w = world();
+        let mut ac = departure(&w);
+        let mut vfr = crate::sim::aircraft::Vfr::new(VfrIntent::Closed, 0);
+        vfr.circuits = 2;
+        ac.vfr = Some(vfr);
+        let p = print(&w, &ac, 0.0);
+        assert_eq!(p.b9, "CLOSED TFC");
+        let last = |ac: &Aircraft| marks(&w, ac, &p, &[], 0.0).b9.last().unwrap().text.clone();
+        assert_eq!(last(&ac), "2 TG");
+        ac.vfr.as_mut().unwrap().circuits = 0;
+        assert_eq!(last(&ac), "FS");
+    }
+
+    #[test]
+    fn the_mouse_finds_the_block_under_it() {
+        let Columns { c2, c3, c4, grid, c9w, .. } = columns(0.0);
+        let at = |x: f32, row: f32| field_at(vec2(x, 1.0 + ROW * row + 5.0), 0.0, 0.0, false);
+        assert_eq!(at(c2 + 5.0, 1.0), Some(Field::B7));
+        assert_eq!(at(c2 + 5.0, 2.0), Some(Field::Originator));
+        assert_eq!(at(c3 + 5.0, 0.0), Some(Field::B8));
+        assert_eq!(at(c4 + 5.0, 0.0), Some(Field::B9));
+        assert_eq!(at(c4 + c9w - 5.0, 2.0), Some(Field::B9c));
+        // Column 2 of the grid, middle row: block 14.
+        assert_eq!(at(grid + GRID_CELL + 5.0, 1.0), Some(Field::Grid(4)));
+        assert_eq!(at(grid + GRID_CELL * 2.0 + 5.0, 2.0), Some(Field::Grid(8)));
+    }
+
+    #[test]
+    fn every_block_has_a_tooltip() {
+        let w = world();
+        let ac = arrival(&w);
+        let p = print(&w, &ac, 0.0);
+        let m = marks(&w, &ac, &p, &[], 0.0);
+        let fields = [
+            Field::Id, Field::Revision, Field::Originator, Field::Type, Field::Cid, Field::Beacon,
+            Field::B6, Field::B7, Field::B8, Field::B9, Field::B9a, Field::B9b, Field::B9c,
+        ];
+        for f in fields.into_iter().chain((0..9).map(Field::Grid)) {
+            let tip = field_tip(&w, &ac, &p, &m, f);
+            assert!(tip[0].starts_with("Block "), "{f:?}: {tip:?}");
+            assert!(tip.iter().all(|l| !l.is_empty()), "{f:?}: {tip:?}");
+        }
     }
 
     #[test]

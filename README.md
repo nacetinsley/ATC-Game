@@ -435,8 +435,9 @@ out as in FAA Order JO 7110.65 (paragraph 2-3-3): departure strips (Form
 | 6 | Proposed time (`P1432`) | Previous fix (here the origin) |
 | 7 | Requested altitude, struck and rewritten if Delivery amends it | Coordination fix |
 | 8 | Departure airport | ETA at the coordination fix |
-| 9 | Route and destination, struck and rewritten if Delivery amends the route | Altitude and remarks (the STAR) |
+| 9 | Route and destination, struck and rewritten if Delivery amends the route. Closed traffic: `CLOSED TFC`, then `2 TG` (touch-and-goes still wanted) or `FS` (full stop) | Altitude and remarks (the STAR). VFR: `VFR` and the side of the field it called from (`VFR NE`) |
 | 9a, 9b | Vectors and speeds; direct-to and route amendments | same |
+| 9c | The gate it's parked at, while it waits to push | The gate it's assigned, once it has landed |
 
 Blocks 10 to 18 are set by each facility. This game's facility directive:
 
@@ -464,9 +465,13 @@ accept, a departure ready to taxi or at the hold, a check-in nobody has
 answered) has a blinking holder and a word in block 18, and moves up its bay.
 One about to cost points (no landing clearance inside 4 miles, or a handoff
 due) also gets a blinking amber frame. When the bay is full, other positions'
-strips fold to one line, and the mouse wheel scrolls it. Hover over a strip
-to ring the aircraft on the scope and see what it's doing now. F3 gives the
-strip bay the whole panel.
+strips fold to one line, and the mouse wheel scrolls it. F3 gives the strip
+bay the whole panel.
+
+Hover over a strip to ring the aircraft on the scope. A tooltip shows what
+it's doing now (altitude, speed and heading, or its taxi status). Below that
+is the block under the mouse: its number and name, what it says, and how to
+read it.
 
 ## Sound
 
