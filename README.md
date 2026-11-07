@@ -645,9 +645,13 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
+Or run the workflow by hand from the Actions tab (Release, then Run workflow)
+and enter a version such as `v0.2.0`. It tags the latest commit on the branch
+you pick and publishes the release the same way. Untick "Publish a release"
+to only build, and download the zips from the run.
+
 The macOS build is a universal app (Apple Silicon and Intel), signed ad hoc
-but not notarized. To build without publishing, run the workflow by hand from
-the Actions tab and download the zips from the run.
+but not notarized.
 
 ## Controls
 
