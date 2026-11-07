@@ -130,6 +130,10 @@ impl World {
             }
         }
 
+        if along < super::visibility::DECISION_NM && self.below_minimums(index) {
+            self.minimums_go_around(index);
+            return;
+        }
         if along < RUNWAY_CHECK_NM {
             if !(on_glideslope || captures_glideslope) {
                 self.go_around(index, GoAroundReason::Unstable);
@@ -301,7 +305,7 @@ impl World {
         }
     }
 
-    pub(super) fn at_departure_hold(&self, ac: &Aircraft) -> bool {
+    pub fn at_departure_hold(&self, ac: &Aircraft) -> bool {
         let (Some(taxi), Some(end)) = (&ac.taxi, ac.departure_end) else { return false };
         let map = self.surface();
         ac.flow == Flow::Departure
@@ -379,10 +383,13 @@ impl World {
         if self.at_departure_hold(ac) {
             let end = ac.departure_end?;
             let r = map.runway_of_end[end];
+            // Low visibility: the arrival's ILS critical area stays clear.
+            let short_final =
+                if self.sky().lvp() { super::visibility::LVP_RELEASE_NM } else { SHORT_FINAL_HOLD_NM };
             let safe = !launched
                 && self.time >= self.next_departure_time
                 && !self.runway_occupied(r, ac.id)
-                && self.arrivals_within(r, SHORT_FINAL_HOLD_NM, VFR_RELEASE_NM).is_empty()
+                && self.arrivals_within(r, short_final, VFR_RELEASE_NM).is_empty()
                 // Airborne with a margin before anyone lands.
                 && !self.landing_within(r, takeoff_window(ac), true)
                 // A jet would run up the back of a light aircraft still on upwind.
@@ -581,7 +588,7 @@ impl World {
 }
 
 /// Time to hold the next departure behind this one.
-fn departure_interval(ac: &Aircraft) -> f32 {
+pub(super) fn departure_interval(ac: &Aircraft) -> f32 {
     if ac.vfr.is_some() {
         VFR_DEPARTURE_INTERVAL
     } else if ac.ty.wake == WakeCategory::Heavy {

@@ -229,7 +229,12 @@ impl World {
 
     pub(super) fn run_vfr_traffic(&mut self) {
         // No new VFR traffic while a closed runway leaves one for everyone.
-        if !self.vfr_enabled() || self.time < self.next_vfr_time || self.emergencies.closure.is_some() {
+        // Nor in cloud.
+        if !self.vfr_enabled()
+            || self.time < self.next_vfr_time
+            || self.emergencies.closure.is_some()
+            || self.weather.sky.imc()
+        {
             return;
         }
         let roll = self.rng.f32();

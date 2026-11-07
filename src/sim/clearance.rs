@@ -62,6 +62,10 @@ pub enum Clearance {
     Ifr { route: Vec<usize>, altitude: f32, squawk: u16 },
     /// Reset the transponder to this code: radar's fix for a wrong squawk.
     Squawk(u16),
+    /// Abandon a takeoff roll that's begun: "stop immediately".
+    StopTakeoff,
+    /// Approve the deviation round weather the pilot asked for.
+    Deviation,
 }
 
 impl Clearance {
@@ -76,7 +80,8 @@ impl Clearance {
             | Clearance::ResumeRoute
             | Clearance::ClearedIls(_)
             | Clearance::HandoffTower
-            | Clearance::HandoffCenter => &[Approach],
+            | Clearance::HandoffCenter
+            | Clearance::Deviation => &[Approach],
             Clearance::GoAround => &[Local, Approach],
             Clearance::Taxi { .. } | Clearance::HoldPosition | Clearance::ContinueTaxi => {
                 &[Ground, Local]
@@ -91,7 +96,8 @@ impl Clearance {
             | Clearance::TurnBase
             | Clearance::Follow { .. }
             | Clearance::ClearedTouchAndGo(_)
-            | Clearance::ClearedOption(_) => &[Local],
+            | Clearance::ClearedOption(_)
+            | Clearance::StopTakeoff => &[Local],
             Clearance::ContactTower => &[Ground],
             // Local after landing; Delivery once it has its clearance.
             Clearance::ContactGround => &[Local, Delivery],
@@ -248,6 +254,11 @@ pub fn phrase(clearance: &Clearance, ac: &Aircraft, airport: &Airport) -> String
             super::delivery::phrase(ac, route, *altitude, *squawk, airport)
         }
         Clearance::Squawk(code) => format!("reset transponder, squawk {}", super::delivery::code_text(*code)),
+        Clearance::StopTakeoff => "stop immediately, I say again, stop immediately".into(),
+        Clearance::Deviation => match ac.deviation {
+            Some(d) => format!("deviation {} approved, advise clear of weather", d.spoken()),
+            None => "deviation approved, advise clear of weather".into(),
+        },
     }
 }
 
@@ -275,6 +286,10 @@ struct Context<'a> {
     now: f32,
     /// For the pilot's own slips, decided from the seed.
     seed: u64,
+    mistakes: super::mistakes::PilotMistakes,
+    storms: &'a super::storms::Storms,
+    /// Fog below Category I minimums: only Category III aircraft can land.
+    below_cat1: bool,
 }
 
 impl World {
@@ -378,11 +393,15 @@ impl World {
             arrival_runway: self.arrival_runway(),
             now: self.time,
             seed: self.config.seed,
+            mistakes: self.config.mistakes,
+            below_cat1: self.sky().below_cat1(),
+            storms: &self.storms,
         };
         let mut readback = Vec::new();
         let mut events = Vec::new();
         let mut rolled = false;
         let mut new_frequency = None;
+        let mut player_go_around = None;
         for (clearance, issuer) in &call.clearances {
             let ac = &mut self.aircraft[index];
             let words = phrase(clearance, ac, ctx.airport);
@@ -393,16 +412,32 @@ impl World {
                 _ => false,
             };
             let before = ac.frequency();
+            let landing_on = ac.approach_runway;
             let result = match issuer {
                 Some(p) if can_speak(*p, before, staffing) => apply(clearance, ac, &ctx),
                 _ => Err("not on your frequency".to_string()),
             };
             match result {
                 Ok(()) => {
+                    // The player's instructions can be misheard, or answer a slip.
+                    let player = issuer.is_some_and(|p| staffing.works(p));
+                    let heard = if player {
+                        super::mistakes::after_instruction(ac, clearance, ctx.mistakes, ctx.seed, ctx.now, ctx.airport)
+                    } else {
+                        Default::default()
+                    };
+                    events.extend(heard.events);
+                    if player && *clearance == Clearance::GoAround {
+                        player_go_around = landing_on;
+                    }
                     // An IFR clearance is read back as the pilot heard it.
                     let words = match clearance {
                         Clearance::Ifr { .. } => super::delivery::readback(ac, repeat, ctx.airport),
-                        _ => words,
+                        Clearance::Deviation => match ac.deviation {
+                            Some(d) => format!("deviating {}, will advise clear of weather", d.spoken()),
+                            None => words,
+                        },
+                        _ => heard.readback.unwrap_or(words),
                     };
                     readback.push(words);
                     if let Some(by) = *issuer {
@@ -434,6 +469,9 @@ impl World {
         }
         for event in events {
             self.emit(event);
+        }
+        if let Some(end) = player_go_around {
+            self.go_around_answers_major(end);
         }
         if rolled {
             self.begin_takeoff(index);
@@ -555,8 +593,12 @@ fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), 
             if ac.on_ground {
                 return Err("we're on the ground".into());
             }
+            if super::storms::weather_ahead(ctx.storms, ac.pos, *h, super::storms::LOOKAHEAD_NM) {
+                return Err("weather ahead".into());
+            }
             break_approach(ac);
             ac.lateral = Lateral::Heading(normalize_heading(*h));
+            ac.deviation = None;
         }
         Clearance::Altitude(a) => {
             if ac.on_glideslope {
@@ -577,8 +619,14 @@ fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), 
             ac.target_speed = *s;
         }
         Clearance::DirectFix(f) => {
+            let to_fix = airport.fixes[*f].pos() - ac.pos;
+            let nm = to_fix.length().min(super::storms::LOOKAHEAD_NM);
+            if super::storms::weather_ahead(ctx.storms, ac.pos, super::units::vec_heading(to_fix), nm) {
+                return Err("weather that way".into());
+            }
             break_approach(ac);
             ac.lateral = Lateral::Direct(*f);
+            ac.deviation = None;
         }
         Clearance::ResumeRoute => {
             // Out of a hold at a fix on the route: on to the next one.
@@ -611,6 +659,9 @@ fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), 
         }
         Clearance::ClearedIls(r) => {
             check_ils(ac, *r, airport, ctx.arrival_runway)?;
+            if ctx.below_cat1 && !super::visibility::lands_below_cat1(ac) {
+                return Err("below our minimums, request holding".into());
+            }
             ac.phase = Phase::ClearedApproach;
             ac.approach_runway = Some(*r);
         }
@@ -642,6 +693,26 @@ fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), 
             super::delivery::apply(ac, route, *altitude, *squawk, ctx.now, ctx.seed)?;
         }
         Clearance::Squawk(code) => super::delivery::reset_squawk(ac, *code)?,
+        Clearance::Deviation => match ac.deviation.as_mut() {
+            Some(d) if !d.approved => {
+                d.approved = true;
+                d.offset = d.wanted;
+            }
+            Some(_) => return Err("already deviating".into()),
+            None => return Err("no deviation requested".into()),
+        },
+        Clearance::StopTakeoff => {
+            if !(ac.on_ground && ac.phase == Phase::TowerRelease) {
+                return Err("not rolling".into());
+            }
+            if ac.ias > super::mistakes::STOP_MAX_KT {
+                return Err("too fast to stop".into());
+            }
+            // Stopped on the runway, lined up again.
+            ac.phase = Phase::LinedUp;
+            ac.ias = 0.0;
+            ac.cleared_takeoff = false;
+        }
         Clearance::Taxi { to, via } => {
             let map = surface(ac, airport)?;
             if !matches!(ac.phase, Phase::Parked | Phase::Taxiing) {
@@ -894,15 +965,12 @@ impl PendingClearance {
     }
 
     pub fn nudge_heading(&mut self, ac: &Aircraft, degrees: f32) {
-        let base = self.heading.unwrap_or(match ac.lateral {
-            Lateral::Heading(h) => h,
-            _ => ac.heading.round(),
-        });
+        let base = self.heading.unwrap_or(ac.assigned_heading().unwrap_or(ac.heading.round()));
         self.set_heading(base + degrees);
     }
 
     pub fn nudge_altitude(&mut self, ac: &Aircraft, feet: f32) {
-        let base = self.altitude.unwrap_or(ac.target_altitude);
+        let base = self.altitude.unwrap_or(ac.assigned_altitude());
         let stepped = ((base + feet) / 1000.0).round() * 1000.0;
         self.altitude = Some(stepped.clamp(MIN_ASSIGNED_ALTITUDE, MAX_ASSIGNED_ALTITUDE));
     }

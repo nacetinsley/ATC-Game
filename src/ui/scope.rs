@@ -4,6 +4,7 @@
 
 use super::camera::clip;
 use super::input::{Drag, UiState, ctrl_down};
+use crate::sim::mistakes::SlipKind;
 use crate::sim::aircraft::{Aircraft, Flow, Lateral, Phase};
 use crate::sim::airspace::Airport;
 use crate::sim::holding::{self, HoldSpec};
@@ -49,6 +50,14 @@ const GHOST: Color = Color::new(1.00, 0.95, 0.40, 1.0);
 /// Published holds on the map, and brighter while someone is in one.
 const HOLD: Color = Color::new(0.22, 0.22, 0.26, 1.0);
 const HOLD_BUSY: Color = Color::new(0.40, 0.40, 0.55, 1.0);
+/// Weather radar returns, as STARS shows them: dim for light rain, brighter
+/// for the heavy cores pilots won't fly through, stippled for the worst.
+const WX_LIGHT: Color = Color::new(0.04, 0.11, 0.17, 1.0);
+const WX_HEAVY: Color = Color::new(0.07, 0.22, 0.32, 1.0);
+const WX_EXTREME: Color = Color::new(0.11, 0.33, 0.45, 1.0);
+const WX_STIPPLE: Color = Color::new(0.30, 0.55, 0.65, 1.0);
+/// Weather is drawn on a grid this fine, NM.
+const WX_GRID_NM: f32 = 1.0;
 /// Published holds without a minimum altitude are drawn as if flown here, feet.
 const HOLD_DRAW_ALTITUDE: f32 = 6000.0;
 /// The scratchpad shows EFC from this long before it, seconds.
@@ -176,7 +185,38 @@ fn draw_route(ui: &UiState, airport: &Airport, names: &[String]) {
     }
 }
 
+/// Thunderstorm cells, under everything else on the map.
+fn draw_weather(world: &World, ui: &UiState) {
+    let mut squares = std::collections::BTreeSet::new();
+    for cell in &world.storms.cells {
+        let lo = ((cell.pos - glam::Vec2::splat(cell.radius)) / WX_GRID_NM).floor();
+        let hi = ((cell.pos + glam::Vec2::splat(cell.radius)) / WX_GRID_NM).ceil();
+        for x in lo.x as i32..hi.x as i32 {
+            for y in lo.y as i32..hi.y as i32 {
+                squares.insert((x, y));
+            }
+        }
+    }
+    let size = WX_GRID_NM * ui.camera.scale;
+    for (x, y) in squares {
+        let centre = glam::Vec2::new(x as f32 + 0.5, y as f32 + 0.5) * WX_GRID_NM;
+        let level = world.storms.level_at(centre);
+        let colour = match level {
+            l if l >= 5.0 => WX_EXTREME,
+            l if l >= crate::sim::storms::SEVERE_LEVEL => WX_HEAVY,
+            l if l >= 1.0 => WX_LIGHT,
+            _ => continue,
+        };
+        let p = ui.camera.to_screen(centre);
+        draw_rectangle(p.x - size / 2.0, p.y - size / 2.0, size + 0.5, size + 0.5, colour);
+        if level >= 5.0 && size >= 6.0 {
+            draw_rectangle(p.x - 1.0, p.y - 1.0, 2.0, 2.0, WX_STIPPLE);
+        }
+    }
+}
+
 fn draw_map(airport: &Airport, world: &World, ui: &UiState, inset: bool) {
+    draw_weather(world, ui);
     let center = ui.camera.to_screen(glam::Vec2::ZERO);
     for ring in 1..=RINGS {
         let radius = ring as f32 * RING_SPACING_NM * ui.camera.scale;
@@ -303,20 +343,20 @@ fn scratchpad(world: &World, ac: &Aircraft) -> String {
         // Timeshared with the fix, to fit the block.
         let fix: String = airport.fixes[state.spec.fix].name.chars().take(5).collect();
         let shown = if timeshare() { tag.to_string() } else { fix };
-        return format!("{:03.0} {shown}", ac.target_altitude / 100.0);
+        return format!("{:03.0} {shown}", ac.assigned_altitude() / 100.0);
     }
     let intent = match ac.phase {
         Phase::ClearedApproach | Phase::Localizer | Phase::Glideslope => {
             format!("I{}", airport.runways[world.arrival_runway()].id)
         }
         Phase::GoAround => "GA".into(),
-        Phase::Controlled => match ac.lateral {
-            Lateral::Heading(h) => format!("H{}", format_heading(airport.to_magnetic(h))),
-            _ => active_fix_name(airport, ac),
+        Phase::Controlled => match ac.assigned_heading() {
+            Some(h) => format!("H{}", format_heading(airport.to_magnetic(h))),
+            None => active_fix_name(airport, ac),
         },
         _ => active_fix_name(airport, ac),
     };
-    format!("{:03.0} {intent}", ac.target_altitude / 100.0)
+    format!("{:03.0} {intent}", ac.assigned_altitude() / 100.0)
 }
 
 fn active_fix_name(airport: &Airport, ac: &Aircraft) -> String {
@@ -415,6 +455,20 @@ fn draw_target(world: &World, ui: &UiState, ac: &Aircraft, track: &RadarTrack) {
             let code = crate::sim::delivery::wrong_code_showing(ac).unwrap_or_default();
             text(&crate::sim::delivery::code_text(code), 2.0, WARNING);
         }
+        // A misheard altitude or heading the controller let through: the
+        // assigned value in amber, timeshared with what it's really doing.
+        None if ac.missed_hearback().is_some() => {
+            let line = match (ac.missed_hearback(), timeshare()) {
+                (Some(SlipKind::Altitude { heard, .. }), true) => format!("{:03.0} ALT", heard / 100.0),
+                (Some(SlipKind::Heading { heard, .. }), true) => {
+                    format!("H{} HDG", format_heading(world.airport.to_magnetic(*heard)))
+                }
+                _ => scratchpad(world, ac),
+            };
+            text(&line, 2.0, WARNING);
+        }
+        // Asking to go round weather: WX, timeshared with the scratchpad.
+        None if ac.deviation.is_some_and(|d| !d.approved) && timeshare() => text("WX", 2.0, WARNING),
         _ => text(&scratchpad(world, ac), 2.0, color),
     }
 }

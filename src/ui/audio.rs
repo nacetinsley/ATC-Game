@@ -763,6 +763,23 @@ fn asdex_hazards(world: &World, events: &[SimEvent], selected: Option<u32>) -> V
                     out.push((named(physical), rolling_on(physical)));
                 }
             }
+            // A pilot onto a runway, or rolling, without a clearance, with
+            // traffic in the way.
+            SimEvent::PilotDeviation { callsign, .. } => {
+                use crate::sim::mistakes::SlipKind;
+                let Some(ac) = find(callsign) else { continue };
+                match ac.slip.as_ref().map(|s| &s.kind) {
+                    Some(SlipKind::Incursion { runway, conflict: true, .. }) => {
+                        out.push((named(*runway), rolling_on(*runway)));
+                    }
+                    Some(SlipKind::EarlyRoll { conflict: true, .. }) => {
+                        if let Some(e) = ac.departure_end {
+                            out.push((named(map.runway_of_end[e]), true));
+                        }
+                    }
+                    _ => {}
+                }
+            }
             SimEvent::RunwaySeparation { callsign } => {
                 if let Some(e) = find(callsign).and_then(|a| a.departure_end) {
                     out.push((named(map.runway_of_end[e]), true));

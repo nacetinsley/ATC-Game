@@ -393,6 +393,13 @@ impl World {
 
     /// Move one taxiing aircraft along its route.
     fn move_taxi(&mut self, index: usize) -> Arrival {
+        // A pilot about to stop at a hold line might, very rarely, not.
+        let deviates = |world: &World, node: usize| world.deviates_at_hold_line(&world.aircraft[index], node);
+        let deviate_at: Option<usize> = {
+            let ac = &self.aircraft[index];
+            ac.taxi.as_ref().and_then(|t| t.next()).filter(|&n| deviates(self, n))
+        };
+        let now = self.time;
         let map = self.airport.surface.as_ref().expect("airport has a ground layout");
         let ac = &mut self.aircraft[index];
         let Some(mut taxi) = ac.taxi.take() else { return Arrival::Moving(None) };
@@ -459,7 +466,13 @@ impl World {
                         .iter()
                         .copied()
                         .find(|z| !here.contains(z) && !taxi.cleared.contains(z));
-                    if short.is_some() {
+                    if let Some(runway) = short.filter(|_| deviate_at == Some(next)) {
+                        // On across without a clearance.
+                        taxi.cleared.push(runway);
+                        let kind = super::mistakes::SlipKind::Incursion { runway, conflict: false, entered: false };
+                        ac.slip = Some(super::mistakes::Slip::new(kind, now));
+                        ac.force_slip = None;
+                    } else if short.is_some() {
                         taxi.holding_short = short;
                         ac.ias = 0.0;
                     }
@@ -503,6 +516,13 @@ impl World {
         let id = ac.id;
         let callsign = ac.callsign.clone();
         let close = self.arrivals_within(zone, INCURSION_FINAL_NM, VFR_INCURSION_NM);
+        // On a runway it wasn't cleared onto: (Some(already on it), conflict so far).
+        let deviation = match ac.slip.as_ref().map(|s| &s.kind) {
+            Some(&super::mistakes::SlipKind::Incursion { runway, entered, conflict }) if runway == zone => {
+                Some((entered, conflict))
+            }
+            _ => None,
+        };
         let map = self.surface();
         let rolling = self.aircraft.iter().any(|a| {
             a.id != id
@@ -513,6 +533,24 @@ impl World {
                     _ => false,
                 }
         });
+        if let Some((entered, was_conflict)) = deviation {
+            // The pilot's doing, not the controller's: logged, and left to
+            // the controller to sort out if anyone's coming.
+            let conflict = was_conflict || !close.is_empty() || rolling;
+            let name = map.runways[zone].name.clone();
+            let now = self.time;
+            if let Some(slip) = self.aircraft[index].slip.as_mut() {
+                slip.kind = super::mistakes::SlipKind::Incursion { runway: zone, conflict, entered: true };
+                if !entered {
+                    slip.at = now;
+                }
+            }
+            if !entered {
+                let what = format!("crossed the runway {name} hold line without a clearance");
+                self.emit(SimEvent::PilotDeviation { callsign, what });
+            }
+            return;
+        }
         if close.is_empty() && !rolling {
             return;
         }

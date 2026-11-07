@@ -232,8 +232,15 @@ impl UiState {
             self.pending.add_tower(Clearance::Ifr { route, altitude, squawk });
             return;
         }
-        let airborne = self.selected.and_then(|id| world.find(id)).filter(|a| !a.on_ground);
-        if let Some(plan) = airborne.and_then(|a| a.flight_plan.as_ref()) {
+        let Some(ac) = self.selected.and_then(|id| world.find(id)).filter(|a| !a.on_ground) else { return };
+        // Airborne: say again what it was given, to put a wrong readback right.
+        if ac.vfr.is_none() && world.is_players(ac) && ac.phase == Phase::Controlled {
+            self.pending.altitude = Some(ac.assigned_altitude());
+            if let Some(h) = ac.assigned_heading() {
+                self.pending.set_heading(h);
+            }
+        }
+        if let Some(plan) = &ac.flight_plan {
             self.pending.add_tower(Clearance::Squawk(plan.squawk));
         }
     }
@@ -455,10 +462,25 @@ impl UiState {
                 self.pending.set_resume();
             }
             if is_key_pressed(KeyCode::G) {
-                self.pending.go_around = true;
+                // On a takeoff roll: stop. Otherwise: go around.
+                let rolling = self
+                    .selected
+                    .and_then(|id| world.find(id))
+                    .is_some_and(|a| a.on_ground && a.phase == Phase::TowerRelease);
+                if rolling {
+                    self.pending.add_tower(Clearance::StopTakeoff);
+                } else {
+                    self.pending.go_around = true;
+                }
             }
             if is_key_pressed(KeyCode::H) {
                 self.hold(world);
+            }
+            // D: approve the deviation round weather it asked for.
+            if is_key_pressed(KeyCode::D)
+                && self.selected.and_then(|id| world.find(id)).is_some_and(|a| a.deviation.is_some_and(|d| !d.approved))
+            {
+                self.pending.add_tower(Clearance::Deviation);
             }
             if is_key_pressed(KeyCode::X) {
                 self.cross(world);

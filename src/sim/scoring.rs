@@ -22,12 +22,20 @@ pub const POINTS_CLEARED: i32 = 30;
 pub const POINTS_PLAN_CAUGHT: i32 = 40;
 pub const PENALTY_PLAN_MISSED: i32 = -100;
 pub const PENALTY_READBACK_MISSED: i32 = -75;
+/// A pilot's mistake put right before it mattered, or let through.
+pub const POINTS_SLIP_CAUGHT: i32 = 40;
+pub const PENALTY_SLIP_MISSED: i32 = -75;
+/// The same for a major error: an incursion or a takeoff without clearance.
+pub const POINTS_MAJOR_CAUGHT: i32 = 150;
+pub const PENALTY_MAJOR_MISSED: i32 = -200;
 pub const POINTS_PARKED: i32 = 50;
 pub const PENALTY_INCURSION: i32 = -400;
 pub const PENALTY_RUNWAY_SEPARATION: i32 = -300;
 pub const PENALTY_GROUND_CONFLICT: i32 = -200;
 pub const PENALTY_DEADLOCK: i32 = -100;
 pub const PENALTY_MISSED_HANDOFF: i32 = -25;
+/// A pilot asked to go round weather and had to go without an answer.
+pub const PENALTY_DEVIATION_IGNORED: i32 = -50;
 pub const POINTS_TOUCH_AND_GO: i32 = 20;
 pub const POINTS_EMERGENCY_LANDED: i32 = 150;
 /// Landed this soon after declaring.
@@ -55,6 +63,10 @@ pub enum GoAroundReason {
     WakeSpacing,
     Unstable,
     NoLandingClearance,
+    /// At minimums in weather it can't land in: nobody's fault.
+    Weather,
+    /// Something on the runway in low visibility upset the ILS signal.
+    IlsInterference,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,6 +116,17 @@ pub enum SimEvent {
     PlanMissed { callsign: String, problem: String },
     /// Left Delivery with a wrong readback never corrected.
     ReadbackMissed { callsign: String, what: String },
+    /// A pilot's mistake the player caught and put right.
+    SlipCaught { callsign: String, what: String, major: bool },
+    /// A pilot's mistake the player let through.
+    SlipMissed { callsign: String, what: String, major: bool },
+    /// A pilot did something it wasn't cleared to: not the controller's
+    /// fault, logged for the record.
+    PilotDeviation { callsign: String, what: String },
+    /// Left for its alternate: it couldn't land in the weather.
+    Diverted { callsign: String },
+    /// Asked to deviate round weather, heard nothing, and went anyway.
+    DeviationIgnored { callsign: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,7 +288,7 @@ impl Score {
             SimEvent::GoAround { callsign, reason } => {
                 self.go_arounds += 1;
                 // A late handoff is scored by its own event, so don't charge twice.
-                let points = if *reason == GoAroundReason::LateHandoff {
+                let points = if matches!(reason, GoAroundReason::LateHandoff | GoAroundReason::Weather) {
                     0
                 } else {
                     PENALTY_GO_AROUND
@@ -277,6 +300,8 @@ impl Score {
                     GoAroundReason::WakeSpacing => "too close behind traffic",
                     GoAroundReason::Unstable => "unstable approach",
                     GoAroundReason::NoLandingClearance => "no landing clearance",
+                    GoAroundReason::Weather => "below minimums",
+                    GoAroundReason::IlsInterference => "ILS critical area not protected",
                 };
                 self.incident(time, format!("{callsign} went around: {why}"), points);
             }
@@ -445,6 +470,23 @@ impl Score {
             }
             SimEvent::ReadbackMissed { callsign, what } => {
                 self.incident(time, format!("{callsign} readback error missed: {what}"), PENALTY_READBACK_MISSED);
+            }
+            SimEvent::SlipCaught { callsign, what, major } => {
+                let points = if *major { POINTS_MAJOR_CAUGHT } else { POINTS_SLIP_CAUGHT };
+                self.incident(time, format!("{callsign} {what}"), points);
+            }
+            SimEvent::SlipMissed { callsign, what, major } => {
+                let points = if *major { PENALTY_MAJOR_MISSED } else { PENALTY_SLIP_MISSED };
+                self.incident(time, format!("{callsign} {what}"), points);
+            }
+            SimEvent::PilotDeviation { callsign, what } => {
+                self.incident(time, format!("Pilot deviation: {callsign} {what}"), 0);
+            }
+            SimEvent::DeviationIgnored { callsign } => {
+                self.incident(time, format!("{callsign} deviated for weather without an answer"), PENALTY_DEVIATION_IGNORED);
+            }
+            SimEvent::Diverted { callsign } => {
+                self.incident(time, format!("{callsign} diverted: below minimums"), 0);
             }
             SimEvent::ConflictAlert { .. }
             | SimEvent::EmergencyDeclared { .. }

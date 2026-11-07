@@ -278,6 +278,16 @@ pub struct Aircraft {
     pub strip: Vec<StripMark>,
     /// IFR departures only: what it filed and what it's cleared for.
     pub flight_plan: Option<super::delivery::FlightPlan>,
+    /// A pilot mistake the player hasn't sorted out yet.
+    pub slip: Option<super::mistakes::Slip>,
+    /// Make this mistake at the next chance: for tests and lessons.
+    pub force_slip: Option<super::mistakes::Force>,
+    /// Go-arounds at minimums in fog it couldn't land in.
+    pub weather_go_arounds: u32,
+    /// Since when it has been unable to land for the weather, seconds.
+    pub minimums_since: Option<f32>,
+    /// Going round a thunderstorm, or asking to.
+    pub deviation: Option<super::storms::Deviation>,
 }
 
 impl Aircraft {
@@ -331,7 +341,38 @@ impl Aircraft {
             emergency: None,
             strip: Vec::new(),
             flight_plan: None,
+            slip: None,
+            force_slip: None,
+            weather_go_arounds: 0,
+            minimums_since: None,
+            deviation: None,
         }
+    }
+
+    /// The altitude the controller assigned: what the data block shows,
+    /// whatever the pilot is really climbing or descending to.
+    pub fn assigned_altitude(&self) -> f32 {
+        use super::mistakes::SlipKind;
+        match self.slip.as_ref().map(|s| &s.kind) {
+            Some(SlipKind::Altitude { assigned, .. } | SlipKind::Bust { assigned, .. }) => *assigned,
+            _ => self.target_altitude,
+        }
+    }
+
+    /// The heading the controller assigned, if it's flying one.
+    pub fn assigned_heading(&self) -> Option<f32> {
+        use super::mistakes::SlipKind;
+        match (self.slip.as_ref().map(|s| &s.kind), self.lateral) {
+            (Some(SlipKind::Heading { assigned, .. }), _) => Some(*assigned),
+            (_, Lateral::Heading(h)) => Some(h),
+            _ => None,
+        }
+    }
+
+    /// A misheard altitude or heading the player let through: shown in amber
+    /// until it's put right.
+    pub fn missed_hearback(&self) -> Option<&super::mistakes::SlipKind> {
+        self.slip.as_ref().filter(|s| s.missed && s.is_airborne()).map(|s| &s.kind)
     }
 
     pub fn tas(&self) -> f32 {
@@ -400,7 +441,14 @@ impl Aircraft {
         }
 
         let air = wind.vector_at(self.altitude);
-        let desired = autopilot::desired_heading(self, air, airport, dt);
+        let mut desired = autopilot::desired_heading(self, air, airport, dt);
+        // Going round weather: off to one side of where it means to go.
+        if let Some(d) = self.deviation
+            && d.approved
+            && matches!(self.lateral, Lateral::Heading(_) | Lateral::Direct(_) | Lateral::Route)
+        {
+            desired = d.heading();
+        }
         self.turn_toward(desired, dt);
         self.step_speed(dt, airport);
         self.step_vertical(dt, airport);

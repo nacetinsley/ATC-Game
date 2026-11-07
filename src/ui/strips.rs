@@ -320,7 +320,7 @@ pub fn print(world: &World, ac: &Aircraft, clock_start: f64) -> Printed {
             b9: if vfr.is_some() {
                 "VFR".into()
             } else {
-                format!("{:03.0}", (ac.target_altitude / 100.0).round())
+                format!("{:03.0}", (ac.assigned_altitude() / 100.0).round())
             },
             remarks: star_name(world, ac).unwrap_or_default(),
             atis,
@@ -543,7 +543,7 @@ pub fn marks(
                 }
             }
             // A reset to the code already printed: nothing new to write.
-            Clearance::Squawk(_) => {}
+            Clearance::Squawk(_) | Clearance::StopTakeoff | Clearance::Deviation => {}
         }
     }
     // Holding short now: written when it stopped at the line.

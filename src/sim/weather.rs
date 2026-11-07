@@ -47,6 +47,52 @@ const PHONETIC: [&str; 26] = [
     "Victor", "Whiskey", "X-ray", "Yankee", "Zulu",
 ];
 
+/// What the sky does through a shift, besides the wind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WeatherKind {
+    /// Clear skies and good visibility all shift.
+    #[default]
+    Good,
+    /// Rolled from the seed: anything from a fine day to fog or a storm line.
+    Variable,
+    /// Low cloud and poor visibility all shift, maybe fog below minimums.
+    LowIfr,
+    /// Thunderstorms drifting through the airspace.
+    Storms,
+}
+
+impl WeatherKind {
+    pub const ALL: [WeatherKind; 4] = [WeatherKind::Good, WeatherKind::Variable, WeatherKind::LowIfr, WeatherKind::Storms];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            WeatherKind::Good => "Good",
+            WeatherKind::Variable => "Variable",
+            WeatherKind::LowIfr => "Low IFR",
+            WeatherKind::Storms => "Storms",
+        }
+    }
+
+    /// What to expect, for the menu.
+    pub fn note(self) -> &'static str {
+        match self {
+            WeatherKind::Good => "Clear skies: only the wind changes",
+            WeatherKind::Variable => "Anything from a fine day to fog rolling in or a storm line",
+            WeatherKind::LowIfr => "Low cloud and fog: no VFR, low visibility procedures",
+            WeatherKind::Storms => "Thunderstorms drift through: pilots ask to deviate",
+        }
+    }
+
+    pub fn step(self, by: i32) -> WeatherKind {
+        super::mistakes::step(&Self::ALL, self, by)
+    }
+}
+
+/// What the ATIS has to report afresh when it changes.
+fn sky_state(sky: &super::sky::Sky) -> (&'static str, bool, bool) {
+    (sky.category(), sky.lvp(), sky.below_cat1())
+}
+
 /// A runway change that's been announced.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RunwayChange {
@@ -90,12 +136,19 @@ pub struct Weather {
     broadcast_at: f32,
     pub pending: Option<RunwayChange>,
     last_change: f32,
+    /// Cloud and visibility through the shift, and now.
+    sky_plan: super::sky::SkyPlan,
+    pub sky: super::sky::Sky,
+    /// What the current ATIS says about it: category, LVP, below minimums.
+    broadcast_sky: (&'static str, bool, bool),
 }
 
 impl Weather {
     /// `shift` is the shift length in seconds: a front comes through at the
     /// same point in a shift of any length.
-    pub fn new(seed: u64, wind: Wind, changing: bool, shift: f32) -> Weather {
+    pub fn new(seed: u64, wind: Wind, changing: bool, shift: f32, kind: WeatherKind) -> Weather {
+        let sky_plan = super::sky::SkyPlan::roll(kind, seed, shift);
+        let sky = sky_plan.at(0.0);
         let scale = shift / FRONT_SHIFT_S;
         let mut rng = fastrand::Rng::with_seed(seed ^ 0x5745_4154_4845_5221);
         let letter = rng.usize(0..PHONETIC.len());
@@ -118,7 +171,17 @@ impl Weather {
             broadcast_at: 0.0,
             pending: None,
             last_change: f32::NEG_INFINITY,
+            sky,
+            broadcast_sky: sky_state(&sky),
+            sky_plan,
         }
+    }
+
+    /// The thunderstorms this shift's weather brings: cells all shift on a
+    /// Storms day, one line through on a Variable one, or none.
+    pub fn storms_for(&self, airport: &super::airspace::Airport, seed: u64, shift: f32, kind: WeatherKind) -> super::storms::Storms {
+        let planned = self.sky_plan.storms;
+        super::storms::Storms::new(airport, seed, shift, planned && kind == WeatherKind::Storms, planned && kind == WeatherKind::Variable)
     }
 
     /// The current ATIS letter, spoken.
@@ -137,8 +200,38 @@ impl Weather {
     }
 }
 
+/// The ATIS reports thunderstorms whose edge is closer than this, NM.
+const STORM_REPORT_NM: f32 = 30.0;
+
 impl World {
+    /// The cloud and visibility now.
+    pub fn sky(&self) -> super::sky::Sky {
+        self.weather.sky
+    }
+
+    /// "VIS 1/2 FG OVC002  LVP" when the weather is worth a status line.
+    pub fn sky_line(&self) -> Option<String> {
+        let sky = self.weather.sky;
+        if self.config.weather == WeatherKind::Good || sky.category() == "VFR" {
+            return None;
+        }
+        let mut line = format!("{} {}", sky.short(), sky.category());
+        if sky.below_cat1() {
+            line += "  BELOW CAT I";
+        } else if sky.lvp() {
+            line += "  LVP";
+        }
+        Some(line)
+    }
+
+    /// Fix the cloud and visibility for the rest of the shift: for tests and
+    /// lessons. Takes effect, with a new ATIS if it matters, next tick.
+    pub fn fix_sky(&mut self, sky: super::sky::Sky) {
+        self.weather.sky_plan = super::sky::SkyPlan::fixed(sky);
+    }
+
     pub(super) fn run_weather(&mut self) {
+        self.weather.sky = self.weather.sky_plan.at(self.time);
         self.step_wind();
         self.check_atis();
         self.check_runway_change();
@@ -157,12 +250,27 @@ impl World {
     /// "Information Bravo. Wind 270 at 12. Landing 27L, departing 27R."
     pub fn atis_text(&self) -> String {
         let mut text = format!(
-            "Information {}. Wind {:03.0} at {:.0}. {}.",
+            "Information {}. Wind {:03.0} at {:.0}. ",
             self.weather.information(),
             self.airport.to_magnetic(self.wind.from),
             self.wind.speed,
-            self.runways_in_use()
         );
+        // A clear day needs no sky report.
+        let sky = self.weather.sky;
+        if self.config.weather != WeatherKind::Good {
+            text += &sky.spoken();
+            text += " ";
+        }
+        if let Some((miles, from, moving)) = self.storms.report(STORM_REPORT_NM) {
+            let (from, moving) = (super::vfr::compass(from), super::vfr::compass(moving));
+            text += &format!("Thunderstorm {miles:.0} miles {from}, moving {moving}. ");
+        }
+        text += &format!("{}.", self.runways_in_use());
+        if sky.below_cat1() {
+            text += " Below Category I minimums: Category III approaches only.";
+        } else if sky.lvp() {
+            text += " Low visibility procedures in effect.";
+        }
         if let Some(closed) = self.closed_runway_name() {
             text += &format!(" Runway {closed} closed.");
         }
@@ -219,6 +327,12 @@ impl World {
     }
 
     fn check_atis(&mut self) {
+        // A new flight category, or low visibility procedures starting or
+        // ending, goes out at once.
+        if sky_state(&self.weather.sky) != self.weather.broadcast_sky {
+            self.new_atis();
+            return;
+        }
         if self.time - self.weather.broadcast_at < ATIS_MIN_INTERVAL_S {
             return;
         }
@@ -235,6 +349,7 @@ impl World {
         w.letter = (w.letter + 1) % PHONETIC.len();
         w.broadcast = self.wind;
         w.broadcast_at = self.time;
+        w.broadcast_sky = sky_state(&w.sky);
         let text = self.atis_text();
         self.say(Speaker::System, text);
     }

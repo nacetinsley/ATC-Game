@@ -256,10 +256,12 @@ impl World {
         let rwy = self.arrival_runway();
         let runway = &self.airport.runways[rwy];
         let physical = self.airport.surface.as_ref().map(|m| m.runway_of_end[rwy]);
+        let clear_nm =
+            if self.weather.sky.lvp() { super::visibility::LVP_FINAL_CLEAR_NM } else { FINAL_SPAWN_CLEAR_NM };
         !self.aircraft.iter().any(|a| {
             let spacing = a.approach_runway == Some(rwy)
                 && !a.on_ground
-                && (runway.along(a.pos) - FINAL_SPAWN_NM).abs() < FINAL_SPAWN_CLEAR_NM;
+                && (runway.along(a.pos) - FINAL_SPAWN_NM).abs() < clear_nm;
             let vfr_landing =
                 a.vfr.is_some() && physical.is_some_and(|p| self.landing_distance(a, p).is_some());
             spacing || vfr_landing
@@ -270,10 +272,11 @@ impl World {
     /// already talking to Tower. While the runway can't take them, or the
     /// final is full, the automated Approach holds them instead.
     fn spawn_final_arrival(&mut self) -> bool {
-        if self.arrivals_held() || !self.room_on_final() {
-            return self.spawn_holding_arrival();
-        }
         let ty = self.pick_type();
+        // Below minimums, only Category III types go onto the final.
+        if self.arrivals_held() || !self.room_on_final() || !self.can_land(ty) {
+            return self.spawn_holding_arrival(ty);
+        }
         let callsign = self.new_callsign(ty);
         let id = self.next_id();
         let time = self.time;
@@ -326,8 +329,7 @@ impl World {
 
     /// A new arrival for the automated Approach to hold: at the bottom free
     /// level of the least busy published hold it can use.
-    fn spawn_holding_arrival(&mut self) -> bool {
-        let ty = self.pick_type();
+    fn spawn_holding_arrival(&mut self, ty: &'static AircraftType) -> bool {
         let Some((fix, altitude)) = self.automated_hold_slot() else { return false };
         let callsign = self.new_callsign(ty);
         let id = self.next_id();

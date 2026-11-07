@@ -45,6 +45,8 @@ pub enum Awaiting {
     ClearanceRequest,
     /// Has waited for its clearance long enough to count as delay.
     ClearanceLate,
+    /// Asking to deviate round weather.
+    Deviation,
 }
 
 impl Awaiting {
@@ -61,6 +63,7 @@ impl Awaiting {
             Awaiting::CheckIn => "CALL",
             Awaiting::Efc => "EFC",
             Awaiting::ClearanceRequest | Awaiting::ClearanceLate => "CLNC",
+            Awaiting::Deviation => "WX",
         }
     }
 
@@ -68,7 +71,11 @@ impl Awaiting {
     pub fn urgent(self) -> bool {
         matches!(
             self,
-            Awaiting::LandingClearance | Awaiting::HandoffDue | Awaiting::Efc | Awaiting::ClearanceLate
+            Awaiting::LandingClearance
+                | Awaiting::HandoffDue
+                | Awaiting::Efc
+                | Awaiting::ClearanceLate
+                | Awaiting::Deviation
         )
     }
 }
@@ -109,6 +116,10 @@ impl World {
             if close {
                 return Some(Awaiting::LandingClearance);
             }
+        }
+
+        if ac.deviation.is_some_and(|d| !d.approved) {
+            return Some(Awaiting::Deviation);
         }
 
         if self.handoff_due(ac) {
@@ -163,7 +174,9 @@ impl World {
                             .is_some_and(|t| t.node != m.parking[p].node)
                     })
                 });
-            if staffing.ground && (parked_departure || arrival_waiting) {
+            // Stopped short of the runway, off its route: a wrong turn.
+            let lost_departure = super::mistakes::lost(ac) && clear_of_runway && !self.at_departure_hold(ac);
+            if staffing.ground && (parked_departure || arrival_waiting || lost_departure) {
                 return Some(Awaiting::ReadyToTaxi);
             }
         }

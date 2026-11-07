@@ -10,9 +10,13 @@ pub mod delivery;
 pub mod emergency;
 pub mod ground;
 pub mod holding;
+pub mod mistakes;
 pub mod performance;
 pub mod positions;
 pub mod scoring;
+pub mod sky;
+pub mod storms;
+pub mod visibility;
 pub mod tower;
 pub mod ground_map;
 pub mod registration;
@@ -121,6 +125,10 @@ pub struct WorldConfig {
     pub vfr: bool,
     /// How often emergencies happen.
     pub emergencies: emergency::EmergencyRate,
+    /// How often pilots slip up.
+    pub mistakes: mistakes::PilotMistakes,
+    /// Ceiling, visibility and storms.
+    pub weather: weather::WeatherKind,
     /// UTC at the start of the shift, seconds (only the time of day counts):
     /// for clock times said on the radio.
     pub clock_start: f64,
@@ -137,6 +145,8 @@ impl Default for WorldConfig {
             staffing: positions::Staffing::default(),
             vfr: false,
             emergencies: emergency::EmergencyRate::Off,
+            mistakes: mistakes::PilotMistakes::Off,
+            weather: weather::WeatherKind::Good,
             clock_start: 0.0,
         }
     }
@@ -157,6 +167,8 @@ pub struct World {
     pub ended: Option<ShiftEnd>,
     /// Wind changes, the ATIS and runway changes.
     pub weather: weather::Weather,
+    /// Thunderstorm cells, if the weather has any.
+    pub storms: storms::Storms,
     /// Emergency state: closed runways, aircraft being brought back.
     pub emergencies: emergency::Emergencies,
 
@@ -181,8 +193,10 @@ impl World {
             speed: 5.0 + rng.f32() * 20.0,
         });
         let config_index = best_config(&airport, wind);
-        let weather = weather::Weather::new(config.seed, wind, config.wind.is_none(), config.shift_seconds);
+        let weather = weather::Weather::new(config.seed, wind, config.wind.is_none(), config.shift_seconds, config.weather);
+        let storms = weather.storms_for(&airport, config.seed, config.shift_seconds, config.weather);
         let mut world = World {
+            storms,
             airport,
             wind,
             time: 0.0,
@@ -355,6 +369,7 @@ impl World {
         self.time += TICK;
 
         self.run_weather();
+        self.run_visibility();
         self.run_radio();
         if self.config.traffic {
             self.run_traffic();
@@ -377,6 +392,8 @@ impl World {
         self.run_holding();
         self.run_delivery();
         self.run_transponders();
+        self.run_slips();
+        self.run_storms();
         self.check_handoffs();
         self.check_sector();
         self.run_safety_net();

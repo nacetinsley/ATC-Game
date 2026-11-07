@@ -18,8 +18,17 @@ reply "unable", and the scope shows only what radar sees on each sweep.
 | **XHGT** Harrowgate International | Fictional. Two parallel runways, airline traffic that builds through the shift. |
 | **KSUS** Spirit of St. Louis | Real runways, STARs, SIDs, ILS approaches and minimum vectoring altitudes from FAA data. Business jets and general aviation at an estimated real-world rate. |
 
-Choose the airport, your position and a traffic level, from Very quiet to
-Very busy, on the start screen. The middle level is the airport's normal rate.
+Choose the airport and your position on the start screen. Press D (or click
+the Difficulty box) to set how hard the shift is:
+
+| Setting | Choices |
+|---|---|
+| Traffic | Very quiet to Very busy. The middle level is the airport's normal rate. |
+| Emergencies | Off, Realistic, Occasional, Frequent or Intense (see Emergencies) |
+| Pilot mistakes | Off, Realistic, Occasional or Frequent (see Pilot mistakes) |
+| Weather | Good, Variable, Low IFR or Storms (see Weather) |
+
+Relaxed, Standard (the default) and Demanding set all four at once.
 
 The shift is an hour unless you change it. Any whole number of minutes from
 1 to 12 hours works: - and + step it by 5 minutes (15 above two hours, 1 with
@@ -99,6 +108,49 @@ wind round over a few minutes.
 - **Automated Tower** won't release a departure into the new direction while
   an arrival is still landing the old way.
 
+### Cloud, visibility and fog
+
+The Weather setting on the Difficulty screen decides the sky. **Good** is
+clear all shift. **Variable** might stay fair, lower through the shift, bring
+a fog bank in for 10 to 20 minutes, or bring a line of storms through. **Low
+IFR** is overcast at 200 to 600 ft with 1 to 2 miles all shift, and in half
+of shifts the fog thickens below minimums for a spell. **Storms** is fair at
+the field with thunderstorms about (see below).
+
+The ATIS reports the visibility and ceiling, and a new letter goes out when
+the flight category changes. When it isn't VFR, the bottom status line shows
+it (`VIS 1/2 FG OVC002 LIFR  LVP`).
+
+| Conditions | What changes |
+|---|---|
+| IMC: ceiling below 1,000 ft or visibility below 3 miles | No new VFR traffic. VFR departures that haven't reached the runway cancel. Closed traffic makes its next landing a full stop. VFR arrivals already inbound still land. |
+| Low-visibility procedures: below 800 ft or 2 miles | The ILS critical area is protected. Anything you put on the arrival runway while an arrival is inside 5 miles bends the localizer, and the arrival goes around: a penalty. The automated Tower waits for 6.5 miles, and the automated Approach spaces arrivals further apart. |
+| Below Category I: below 200 ft or 1/2 mile | Only Category III aircraft can land: the airline jets and the Gulfstream. The others refuse an ILS clearance ("below our minimums, request holding"), go around at minimums if they're already on final, and divert after two go-arounds or 20 minutes of waiting. Go-arounds and diversions for the weather cost nothing. The automated Approach holds them and only sends Category III traffic down the final. Aircraft in an emergency land anyway. |
+
+### Thunderstorms
+
+Cells build, drift with the steering wind for half an hour to an hour, and
+die away. They show on the scope as STARS weather does: dim for light rain,
+brighter for the heavy cores at level 3 and above, stippled at level 5 and
+above. They stay at least 12 miles from the field and 6 from the published
+holds, so finals and holds stay usable. The ATIS mentions any heavy cell
+within 30 miles ("Thunderstorm 18 miles west, moving east").
+
+- **Deviations:** a pilot whose track runs into level 3 or worse within 10
+  miles asks to go round ("request 20 left for weather"). The strip shows
+  `WX` and the data block flags it. **D** approves it. A heading or direct
+  that misses the weather answers it too.
+- **Unanswered:** after 30 seconds, or with the storm 3 miles away, the pilot
+  goes anyway ("deviating, unable to wait"), and that costs points.
+- **Flying it:** the pilot holds a steady heading off its course, turns
+  further if that isn't enough, and calls "clear of the weather, proceeding
+  direct BRICK" when the way back is clear. A route fix under a storm is
+  skipped.
+- **Refusals:** a heading or direct into level 3 or worse gets "unable,
+  weather ahead".
+- **Automated controllers, and Center,** approve deviations on their own
+  frequencies.
+
 ## Holding
 
 Approach (and Tower, for a missed approach) can hold an arrival at a fix.
@@ -175,7 +227,7 @@ filed and without mistakes.
 
 ## Emergencies
 
-The start menu sets how often things go wrong (E steps through the levels).
+The Difficulty screen sets how often things go wrong.
 Each IFR movement has a chance of an emergency, so busier shifts see more:
 
 | Level | Chance per flight | At Harrowgate, Normal traffic, 30 minutes |
@@ -219,6 +271,48 @@ Landing an emergency earns 150 points, or 250 within 8 minutes of declaring.
 A go-around costs 150 and a low-fuel diversion 300. The automated Tower holds
 departures while an emergency is within 10 miles of landing on the same runway.
 The end-of-shift screen lists every emergency and how it ended.
+
+## Pilot mistakes
+
+Pilots get things wrong, on instructions you give them, and only there:
+automated controllers aren't affected. The Difficulty screen sets how often:
+
+| Level | Instructions | Taxi clearances | Serious errors |
+|---|---|---|---|
+| Off | never | never | never |
+| Realistic | 1 in 150 | 1 in 80 | 1 in 4,000 |
+| Occasional (default) | 1 in 30 | 1 in 15 | 1 in 600 |
+| Frequent | 1 in 12 | 1 in 6 | 1 in 150 |
+
+The scope and strips always show what *you* assigned. Mode C shows what the
+pilot is really doing, as on a real STARS, so a mistake is something you
+spot by watching.
+
+- **Hearback error:** the pilot reads back a wrong altitude (1,000 ft off) or
+  heading (10 or 20 degrees off, or the digits swapped), and flies it. Listen
+  to the readback. Say it again within a minute, before the aircraft is 300
+  ft past your altitude, for 40 points. Missed, it costs 75, and the
+  assigned value in the data block turns amber until you put it right.
+- **Altitude bust:** the readback is right, but the pilot flies 400 to 1,000
+  ft through the altitude. Catch it on Mode C once it's 200 ft through and
+  restate the altitude for 40 points. If the pilot notices first ("sorry,
+  climbing back to 5,000"), it costs 75.
+- **Wrong turn:** a taxiing aircraft takes the wrong taxiway at a junction.
+  The surface map keeps drawing the route you gave. Re-route it, or tell it
+  to hold position, for 40 points. Missed, the pilot stops, asks for
+  progressive taxi, and it costs 75. Wrong turns never lead onto a runway.
+- **Runway incursion** (rare): a taxiing aircraft crosses a hold line it
+  wasn't cleared past. It's logged as a pilot deviation, not your incursion.
+  Within 15 seconds, tell it to hold position or send the arrival around for
+  150 points. Leave an arrival to find it there and it costs 200.
+- **Takeoff without clearance** (rare): an aircraft told to line up and wait
+  starts rolling by itself ("rolling"). **G** tells a rolling aircraft to stop
+  immediately, which it can below 80 knots. Stopping it, or sending the
+  conflicting arrival around, within 10 seconds earns 150. Missed with
+  traffic in the way, it costs 200. With nobody about, it's only logged.
+
+**I** on an airborne aircraft says its assigned altitude and heading again,
+an easy way to put a hearback error right.
 
 ## Flight strips
 
@@ -340,6 +434,11 @@ arrival goes around, say), the lesson takes you back and lets you try again.
   the runway at the first exit ahead they can stop for, never one that
   doubles back. Departures line up where their taxiway meets the runway, an
   intersection departure if there's enough runway left for the type.
+- **Weather:** wind shifts and runway changes, low cloud and fog with
+  low-visibility procedures and Category III, and thunderstorms pilots
+  deviate round.
+- **Pilot mistakes:** hearback errors, altitude busts, wrong turns, and the
+  rare incursion or takeoff without clearance, for you to catch.
 - **Runway safety:** a landing needs a clearance by 1 NM final and a clear
   runway. Entering a runway with traffic inside 2 NM or rolling is an
   incursion; two aircraft nose to nose on a taxiway is a deadlock.
@@ -399,13 +498,14 @@ the Actions tab and download the zips from the run.
 | C | Clear for the ILS |
 | R | Resume the published route |
 | T | Accept a handoff, or hand off to the next controller |
-| G | Go around |
+| G | Go around. On a takeoff roll: stop immediately |
 | Click a hold line, gate or junction | Taxi the selected aircraft there |
 | Ctrl-click a taxiway | Add it to the taxi route ("via") |
 | H | On the ground: hold position, or continue. In the air: hold at the fix it's flying to |
 | Ctrl-drag onto a fix (Cmd on a Mac) | Hold at that fix |
 | X | Cross the runway ahead |
-| I | Delivery: the IFR clearance; again once cleared, repeat the code and altitude. Airborne: reset a wrong code |
+| D | Approve a deviation round weather (`WX` on the strip) |
+| I | Delivery: the IFR clearance; again once cleared, repeat the code and altitude. Airborne: say the assigned altitude and heading again, and reset a wrong code |
 | Up / Down at Delivery | Amend the altitude to expect |
 | S at Delivery | The next SID in use |
 | F4 | Delivery: show or hide the course hint |
@@ -424,7 +524,7 @@ the Actions tab and download the zips from the run.
 | Space | Pause |
 | Esc | Pause menu |
 | F5 / F6 / F7 / F8 | Start menu: Approach, Local, Ground or Delivery tutorial |
-| E | Start menu: how often emergencies happen |
+| D | Start menu: the Difficulty screen (Up/Down a row, Left/Right change it) |
 | S | Tutorial: show me |
 | 1 / 2 / 4 | Sim speed |
 | M | Toggle the MVA map |
@@ -447,6 +547,9 @@ with emergencies on Intense, is ignored by default:
 ```sh
 cargo test --release --test emergency -- --ignored
 ```
+
+Each of `delivery`, `mistakes` and `visibility` has an ignored long run too,
+of 100 shifts or more.
 
 ## Updating the KSUS data
 

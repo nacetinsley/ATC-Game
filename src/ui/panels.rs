@@ -120,8 +120,8 @@ fn draw_status(world: &World, ui: &UiState, x: f32) {
         18.0,
         DIM,
     );
-    // An announced runway change, or a closed runway, takes the bottom line.
-    match world.runway_change_line().or_else(|| world.closure_line()) {
+    // An announced runway change, a closed runway, or poor weather takes the bottom line.
+    match world.runway_change_line().or_else(|| world.closure_line()).or_else(|| world.sky_line()) {
         Some(change) => label(&change, left, 84.0, 18.0, SYSTEM),
         None => label(
             &format!(

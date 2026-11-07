@@ -440,10 +440,16 @@ impl World {
         })
     }
 
+    /// Held arrivals that could land in the weather now: below minimums, the
+    /// others wait for it to lift.
+    fn landable_holders(&self) -> impl Iterator<Item = (usize, &Aircraft)> {
+        self.automated_holders().filter(|(_, a)| self.can_land(a.ty))
+    }
+
     /// New arrivals join the hold: the runway is blocked, or others are
     /// already waiting and go first.
     pub(super) fn arrivals_held(&self) -> bool {
-        self.arrivals_blocked() || self.automated_holders().next().is_some()
+        self.arrivals_blocked() || self.landable_holders().next().is_some()
     }
 
     /// The fix and altitude for the next arrival the automated Approach
@@ -527,7 +533,7 @@ impl World {
             return;
         }
         let next = self
-            .automated_holders()
+            .landable_holders()
             .min_by(|a, b| {
                 a.1.target_altitude.total_cmp(&b.1.target_altitude).then(a.1.spawn_time.total_cmp(&b.1.spawn_time))
             })

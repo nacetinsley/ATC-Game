@@ -3,6 +3,7 @@
 
 use super::camera::{Camera, clip};
 use super::input::UiState;
+use crate::sim::mistakes::SlipKind;
 use crate::sim::World;
 use crate::sim::aircraft::{Aircraft, Flow, Landing, Phase};
 use crate::sim::clearance::{Clearance, spoken_runway, taxi_origin};
@@ -211,7 +212,12 @@ fn draw_routes(world: &World, map: &GroundMap, ui: &UiState) {
     let cam = &ui.surface;
     if let Some(taxi) = &ac.taxi {
         let mut points = vec![ac.pos];
-        points.extend(taxi.path.iter().skip(taxi.index).map(|&n| map.nodes[n].pos));
+        // The route it was cleared, even if the pilot has turned off it.
+        let (path, from) = match ac.slip.as_ref().map(|s| &s.kind) {
+            Some(SlipKind::WrongTurn { intended, junction, .. }) => (intended, if taxi.index > *junction { *junction } else { taxi.index }),
+            _ => (&taxi.path, taxi.index),
+        };
+        points.extend(path.iter().skip(from).map(|&n| map.nodes[n].pos));
         polyline(cam, &points, 2.0, ROUTE, false);
     }
     for clearance in &ui.pending.tower {

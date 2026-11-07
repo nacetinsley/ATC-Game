@@ -2,6 +2,7 @@
 
 pub mod audio;
 pub mod camera;
+pub mod difficulty;
 pub mod input;
 pub mod panels;
 pub mod scope;
@@ -11,13 +12,13 @@ pub mod surface;
 pub mod tutorial;
 
 use crate::sim::airspace::{Airport, CATALOG};
-use crate::sim::emergency::EmergencyRate;
 use crate::sim::positions::Staffing;
 use crate::sim::scoring::ShiftEnd;
 use crate::sim::traffic::Busyness;
 use crate::sim::tutorial::{LessonKind, Tutorial};
 use crate::sim::{TICK, World, WorldConfig};
 use audio::{Sounds, Volume};
+use difficulty::Difficulty;
 use input::{UiState, View};
 use macroquad::prelude::*;
 
@@ -157,6 +158,8 @@ const BRIEFING_VIEW: &str =
 
 enum Screen {
     Menu,
+    /// The Difficulty screen, with the row that has the keyboard.
+    Difficulty { row: usize },
     Playing,
     /// The sim is frozen behind the pause menu.
     Paused { choice: usize, show_controls: bool },
@@ -171,14 +174,13 @@ pub struct App {
     accumulator: f32,
     airports: Vec<Airport>,
     choice: usize,
-    busyness: Busyness,
+    difficulty: Difficulty,
     /// Index into `Staffing::CHOICES`.
     position: usize,
     /// VFR traffic, when a tower position is chosen.
     vfr: bool,
     /// The lesson being played, if this is a tutorial rather than a shift.
     tutorial: Option<Tutorial>,
-    emergencies: EmergencyRate,
     /// Shift length chosen on the menu, minutes.
     shift_minutes: u32,
     /// Minutes being typed on the menu's number keys.
@@ -187,21 +189,20 @@ pub struct App {
 
 /// What the menu chose for a new shift.
 struct ShiftChoice {
-    busyness: Busyness,
+    difficulty: Difficulty,
     staffing: Staffing,
     vfr: bool,
-    emergencies: EmergencyRate,
     minutes: u32,
 }
 
 fn new_world(airport: &Airport, choice: ShiftChoice) -> World {
     let seed = macroquad::miniquad::date::now() as u64;
-    let ShiftChoice { busyness, staffing, vfr, emergencies, minutes } = choice;
+    let ShiftChoice { difficulty, staffing, vfr, minutes } = choice;
+    let Difficulty { busyness, emergencies, mistakes, weather } = difficulty;
     let shift_seconds = minutes as f32 * 60.0;
-    World::new(
-        airport.clone(),
-        WorldConfig { seed, busyness, staffing, vfr, emergencies, shift_seconds, ..Default::default() },
-    )
+    let config =
+        WorldConfig { seed, busyness, staffing, vfr, emergencies, mistakes, weather, shift_seconds, ..Default::default() };
+    World::new(airport.clone(), config)
 }
 
 /// Both views, when the player has two: one full size, one inset.
@@ -252,10 +253,9 @@ impl App {
             world: new_world(
                 &airports[0],
                 ShiftChoice {
-                    busyness: Busyness::default(),
+                    difficulty: Difficulty::STANDARD,
                     staffing: Staffing::default(),
                     vfr: false,
-                    emergencies: EmergencyRate::Off,
                     minutes: shift::DEFAULT_MINUTES,
                 },
             ),
@@ -264,11 +264,10 @@ impl App {
             accumulator: 0.0,
             airports,
             choice: 0,
-            busyness: Busyness::default(),
+            difficulty: Difficulty::STANDARD,
             position: 0,
             vfr: true,
             tutorial: None,
-            emergencies: EmergencyRate::Occasional,
             shift_minutes: shift::DEFAULT_MINUTES,
             typed: None,
         }
@@ -281,10 +280,9 @@ impl App {
     fn start_shift(&mut self) {
         let airport = &self.airports[self.choice];
         let choice = ShiftChoice {
-            busyness: self.busyness,
+            difficulty: self.difficulty,
             staffing: self.staffing(),
             vfr: self.vfr,
-            emergencies: self.emergencies,
             minutes: self.shift_minutes,
         };
         self.world = new_world(airport, choice);
@@ -328,35 +326,26 @@ impl App {
                 if is_key_pressed(KeyCode::Down) {
                     self.choice = (self.choice + 1) % count;
                 }
-                if is_key_pressed(KeyCode::Left) {
-                    self.busyness = self.busyness.step(-1);
-                }
-                if is_key_pressed(KeyCode::Right) {
-                    self.busyness = self.busyness.step(1);
-                }
                 if is_key_pressed(KeyCode::P) || is_key_pressed(KeyCode::Tab) {
                     self.position = (self.position + 1) % Staffing::CHOICES.len();
                 }
                 if is_key_pressed(KeyCode::V) && self.staffing().tower() {
                     self.vfr = !self.vfr;
                 }
-                if is_key_pressed(KeyCode::E) {
-                    self.emergencies = self.emergencies.next();
-                }
                 self.shift_keys();
                 let picked = draw_menu(
                     &self.airports,
                     self.choice,
                     MenuState {
-                        busyness: self.busyness,
+                        difficulty: self.difficulty,
                         staffing: self.staffing(),
                         vfr: self.vfr,
-                        emergencies: self.emergencies,
                         shift_minutes: self.shift_minutes,
                     },
                 );
-                if let Some(rate) = picked.emergencies {
-                    self.emergencies = rate;
+                if picked.difficulty || is_key_pressed(KeyCode::D) {
+                    self.screen = Screen::Difficulty { row: 0 };
+                    return;
                 }
                 if let Some(minutes) = picked.shift_minutes {
                     self.shift_minutes = minutes;
@@ -364,9 +353,6 @@ impl App {
                 }
                 if picked.vfr {
                     self.vfr = !self.vfr;
-                }
-                if let Some(level) = picked.busyness {
-                    self.busyness = level;
                 }
                 if let Some(position) = picked.position {
                     self.position = position;
@@ -379,6 +365,15 @@ impl App {
                     self.start_lesson(kind);
                 } else if start_pressed() {
                     self.start_shift();
+                }
+            }
+            Screen::Difficulty { mut row } => {
+                self.sounds.silence();
+                let real_data = self.airports[self.choice].traffic.is_some();
+                match difficulty::frame(&mut self.difficulty, &mut row, real_data) {
+                    difficulty::Action::Stay => self.screen = Screen::Difficulty { row },
+                    difficulty::Action::Back => self.screen = Screen::Menu,
+                    difficulty::Action::Start => self.start_shift(),
                 }
             }
             Screen::Playing => self.play_frame(),
@@ -525,11 +520,11 @@ fn start_pressed() -> bool {
     is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter)
 }
 
-/// Five-notch slider for traffic level. Returns a level if one was clicked.
+/// Five-notch slider for traffic level, under a title at `y`. Returns a
+/// level if one was clicked.
 fn draw_busyness(busyness: Busyness, real_data: bool, x: f32, y: f32) -> Option<Busyness> {
     const SPACING: f32 = 112.0;
     const HIT: f32 = 14.0;
-    draw_text("TRAFFIC  Left/Right or click to choose", x, y, 20.0, DIM);
     let track = y + 30.0;
     let first = x + 40.0;
     let last = first + SPACING * (Busyness::ALL.len() - 1) as f32;
@@ -624,22 +619,21 @@ fn draw_positions(staffing: Staffing, x: f32, y: f32) -> Option<usize> {
 /// What the player changed on the menu this frame.
 #[derive(Default)]
 struct MenuPick {
-    busyness: Option<Busyness>,
+    /// The difficulty box was clicked.
+    difficulty: bool,
     position: Option<usize>,
     /// The VFR toggle was clicked.
     vfr: bool,
     /// A lesson button was clicked.
     lesson: Option<LessonKind>,
-    emergencies: Option<EmergencyRate>,
     shift_minutes: Option<u32>,
 }
 
 /// The menu's current choices, to draw.
 struct MenuState {
-    busyness: Busyness,
+    difficulty: Difficulty,
     staffing: Staffing,
     vfr: bool,
-    emergencies: EmergencyRate,
     shift_minutes: u32,
 }
 
@@ -691,33 +685,6 @@ fn draw_shift_length(minutes: u32, x: f32, y: f32) -> Option<u32> {
     picked
 }
 
-/// The emergency rate buttons. Returns the one clicked, if any.
-fn draw_emergencies(rate: EmergencyRate, x: f32, y: f32) -> Option<EmergencyRate> {
-    const GAP: f32 = 8.0;
-    draw_text("EMERGENCIES  E or click", x, y, 20.0, DIM);
-    let mouse = Vec2::from(mouse_position());
-    let clicked = is_mouse_button_pressed(MouseButton::Left);
-    let mut left = x;
-    let mut picked = None;
-    for level in EmergencyRate::ALL {
-        let label = level.label();
-        let width = measure_text(label, None, 20, 1.0).width + 20.0;
-        let r = Rect::new(left, y + 10.0, width, 30.0);
-        let selected = level == rate;
-        if selected {
-            draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.10, 0.22, 0.12, 1.0));
-        }
-        draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, if selected { TITLE } else { DIM });
-        draw_text(label, r.x + 10.0, r.y + 21.0, 20.0, if selected { TITLE } else { TEXT });
-        if clicked && r.contains(mouse) {
-            picked = Some(level);
-        }
-        left += width + GAP;
-    }
-    draw_text(rate.note(), x, y + 62.0, 18.0, DIM);
-    picked
-}
-
 /// The lesson buttons. Returns the one clicked, if any.
 fn draw_lessons(x: f32, y: f32) -> Option<LessonKind> {
     const GAP: f32 = 10.0;
@@ -751,7 +718,7 @@ fn draw_vfr_toggle(vfr: bool, x: f32, y: f32) -> bool {
 }
 
 fn draw_menu(airports: &[Airport], choice: usize, state: MenuState) -> MenuPick {
-    let MenuState { busyness, staffing, vfr, emergencies, shift_minutes } = state;
+    let MenuState { difficulty, staffing, vfr, shift_minutes } = state;
     clear_background(BACKGROUND);
     let x = 60.0;
     draw_text("AIR TRAFFIC CONTROL", x, 80.0, 56.0, TITLE);
@@ -762,8 +729,7 @@ fn draw_menu(airports: &[Airport], choice: usize, state: MenuState) -> MenuPick 
     let mut pick = MenuPick {
         position: draw_positions(staffing, x, y),
         lesson: draw_lessons(right, 70.0),
-        emergencies: draw_emergencies(emergencies, right, 150.0),
-        shift_minutes: draw_shift_length(shift_minutes, right, 250.0),
+        shift_minutes: draw_shift_length(shift_minutes, right, 150.0),
         ..Default::default()
     };
     if staffing.tower() {
@@ -771,7 +737,7 @@ fn draw_menu(airports: &[Airport], choice: usize, state: MenuState) -> MenuPick 
     }
 
     // The right-hand column: where, how busy, and go.
-    let mut ry = 400.0;
+    let mut ry = 320.0;
     draw_text("AIRPORT  Up/Down to choose", right, ry, 20.0, DIM);
     ry += 28.0;
     for (index, airport) in airports.iter().enumerate() {
@@ -788,8 +754,8 @@ fn draw_menu(airports: &[Airport], choice: usize, state: MenuState) -> MenuPick 
         ry += 38.0;
     }
     ry += 26.0;
-    pick.busyness = draw_busyness(busyness, airport.traffic.is_some(), right, ry);
-    draw_text("Press ENTER to start your shift", right, ry + 130.0, 30.0, TITLE);
+    pick.difficulty = difficulty::draw_summary(&difficulty, airport.traffic.is_some(), right, ry);
+    draw_text("Press ENTER to start your shift", right, ry + 110.0, 30.0, TITLE);
 
     // The left: the briefing, wrapped clear of the right column, closer
     // together if it's long.

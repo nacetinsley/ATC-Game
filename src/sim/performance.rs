@@ -39,6 +39,9 @@ pub struct AircraftType {
     pub arrival_altitude: f32,
     /// Shortest runway it will take off from, feet.
     pub min_runway_ft: f32,
+    /// Equipped and crewed for Category III approaches: lands in fog below
+    /// Category I minimums.
+    pub cat3: bool,
 }
 
 /// The types an airport with no traffic section draws from. New types go after these.
@@ -57,6 +60,7 @@ pub static TYPES: [AircraftType; 13] = [
         decel: 1.5,
         arrival_altitude: 9000.0,
         min_runway_ft: 2500.0,
+        cat3: false,
     },
     AircraftType {
         designator: "E175",
@@ -70,6 +74,7 @@ pub static TYPES: [AircraftType; 13] = [
         decel: 1.5,
         arrival_altitude: 13000.0,
         min_runway_ft: 6000.0,
+        cat3: true,
     },
     AircraftType {
         designator: "A320",
@@ -83,6 +88,7 @@ pub static TYPES: [AircraftType; 13] = [
         decel: 1.5,
         arrival_altitude: 13000.0,
         min_runway_ft: 7000.0,
+        cat3: true,
     },
     AircraftType {
         designator: "B738",
@@ -96,6 +102,7 @@ pub static TYPES: [AircraftType; 13] = [
         decel: 1.5,
         arrival_altitude: 13000.0,
         min_runway_ft: 7500.0,
+        cat3: true,
     },
     AircraftType {
         designator: "A359",
@@ -109,6 +116,7 @@ pub static TYPES: [AircraftType; 13] = [
         decel: 1.2,
         arrival_altitude: 14000.0,
         min_runway_ft: 8500.0,
+        cat3: true,
     },
     AircraftType {
         designator: "B77W",
@@ -122,6 +130,7 @@ pub static TYPES: [AircraftType; 13] = [
         decel: 1.2,
         arrival_altitude: 14000.0,
         min_runway_ft: 9500.0,
+        cat3: true,
     },
     AircraftType {
         designator: "C172",
@@ -135,6 +144,7 @@ pub static TYPES: [AircraftType; 13] = [
         decel: 1.0,
         arrival_altitude: 6000.0,
         min_runway_ft: 1800.0,
+        cat3: false,
     },
     AircraftType {
         designator: "PC12",
@@ -148,6 +158,7 @@ pub static TYPES: [AircraftType; 13] = [
         decel: 1.5,
         arrival_altitude: 10000.0,
         min_runway_ft: 2600.0,
+        cat3: false,
     },
     AircraftType {
         designator: "C56X",
@@ -161,6 +172,7 @@ pub static TYPES: [AircraftType; 13] = [
         decel: 1.5,
         arrival_altitude: 12000.0,
         min_runway_ft: 3800.0,
+        cat3: false,
     },
     AircraftType {
         designator: "CL35",
@@ -174,6 +186,7 @@ pub static TYPES: [AircraftType; 13] = [
         decel: 1.5,
         arrival_altitude: 13000.0,
         min_runway_ft: 5300.0,
+        cat3: false,
     },
     AircraftType {
         designator: "GLF6",
@@ -187,6 +200,7 @@ pub static TYPES: [AircraftType; 13] = [
         decel: 1.5,
         arrival_altitude: 14000.0,
         min_runway_ft: 5900.0,
+        cat3: true,
     },
     AircraftType {
         designator: "PA28",
@@ -200,6 +214,7 @@ pub static TYPES: [AircraftType; 13] = [
         decel: 1.0,
         arrival_altitude: 6000.0,
         min_runway_ft: 1800.0,
+        cat3: false,
     },
     AircraftType {
         designator: "SR22",
@@ -213,6 +228,7 @@ pub static TYPES: [AircraftType; 13] = [
         decel: 1.5,
         arrival_altitude: 8000.0,
         min_runway_ft: 2000.0,
+        cat3: false,
     },
 ];
 
