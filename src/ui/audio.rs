@@ -38,7 +38,7 @@ const MSAW_AURAL_S: f64 = 10.0;
 /// ASDE-X repeats its alert this often while the hazard lasts, seconds.
 const ASDEX_REPEAT_S: f64 = 5.0;
 /// An arrival this close with the runway occupied sets off ASDE-X, NM.
-const ASDEX_ARRIVAL_NM: f32 = 1.0;
+const ASDEX_ARRIVAL_NM: f32 = super::surface::ARRIVAL_ALERT_NM;
 /// Closest that one-shot cues may follow each other, seconds.
 const ONE_SHOT_SPACING_S: f64 = 0.4;
 

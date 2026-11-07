@@ -145,6 +145,41 @@ another on the same final:
 - MSAW (`LA`);
 - active emergency codes in red.
 
+## Reading the surface map
+
+The tower's surface map follows ASDE-X, as VATSIM's CRC client draws it.
+- **Map:** teal ground, grey taxiways, black runways and cyan gates. The game
+  adds two aids ASDE-X doesn't have: taxiway letters, and a dark red runway
+  while it's occupied.
+- **Targets:** white aircraft icons pointing along the track. Heavies, Boeing
+  757s and supers get the larger heavy icon, in orange.
+- **Hold bars** light up green on a runway someone is landing on or departing
+  from, and stay faint otherwise.
+- **A closed runway** is hatched red, with a white X on each end.
+
+**Data blocks** are green, brighter for the aircraft on your frequency:
+
+```
+NVA101          line 1: callsign; altitude in hundreds once airborne
+B738 TAXI 27L   line 2: type, then the status, timeshared with the ground
+                speed in tens of knots while it's moving
+```
+
+The status reads, for example, `TAXI 27L`, `HOLD 27L` (holding short), `RDY 27L` (at the
+hold line), `LUAW 27L`, `ROLL 27L`, `ROLLOUT`, `WAIT` (held up by traffic),
+or an arrival's runway and distance out.
+
+**Safety logic alerts.** ASDE-X alerts on:
+- an arrival within 1.5 NM of an occupied or closed runway;
+- a departure rolling with the runway ahead occupied, or on a closed runway;
+- an aircraft onto a runway without a clearance.
+
+Each aircraft involved gets a red octagon and flashes red. Those involved keep
+their full data blocks, and everyone else drops to the callsign. The alert box
+at the bottom left lists up to five alerts, each as runway, callsigns and
+description (`27L` / `NVA102 NVA101` / `ARRIVAL RWY OCCUPIED`), and the voice
+alert sounds.
+
 ## Weather and runway changes
 
 The wind changes through the shift. It drifts a few degrees and knots at a
@@ -326,7 +361,7 @@ so on written on it in red, and moves to the top of its bay.
 - **Smoke, hydraulic failure or a gear problem:** it lands and stops on the
   runway, which closes for 6 to 10 minutes until the tow clears it. Only at
   airports with a parallel runway. Arrivals and departures move to the
-  parallel, a new ATIS goes out, the surface map crosses out the closed runway,
+  parallel, a new ATIS goes out, the surface map hatches the closed runway red,
   and the status lines show `RWY 27L/09R CLSD 6:40`. VFR pattern work stops
   while it's closed.
 
@@ -443,7 +478,7 @@ how it repeats and how it's silenced.
 | **Conflict Alert** (STARS) | A conflict or loss of separation involving your traffic. A steady pulsed tone, continuous, as the real CA is | When you select either aircraft (STARS: slew the track), or the conflict clears |
 | **Low altitude** (STARS MSAW) | Your aircraft below the minimum vectoring altitude. The same family of tone, modulated differently, as the real ones are | When you select it, or after 10 seconds, when the real aural alarm stops while the LA keeps flashing |
 | **Special code** (STARS) | An aircraft squawking 7700 or 7600 | When you select it |
-| **ASDE-X** | Tower positions: a voice, "Warning, runway two seven left, arrival, runway occupied" (or "departure"), on a runway incursion, a takeoff with the runway occupied, or an arrival inside a mile with the runway occupied | Repeats every 5 seconds while it lasts |
+| **ASDE-X** | Tower positions: a voice, "Warning, runway two seven left, arrival, runway occupied" (or "departure"), on a runway incursion, a takeoff with the runway occupied, or an arrival within 1.5 NM with the runway occupied | Repeats every 5 seconds while it lasts |
 | **Radio** | Each pilot transmission: the key-up, the carrier and the squelch tail. No roger beep: aviation radios don't have one | |
 
 Sources for the real behaviour: [AVweb](https://avweb.com/flight-safety/computer-generated-safety-alerts/)

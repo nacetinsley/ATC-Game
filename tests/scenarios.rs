@@ -212,6 +212,34 @@ fn occupied_runway_sends_the_next_arrival_around() {
 }
 
 #[test]
+fn asdex_alerts_on_an_arrival_to_an_occupied_runway() {
+    use atcgame::ui::surface::safety_alerts;
+    let mut world = quiet_world(0.0);
+    let mut events = Vec::new();
+    let rwy = runway_27l(&world);
+    let mut leader = arrival(1, "NVA101", Vec2::new(4.0, -0.6), 270.0, 800.0);
+    let mut follower = arrival(2, "NVA102", Vec2::new(6.6, -0.6), 270.0, 1700.0);
+    for ac in [&mut leader, &mut follower] {
+        ac.phase = Phase::TowerHandedOff;
+        ac.lateral = Lateral::Localizer;
+        ac.approach_runway = Some(rwy);
+        ac.on_glideslope = true;
+    }
+    follower.target_speed = 140.0;
+    world.add_aircraft(leader);
+    world.add_aircraft(follower);
+
+    // Nothing while the leader is still flying.
+    run_until(&mut world, 120.0, &mut events, |w| w.find(1).is_some_and(|a| a.on_ground));
+    assert!(safety_alerts(&world).is_empty());
+    run_until(&mut world, 300.0, &mut events, |w| !safety_alerts(w).is_empty());
+    let alert = &safety_alerts(&world)[0];
+    assert_eq!(alert.area, "27L");
+    assert_eq!(alert.ids, vec![2, 1]);
+    assert_eq!(alert.text, "ARRIVAL RWY OCCUPIED");
+}
+
+#[test]
 fn converging_traffic_alerts_before_separation_is_lost() {
     let mut world = quiet_world(0.0);
     let mut events = Vec::new();
