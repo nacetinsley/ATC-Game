@@ -243,6 +243,9 @@ fn below_minimums_a_turboprop_goes_around_and_a_jet_autolands() {
     let mut events = Vec::new();
     world.add_aircraft(final_arrival(&world, 1, "SKW11", "C208", "27L", 2.0));
     world.add_aircraft(final_arrival(&world, 2, "NVA202", "B738", "27L", 6.0));
+    // Tower tells Approach about the go-around.
+    run_until(&mut world, 120.0, &mut events, |w| w.owes_go_around_call(1));
+    assert!(world.call_go_around(1));
     run_until(&mut world, 240.0, &mut events, |w| w.find(2).is_some_and(|a| a.on_ground));
 
     assert_eq!(go_arounds(&events), vec![("SKW11".to_string(), GoAroundReason::Weather)]);

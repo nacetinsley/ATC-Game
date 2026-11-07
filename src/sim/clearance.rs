@@ -535,6 +535,7 @@ impl World {
         }
         if let Some(end) = player_go_around {
             self.go_around_answers_major(end);
+            self.go_around_started(call.aircraft, end, true);
         }
         if rolled {
             self.begin_takeoff(index);

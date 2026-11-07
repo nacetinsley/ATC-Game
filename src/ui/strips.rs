@@ -1279,7 +1279,7 @@ fn awaiting_text(w: crate::sim::awaiting::Awaiting) -> &'static str {
         ClearanceRequest => "Calling for its IFR clearance.",
         ClearanceLate => "Has waited long enough for its clearance to count as delay.",
         Deviation => "Asking to deviate round weather.",
-        Coordination => "Another controller is asking about it on the landline: Y approves, N says unable.",
+        Coordination => "Landline: another controller is asking about it (Y approves, N says unable), or it went around and Approach needs a call (G).",
     }
 }
 

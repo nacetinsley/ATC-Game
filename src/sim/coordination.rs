@@ -2,8 +2,9 @@
 //!
 //! Positions don't only talk to pilots: Ground asks Local before crossing a
 //! runway, Local tells Ground about an arrival it has left holding short
-//! between runways, and Local asks Approach to release a departure when
-//! Approach has put departures on call for release. The landline only
+//! between runways, Local asks Approach to release a departure when
+//! Approach has put departures on call for release, and Local tells Approach
+//! about every IFR go-around. The landline only
 //! matters between a position the player works and one that's automated. On
 //! a combined position the player is both ends, and two automated positions
 //! agree silently, as they always have.
@@ -31,6 +32,8 @@ pub const RELEASE_VOID_S: f32 = 120.0;
 /// Once Approach puts departures on call for release, it keeps them there at
 /// least this long after the reason has gone, seconds.
 pub const CALL_FOR_RELEASE_MIN_S: f32 = 300.0;
+/// Tower has this long after a go-around to tell Approach, seconds.
+pub const GO_AROUND_CALL_S: f32 = 60.0;
 /// Severe weather this far along a departure's first leg holds it, NM.
 const RELEASE_STORM_NM: f32 = 10.0;
 
@@ -40,6 +43,8 @@ pub enum CoordKind {
     Crossing { runway: usize },
     /// Local asking Approach to release an IFR departure off this runway end.
     Release { end: usize },
+    /// Local telling Approach about an IFR go-around off this runway end.
+    GoAround { end: usize },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -53,6 +58,9 @@ pub enum CoordState {
     /// The crossing clearance has gone out: the runway is held for it until
     /// the aircraft is across.
     InUse,
+    /// Not yet made: the player, on Local, owes Approach a call about this
+    /// go-around.
+    Owed,
 }
 
 #[derive(Debug, Clone)]
@@ -209,6 +217,64 @@ impl World {
         self.release_reason(end, bearing)
     }
 
+    /// Tower's call to Approach about a go-around.
+    fn go_around_text(&self, end: usize, callsign: &str) -> String {
+        let feet = self.airport.go_around_altitude as i32;
+        let altitude = if feet >= 1000 { format!("{},{:03}", feet / 1000, feet % 1000) } else { feet.to_string() };
+        format!("go-around {callsign}, runway {}, runway heading, {altitude}.", self.airport.runways[end].id)
+    }
+
+    /// The player, on Local, still has to tell Approach about this go-around.
+    pub fn owes_go_around_call(&self, id: u32) -> bool {
+        self.coordination
+            .iter()
+            .any(|c| c.aircraft == id && matches!(c.kind, CoordKind::GoAround { .. }) && c.state == CoordState::Owed)
+    }
+
+    /// An IFR aircraft has gone around off `end`. With the player on Local
+    /// and Approach automated, the player owes Approach a call (made at once
+    /// when the player `ordered` it). With the player on Approach and Local
+    /// automated, Tower calls the player.
+    pub(super) fn go_around_started(&mut self, id: u32, end: usize, ordered: bool) {
+        if self.find(id).is_none_or(|a| a.vfr.is_some()) {
+            return;
+        }
+        let staffing = self.config.staffing;
+        let kind = CoordKind::GoAround { end };
+        if staffing.local && !staffing.approach {
+            if ordered {
+                self.ask(kind, id, Position::Local, Position::Approach);
+            } else {
+                let now = self.time;
+                self.coordination.retain(|c| !(c.aircraft == id && c.kind == kind));
+                self.coordination.push(Coordination {
+                    kind,
+                    from: Position::Local,
+                    to: Position::Approach,
+                    aircraft: id,
+                    asked: now,
+                    due: now,
+                    late: false,
+                    state: CoordState::Owed,
+                });
+            }
+        } else if staffing.approach && !staffing.local && !ordered {
+            self.ask(kind, id, Position::Local, Position::Approach);
+        }
+    }
+
+    /// The player, on Local, tells Approach about a go-around.
+    pub fn call_go_around(&mut self, id: u32) -> bool {
+        let Some(kind) =
+            self.coordination.iter().find(|c| c.aircraft == id && c.state == CoordState::Owed).map(|c| c.kind)
+        else {
+            return false;
+        };
+        self.ask(kind, id, Position::Local, Position::Approach);
+        self.record(id, Action::CallGoAround);
+        true
+    }
+
     fn landline(&mut self, from: Position, to: Position, text: String) {
         self.say(Speaker::Landline, format!("{} to {}: {text}", from.name(), to.name()));
     }
@@ -229,6 +295,7 @@ impl World {
                 format!("{callsign} released, void if not off by {}.", self.utc(until))
             }
             CoordKind::Release { .. } => format!("{callsign} released."),
+            CoordKind::GoAround { .. } => format!("{callsign}, approved."),
         }
     }
 
@@ -238,6 +305,7 @@ impl World {
         let what = match kind {
             CoordKind::Crossing { runway } => format!("{callsign} hold short runway {}", self.runway_name(runway)),
             CoordKind::Release { .. } => format!("{callsign} hold for release"),
+            CoordKind::GoAround { .. } => callsign.to_string(),
         };
         match why {
             Some(why) => format!("{what}, {why}. I'll call you."),
@@ -268,6 +336,7 @@ impl World {
             CoordKind::Release { end } => {
                 format!("request release {callsign}, runway {}.", self.airport.runways[end].id)
             }
+            CoordKind::GoAround { end } => self.go_around_text(end, &callsign),
         };
         self.landline(from, to, text);
         if self.config.staffing.works(to) {
@@ -374,7 +443,9 @@ impl World {
             return false;
         };
         let was = self.coordination[index].state;
-        if !approve && was != CoordState::Pending {
+        let go_around = matches!(self.coordination[index].kind, CoordKind::GoAround { .. });
+        // A go-around is only acknowledged: there's nothing to refuse.
+        if !approve && (was != CoordState::Pending || go_around) {
             return false;
         }
         let now = self.time;
@@ -398,6 +469,9 @@ impl World {
         };
         self.landline(to, from, text);
         self.record(id, Action::Coordinate { approve });
+        if go_around {
+            self.coordination.remove(index);
+        }
         true
     }
 
@@ -434,6 +508,20 @@ impl World {
                     // Rolling or gone, or departures no longer need releasing.
                     let done = !ac.on_ground || ac.phase == Phase::TowerRelease || !self.call_for_release();
                     (done, false, self.release_blocker(ac))
+                }
+                CoordKind::GoAround { .. } => {
+                    let done = match c.state {
+                        // Never made in time.
+                        CoordState::Owed if now - c.asked >= GO_AROUND_CALL_S => {
+                            self.emit(SimEvent::UncoordinatedGoAround { callsign: callsign.clone() });
+                            true
+                        }
+                        CoordState::Owed => ac.on_ground,
+                        // Made: over once the aircraft is talking to Approach.
+                        _ if staffing.works(c.from) => ac.on_ground || ac.frequency() != Position::Local,
+                        _ => ac.on_ground,
+                    };
+                    (done, false, None)
                 }
             };
             if done {
@@ -474,6 +562,7 @@ impl World {
                             format!("{callsign} still holding short runway {}.", self.runway_name(runway))
                         }
                         CoordKind::Release { .. } => format!("{callsign} still waiting for release."),
+                        CoordKind::GoAround { end } => self.go_around_text(end, &callsign),
                     };
                     let item = &mut self.coordination[index];
                     item.state = CoordState::Pending;
@@ -511,6 +600,8 @@ impl World {
         match kind {
             CoordKind::Crossing { .. } => APPROVAL_S,
             CoordKind::Release { .. } => RELEASE_VOID_S,
+            // Approach has it in hand until the aircraft reaches it.
+            CoordKind::GoAround { .. } => f32::MAX,
         }
     }
 
@@ -531,6 +622,7 @@ impl World {
             CoordKind::Release { .. } => {
                 blocker.map(|why| (format!("cancel release {callsign}, {why}. I'll call you."), true))
             }
+            CoordKind::GoAround { .. } => None,
         }
     }
 

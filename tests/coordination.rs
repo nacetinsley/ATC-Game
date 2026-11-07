@@ -1,13 +1,13 @@
 //! Landline coordination between a position the player works and an
 //! automated one: runway crossings between Ground and Local, and arrivals
 //! Local leaves holding short between runways, and departure releases
-//! between Local and Approach.
+//! between Local and Approach, and go-arounds Tower tells Approach about.
 
 use atcgame::sim::aircraft::{Aircraft, Flow, Lateral, Phase, Taxi};
 use atcgame::sim::airspace::Airport;
 use atcgame::sim::awaiting::Awaiting;
 use atcgame::sim::clearance::Clearance;
-use atcgame::sim::coordination::{ANSWER_S, APPROVAL_S, CALL_FOR_RELEASE_MIN_S, CoordState, RELEASE_VOID_S};
+use atcgame::sim::coordination::{ANSWER_S, APPROVAL_S, CALL_FOR_RELEASE_MIN_S, CoordState, GO_AROUND_CALL_S, RELEASE_VOID_S};
 use atcgame::sim::performance::aircraft_type;
 use atcgame::sim::positions::{Position, Staffing};
 use atcgame::sim::replay::Action;
@@ -475,4 +475,100 @@ fn releases_need_no_landline_on_a_combined_position() {
     assert!(!world.call_for_release());
     assert!(!world.set_call_for_release(true));
     assert!(!world.needs_release(1));
+}
+
+/// Inside a mile on final with no landing clearance: it goes around at once.
+fn uncleared_short_final(world: &World, id: u32) -> Aircraft {
+    final_arrival(world, id, "NVA101", 0.9)
+}
+
+fn went_around_with_local() -> (World, Vec<SimEvent>) {
+    let mut world = harrowgate(Staffing::LOCAL);
+    let mut events = Vec::new();
+    world.add_aircraft(uncleared_short_final(&world, 1));
+    run_until(&mut world, 5.0, &mut events, |w| w.find(1).unwrap().phase == Phase::GoAround);
+    (world, events)
+}
+
+#[test]
+fn local_calls_approach_about_a_go_around() {
+    let (mut world, mut events) = went_around_with_local();
+    assert!(world.owes_go_around_call(1));
+    assert_eq!(world.awaiting(world.find(1).unwrap()), Some(Awaiting::Coordination));
+    assert!(world.call_go_around(1));
+    assert!(!world.call_go_around(1), "called once");
+    assert_eq!(*landline(&world).last().unwrap(), "Tower to Approach: go-around NVA101, runway 27L, runway heading, 3,000.");
+    run_until(&mut world, 10.0, &mut events, |w| landline(w).last().unwrap().contains("NVA101, approved"));
+    run_until(&mut world, 180.0, &mut events, |w| w.find(1).is_none_or(|a| a.frequency() == Position::Approach));
+    run(&mut world, 1.0, &mut events);
+    assert!(!events.iter().any(|e| matches!(e, SimEvent::UncoordinatedGoAround { .. })), "{events:?}");
+    assert!(world.coordination.is_empty(), "{:?}", world.coordination);
+
+    let commands = world.commands().to_vec();
+    assert!(commands.iter().any(|c| c.action == Action::CallGoAround));
+    let mut again = harrowgate(Staffing::LOCAL);
+    again.add_aircraft(uncleared_short_final(&again, 1));
+    again.run_to(world.ticks(), &commands);
+    assert_eq!(again.state_digest(), world.state_digest());
+}
+
+#[test]
+fn a_go_around_not_called_within_a_minute_is_scored() {
+    let (mut world, mut events) = went_around_with_local();
+    run(&mut world, GO_AROUND_CALL_S - 2.0, &mut events);
+    assert!(world.owes_go_around_call(1), "still time, even with Approach");
+    run(&mut world, 3.0, &mut events);
+    assert!(!world.owes_go_around_call(1));
+    assert!(
+        events.iter().any(|e| matches!(e, SimEvent::UncoordinatedGoAround { callsign } if callsign == "NVA101")),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn a_go_around_local_orders_is_called_through_at_once() {
+    let mut world = harrowgate(Staffing::LOCAL);
+    let mut events = Vec::new();
+    world.add_aircraft(final_arrival(&world, 1, "NVA101", 4.0));
+    assert!(world.transmit(1, vec![Clearance::GoAround]));
+    run_until(&mut world, 10.0, &mut events, |w| w.find(1).unwrap().phase == Phase::GoAround);
+    assert!(!world.owes_go_around_call(1));
+    assert!(landline(&world).iter().any(|l| l.starts_with("Tower to Approach: go-around NVA101")), "{:?}", landline(&world));
+    run_until(&mut world, 180.0, &mut events, |w| w.find(1).is_none_or(|a| a.frequency() == Position::Approach));
+    run(&mut world, 1.0, &mut events);
+    assert!(!events.iter().any(|e| matches!(e, SimEvent::UncoordinatedGoAround { .. })), "{events:?}");
+}
+
+#[test]
+fn tower_tells_the_player_on_approach_about_a_go_around() {
+    let mut world = harrowgate(Staffing::APPROACH);
+    let mut events = Vec::new();
+    world.add_aircraft(uncleared_short_final(&world, 1));
+    run_until(&mut world, 5.0, &mut events, |w| w.incoming().any(|c| c.aircraft == 1));
+    assert!(landline(&world).last().unwrap().starts_with("Tower to Approach: go-around NVA101, runway 27L"));
+    assert!(events.iter().any(|e| matches!(e, SimEvent::CoordinationRequest { .. })));
+    assert!(!world.answer_coordination(1, false), "nothing to refuse");
+    assert!(world.answer_coordination(1, true));
+    assert_eq!(*landline(&world).last().unwrap(), "Approach to Tower: NVA101, approved.");
+    assert!(world.coordination.is_empty());
+}
+
+#[test]
+fn an_unanswered_go_around_call_is_scored() {
+    let mut world = harrowgate(Staffing::APPROACH);
+    let mut events = Vec::new();
+    world.add_aircraft(uncleared_short_final(&world, 1));
+    run_until(&mut world, 5.0, &mut events, |w| w.incoming().any(|c| c.aircraft == 1));
+    run(&mut world, ANSWER_S + 1.0, &mut events);
+    assert!(events.iter().any(|e| matches!(e, SimEvent::CoordinationLate { .. })), "{events:?}");
+}
+
+#[test]
+fn go_arounds_need_no_landline_on_a_combined_position() {
+    let mut world = harrowgate(Staffing::ALL);
+    let mut events = Vec::new();
+    world.add_aircraft(uncleared_short_final(&world, 1));
+    run_until(&mut world, 5.0, &mut events, |w| w.find(1).unwrap().phase == Phase::GoAround);
+    assert!(!world.owes_go_around_call(1));
+    assert!(world.coordination.is_empty());
 }

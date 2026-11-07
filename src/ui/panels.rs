@@ -96,14 +96,26 @@ fn draw_landline(world: &mut World, ui: &mut UiState, x: f32, top: f32) -> f32 {
                     format!("{callsign} cross {name}?")
                 }
                 CoordKind::Release { end } => format!("release {callsign} off {}?", world.airport.runways[end].id),
+                CoordKind::GoAround { end } => format!("go-around {callsign} off {}", world.airport.runways[end].id),
             };
             let pending = c.state == CoordState::Pending;
             let text = if pending { format!("{}: {what}", c.from.name()) } else { format!("{}: {what} (unable)", c.from.name()) };
             (c.aircraft, text, pending)
         })
         .collect();
+    // Go-arounds the player still has to tell Approach about.
+    let owed: Vec<(u32, String)> = world
+        .coordination
+        .iter()
+        .filter(|c| c.state == CoordState::Owed)
+        .filter_map(|c| {
+            let callsign = &world.find(c.aircraft)?.callsign;
+            let CoordKind::GoAround { end } = c.kind else { return None };
+            Some((c.aircraft, format!("Call Approach: go-around {callsign} off {}", world.airport.runways[end].id)))
+        })
+        .collect();
     let releases = release_line(world);
-    if rows.is_empty() && releases.is_none() {
+    if rows.is_empty() && owed.is_empty() && releases.is_none() {
         return 0.0;
     }
     let bw = 86.0;
@@ -122,6 +134,15 @@ fn draw_landline(world: &mut World, ui: &mut UiState, x: f32, top: f32) -> f32 {
             }
         }
         label(&text, left, y + 17.0, 17.0, LANDLINE);
+        y += LANDLINE_ROW;
+    }
+    for (id, text) in owed.into_iter().take(LANDLINE_ROWS) {
+        let selected = ui.selected == Some(id);
+        label(&text, left, y + 17.0, 17.0, if selected { TEXT } else { LANDLINE });
+        let right = x + PANEL_WIDTH - PADDING;
+        if button("Call G", right - bw, y, bw, LANDLINE_ROW - 4.0) && !ui.replay {
+            world.call_go_around(id);
+        }
         y += LANDLINE_ROW;
     }
     for (id, text, pending) in rows {
@@ -442,8 +463,8 @@ fn draw_tower_buttons(world: &mut World, ui: &mut UiState, left: f32, top: f32) 
     if button("Land L", col(0.0), y, w, bh) {
         ui.land(world);
     }
-    if button("G/A G", col(1.0), y, w, bh) {
-        ui.pending.go_around = true;
+    if button(ui.go_around_label(world), col(1.0), y, w, bh) {
+        ui.go_around(world);
     }
     if button("Contact T", col(2.0), y, w, bh) {
         ui.handoff(world);

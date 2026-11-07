@@ -345,6 +345,31 @@ impl UiState {
         if self.needs_release_request(world) { "Req rel K" } else { "Takeoff K" }
     }
 
+    /// G: go around; or, for an aircraft already going around that Approach
+    /// hasn't been told about, the landline call to Approach. With nothing
+    /// selected, the oldest call owed.
+    pub fn go_around(&mut self, world: &mut World) {
+        let owed = world.coordination.iter().find(|c| world.owes_go_around_call(c.aircraft)).map(|c| c.aircraft);
+        let target = match self.selected {
+            Some(id) if world.owes_go_around_call(id) => Some(id),
+            Some(_) => None,
+            None => owed,
+        };
+        match target {
+            Some(id) if !self.replay => {
+                world.call_go_around(id);
+            }
+            Some(_) => {}
+            None if self.selected.is_some() => self.pending.go_around = true,
+            None => {}
+        }
+    }
+
+    /// The G button's label: the call to Approach while one is owed.
+    pub fn go_around_label(&self, world: &World) -> &'static str {
+        if self.selected.is_some_and(|id| world.owes_go_around_call(id)) { "Call G/A G" } else { "G/A G" }
+    }
+
     /// F on Approach with Tower automated: stop departures, or release them.
     pub fn toggle_call_for_release(&mut self, world: &mut World) {
         if !self.replay {
@@ -601,7 +626,7 @@ impl UiState {
                 if rolling {
                     self.pending.add_tower(Clearance::StopTakeoff);
                 } else {
-                    self.pending.go_around = true;
+                    self.go_around(world);
                 }
             }
             if is_key_pressed(KeyCode::H) {
@@ -643,6 +668,10 @@ impl UiState {
             if is_key_pressed(KeyCode::S) {
                 self.cycle_sid(world);
             }
+        }
+        // G with nothing selected: the oldest go-around call owed to Approach.
+        if self.selected.is_none() && is_key_pressed(KeyCode::G) {
+            self.go_around(world);
         }
         if is_key_pressed(KeyCode::T) {
             self.handoff(world);

@@ -103,6 +103,19 @@ and an automated one. On a combined position you're both ends.
     Release it with Y, or hold it with N, and Tower asks again a minute
     later.
   - F again, or the "Release all" button, lets them all go.
+- **Go-arounds, on Local with Approach automated:**
+  - Tell Approach about every IFR go-around. When you order one (G), the
+    call goes with it: "Tower to Approach: go-around NVA101, runway 27L,
+    runway heading, 3,000."
+  - When the pilot goes around on their own (no landing clearance,
+    unstable, runway occupied, below minimums), the call is yours to make.
+    The strip shows `LL` and a "Call Approach" row appears above the log.
+    Press G, with the aircraft selected or nothing selected, or the row's
+    Call button.
+  - A go-around Approach hasn't heard about within a minute costs points.
+- **Go-arounds, on Approach with Tower automated:**
+  - Tower calls you about each go-around. Acknowledge with Y; leaving it 45
+    seconds costs points.
 
 ### VFR traffic
 
@@ -782,7 +795,7 @@ but not notarized.
 | C | Step through the approaches: ILS, RNAV, visual, then the parallel's |
 | R | Resume the published route |
 | T | Accept a handoff, or hand off to the next controller |
-| G | Go around. On a takeoff roll: stop immediately |
+| G | Go around. On a takeoff roll: stop immediately. On Local, for a go-around Approach hasn't been told about (or with nothing selected): call Approach |
 | Click a hold line, gate, ramp spot or junction | Taxi the selected aircraft there |
 | Ctrl-click a taxiway | Add it to the taxi route ("via") |
 | H | On the ground: hold position, or continue. In the air: hold at the fix it's flying to |

@@ -40,6 +40,8 @@ pub const PENALTY_UNCOORDINATED_CROSSING: i32 = -100;
 pub const PENALTY_COORDINATION_LATE: i32 = -25;
 /// Tower launched an IFR departure Approach hadn't released.
 pub const PENALTY_UNRELEASED_DEPARTURE: i32 = -100;
+/// A go-around reached Approach without Tower's call.
+pub const PENALTY_UNCOORDINATED_GO_AROUND: i32 = -50;
 /// A pilot asked to go round weather and had to go without an answer.
 pub const PENALTY_DEVIATION_IGNORED: i32 = -50;
 pub const POINTS_TOUCH_AND_GO: i32 = 20;
@@ -144,6 +146,8 @@ pub enum SimEvent {
     /// The player, on Local, cleared a departure for takeoff without the
     /// release Approach asked for.
     UnreleasedDeparture { callsign: String },
+    /// The player, on Local, let a go-around reach Approach without telling it.
+    UncoordinatedGoAround { callsign: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -429,6 +433,13 @@ impl Score {
                     time,
                     format!("{callsign} took off without Approach's release"),
                     PENALTY_UNRELEASED_DEPARTURE,
+                );
+            }
+            SimEvent::UncoordinatedGoAround { callsign } => {
+                self.incident(
+                    time,
+                    format!("{callsign} went around without a call to Approach"),
+                    PENALTY_UNCOORDINATED_GO_AROUND,
                 );
             }
             SimEvent::CoordinationLate { callsign } => {

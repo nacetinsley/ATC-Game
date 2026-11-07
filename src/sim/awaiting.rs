@@ -92,7 +92,9 @@ impl World {
             return staffing.approach.then_some(Awaiting::Accept);
         }
         // Asked about on the landline, even if it's on someone else's frequency.
-        if self.incoming().any(|c| c.aircraft == ac.id && c.state == super::coordination::CoordState::Pending) {
+        if self.incoming().any(|c| c.aircraft == ac.id && c.state == super::coordination::CoordState::Pending)
+            || self.owes_go_around_call(ac.id)
+        {
             return Some(Awaiting::Coordination);
         }
         if !self.is_players(ac) {

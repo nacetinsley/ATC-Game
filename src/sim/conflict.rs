@@ -362,14 +362,18 @@ impl World {
     pub(super) fn go_around(&mut self, index: usize, reason: GoAroundReason) {
 
         let ac = &mut self.aircraft[index];
+        let end = ac.approach_runway;
         ac.start_go_around(&self.airport);
-        let callsign = ac.callsign.clone();
+        let (id, callsign) = (ac.id, ac.callsign.clone());
         let line = format!("{callsign} going around, climbing to {:.0}.", ac.target_altitude);
         // No radio: Tower sees it go around, but nobody hears it.
         let speaker = if ac.nordo() { Speaker::System } else { Speaker::Pilot };
         self.say(speaker, line);
         self.emit(SimEvent::GoAround { callsign, reason });
         self.emergency_go_around(index);
+        if let Some(end) = end {
+            self.go_around_started(id, end, false);
+        }
     }
 }
 

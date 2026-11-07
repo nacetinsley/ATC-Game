@@ -41,6 +41,8 @@ pub enum Action {
     RequestRelease,
     /// On Approach, putting departures on call for release, or letting them go.
     CallForRelease { on: bool },
+    /// On Local, telling Approach about a go-around.
+    CallGoAround,
 }
 
 impl World {
@@ -67,6 +69,7 @@ impl World {
             Action::Coordinate { approve } => self.answer_coordination(command.id, *approve),
             Action::RequestRelease => self.request_release(command.id),
             Action::CallForRelease { on } => self.set_call_for_release(*on),
+            Action::CallGoAround => self.call_go_around(command.id),
         }
     }
 
