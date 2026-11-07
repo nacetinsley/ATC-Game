@@ -27,6 +27,34 @@ const CLEAR_MARGIN_FT: f32 = 100.0;
 const SEPARATION_FLOOR_AGL_FT: f32 = 1000.0;
 /// Past this much too close, Tower sends the follower around.
 const WAKE_GO_AROUND_MARGIN_NM: f32 = 1.5;
+/// ATPA warns when the in-trail minimum will be lost within this long, and
+/// alerts within the shorter time or once it has been.
+const ATPA_WARNING_S: f32 = 45.0;
+const ATPA_ALERT_S: f32 = 24.0;
+
+/// How an aircraft trailing another on final stands, as STARS's Automated
+/// Terminal Proximity Alert (ATPA) shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtpaStatus {
+    /// Spaced: the monitor cone.
+    Monitor,
+    /// The minimum will be lost within 45 seconds: yellow.
+    Warning,
+    /// Within 24 seconds, or already lost: orange.
+    Alert,
+}
+
+/// One aircraft trailing another on the same final.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Atpa {
+    pub leader: u32,
+    pub follower: u32,
+    /// In-trail distance, NM.
+    pub distance: f32,
+    /// The in-trail minimum: radar or wake separation, NM.
+    pub required: f32,
+    pub status: AtpaStatus,
+}
 
 type Pair = (u32, u32);
 
@@ -209,7 +237,9 @@ impl World {
         self.alerts.terrain = active;
     }
 
-    fn check_wake(&mut self) {
+    /// Each IFR aircraft on final behind another on the same runway's final,
+    /// as (leader, follower, in-trail distance): indices into the aircraft.
+    fn final_pairs(&self) -> Vec<(usize, usize, f32)> {
         // Each runway's own final: after a runway change, the last arrivals
         // to the old runway still need spacing.
         let mut on_final: Vec<(usize, f32, usize)> = self
@@ -221,19 +251,43 @@ impl World {
             .filter_map(|(i, a)| a.approach_runway.map(|r| (r, self.airport.runways[r].along(a.pos), i)))
             .collect();
         on_final.sort_by(|x, y| x.0.cmp(&y.0).then(x.1.total_cmp(&y.1)));
+        on_final
+            .windows(2)
+            .filter(|w| w[0].0 == w[1].0)
+            .map(|w| (w[0].2, w[1].2, w[1].1 - w[0].1))
+            .collect()
+    }
 
+    /// ATPA for every aircraft trailing another on final: the in-trail
+    /// distance against the minimum, and whether it's closing on it.
+    pub fn atpa(&self) -> Vec<Atpa> {
+        self.final_pairs()
+            .into_iter()
+            .map(|(lead, follow, distance)| {
+                let (leader, follower) = (&self.aircraft[lead], &self.aircraft[follow]);
+                let required = wake_required_nm(leader.ty.wake, follower.ty.wake);
+                // Closing speed, knots: the follower is faster than the leader.
+                let closing = follower.ground_speed() - leader.ground_speed();
+                let ahead = |seconds: f32| distance - closing.max(0.0) * seconds / SECONDS_PER_HOUR;
+                let status = if distance < required || ahead(ATPA_ALERT_S) < required {
+                    AtpaStatus::Alert
+                } else if ahead(ATPA_WARNING_S) < required {
+                    AtpaStatus::Warning
+                } else {
+                    AtpaStatus::Monitor
+                };
+                Atpa { leader: leader.id, follower: follower.id, distance, required, status }
+            })
+            .collect()
+    }
+
+    fn check_wake(&mut self) {
         let mut active = BTreeSet::new();
         let mut events = Vec::new();
         let mut go_arounds = Vec::new();
-        for window in on_final.windows(2) {
-            let (lead_runway, lead_along, lead) = window[0];
-            let (follow_runway, follow_along, follow) = window[1];
-            if lead_runway != follow_runway {
-                continue;
-            }
+        for (lead, follow, gap) in self.final_pairs() {
             let (leader, follower) = (&self.aircraft[lead], &self.aircraft[follow]);
             let required = wake_required_nm(leader.ty.wake, follower.ty.wake);
-            let gap = follow_along - lead_along;
             if gap < required {
                 let pair = pair_key(leader.id, follower.id);
                 active.insert(pair);

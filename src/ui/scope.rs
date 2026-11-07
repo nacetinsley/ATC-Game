@@ -6,6 +6,8 @@ use super::camera::clip;
 use super::input::{Drag, UiState, ctrl_down};
 use crate::sim::mistakes::SlipKind;
 use crate::sim::aircraft::{Aircraft, Flow, Lateral, Phase};
+use crate::sim::conflict::{Atpa, AtpaStatus};
+use crate::sim::performance::WakeCategory;
 use crate::sim::airspace::Airport;
 use crate::sim::holding::{self, HoldSpec};
 use crate::sim::positions::Position;
@@ -39,24 +41,43 @@ const FIX: Color = Color::new(0.36, 0.36, 0.38, 1.0);
 const RUNWAY: Color = Color::new(0.75, 0.75, 0.75, 1.0);
 const CENTERLINE: Color = Color::new(0.32, 0.32, 0.32, 1.0);
 const MVA: Color = Color::new(0.33, 0.24, 0.12, 1.0);
-/// STARS draws tracks you own in white and everyone else's in green.
+/// STARS draws tracks you own in white and everyone else's in green, and the
+/// data block you've highlighted in cyan.
 const OWNED: Color = Color::new(0.94, 0.94, 0.94, 1.0);
 const UNOWNED: Color = Color::new(0.10, 0.85, 0.10, 1.0);
-const HISTORY: Color = Color::new(0.25, 0.40, 1.00, 1.0);
+const SELECTED: Color = Color::new(0.0, 1.0, 1.0, 1.0);
+const SELECTED_BOX: Color = Color::new(0.0, 0.6, 0.6, 1.0);
+/// History trails, newest first: STARS's five blues.
+const HISTORY: [Color; 5] = [
+    Color::new(30.0 / 255.0, 80.0 / 255.0, 200.0 / 255.0, 1.0),
+    Color::new(70.0 / 255.0, 70.0 / 255.0, 170.0 / 255.0, 1.0),
+    Color::new(50.0 / 255.0, 50.0 / 255.0, 130.0 / 255.0, 1.0),
+    Color::new(40.0 / 255.0, 40.0 / 255.0, 110.0 / 255.0, 1.0),
+    Color::new(30.0 / 255.0, 30.0 / 255.0, 90.0 / 255.0, 1.0),
+];
 const SSA: Color = Color::new(0.10, 0.85, 0.10, 1.0);
+/// The caution colour: yellow.
 const WARNING: Color = Color::new(1.00, 0.85, 0.10, 1.0);
+/// The alert colour: red.
 const CRITICAL: Color = Color::new(1.00, 0.15, 0.15, 1.0);
+/// ATPA: the monitor cone in the TPA blue, the alert in orange.
+const ATPA_MONITOR: Color = Color::new(30.0 / 255.0, 120.0 / 255.0, 1.0, 0.8);
+const ATPA_ALERT: Color = Color::new(1.0, 55.0 / 255.0, 0.0, 1.0);
+/// An ATPA cone's half-width at its far end, as a share of its length.
+const ATPA_CONE_WIDTH: f32 = 0.1;
+/// The assigned altitude shows on line 3 while Mode C is this far from it, feet.
+const ASSIGNED_SHOWN_FT: f32 = 150.0;
 const REFERENCE: Color = Color::new(0.45, 0.45, 0.55, 1.0);
 const GHOST: Color = Color::new(1.00, 0.95, 0.40, 1.0);
 /// Published holds on the map, and brighter while someone is in one.
 const HOLD: Color = Color::new(0.22, 0.22, 0.26, 1.0);
 const HOLD_BUSY: Color = Color::new(0.40, 0.40, 0.55, 1.0);
-/// Weather radar returns, as STARS shows them: dim for light rain, brighter
-/// for the heavy cores pilots won't fly through, stippled for the worst.
-const WX_LIGHT: Color = Color::new(0.04, 0.11, 0.17, 1.0);
-const WX_HEAVY: Color = Color::new(0.07, 0.22, 0.32, 1.0);
-const WX_EXTREME: Color = Color::new(0.11, 0.33, 0.45, 1.0);
-const WX_STIPPLE: Color = Color::new(0.30, 0.55, 0.65, 1.0);
+/// Weather radar returns as STARS shows the six NEXRAD levels: levels 1 to 3
+/// in dark teal, 4 to 6 in dark olive, with a light stipple on levels 2 and 5
+/// and a dense one on 3 and 6.
+const WX_LOW: Color = Color::new(38.0 / 255.0, 77.0 / 255.0, 77.0 / 255.0, 1.0);
+const WX_HIGH: Color = Color::new(100.0 / 255.0, 100.0 / 255.0, 51.0 / 255.0, 1.0);
+const WX_STIPPLE: Color = Color::new(1.0, 1.0, 1.0, 0.55);
 /// Weather is drawn on a grid this fine, NM.
 const WX_GRID_NM: f32 = 1.0;
 /// Published holds without a minimum altitude are drawn as if flown here, feet.
@@ -108,32 +129,6 @@ fn position_symbol(ac: &Aircraft) -> char {
     }
 }
 
-/// Alert shown above the data block, STARS style.
-fn alert_tag(world: &World, id: u32) -> Option<(&'static str, Color)> {
-    let has = |pairs: &std::collections::BTreeSet<(u32, u32)>| {
-        pairs.iter().any(|&(a, b)| a == id || b == id)
-    };
-    if world.alerts.terrain.contains(&id) {
-        Some(("LA", CRITICAL))
-    } else if has(&world.alerts.separation) || has(&world.alerts.conflict) {
-        Some(("CA", CRITICAL))
-    } else if has(&world.alerts.wake) {
-        Some(("WK", WARNING))
-    } else {
-        None
-    }
-}
-
-fn track_color(world: &World, ac: &Aircraft) -> Color {
-    if world.alerts.critical(ac.id) {
-        return if flash() { CRITICAL } else { OWNED };
-    }
-    if world.alerts.warning(ac.id) {
-        return WARNING;
-    }
-    if world.is_players(ac) { OWNED } else { UNOWNED }
-}
-
 /// Where a data block's top-left corner goes: its offset from the target,
 /// kept inside the view so a block near the edge can still be read and clicked.
 pub fn block_origin(ui: &UiState, id: u32, pos: glam::Vec2) -> Vec2 {
@@ -150,9 +145,12 @@ pub fn draw(world: &World, ui: &UiState, inset: bool) {
     clip(Some(view));
     draw_rectangle(view.x, view.y, view.w, view.h, BACKGROUND);
     draw_map(&world.airport, world, ui, inset);
+    let atpa = world.atpa();
+    draw_atpa_cones(world, ui, &atpa);
     for track in &world.radar {
         if let Some(ac) = world.find(track.id) {
-            draw_target(world, ui, ac, track);
+            let trailing = atpa.iter().find(|a| a.follower == ac.id);
+            draw_target(world, ui, ac, track, trailing);
         }
     }
     draw_pending(world, ui);
@@ -201,17 +199,23 @@ fn draw_weather(world: &World, ui: &UiState) {
     let size = WX_GRID_NM * ui.camera.scale;
     for (x, y) in squares {
         let centre = glam::Vec2::new(x as f32 + 0.5, y as f32 + 0.5) * WX_GRID_NM;
-        let level = world.storms.level_at(centre);
-        let colour = match level {
-            l if l >= 5.0 => WX_EXTREME,
-            l if l >= crate::sim::storms::SEVERE_LEVEL => WX_HEAVY,
-            l if l >= 1.0 => WX_LIGHT,
-            _ => continue,
-        };
+        let level = world.storms.level_at(centre).floor().min(6.0) as i32;
+        if level < 1 {
+            continue;
+        }
+        let colour = if level >= 4 { WX_HIGH } else { WX_LOW };
         let p = ui.camera.to_screen(centre);
         draw_rectangle(p.x - size / 2.0, p.y - size / 2.0, size + 0.5, size + 0.5, colour);
-        if level >= 5.0 && size >= 6.0 {
-            draw_rectangle(p.x - 1.0, p.y - 1.0, 2.0, 2.0, WX_STIPPLE);
+        // Light stipple: a dot per square; dense: four.
+        let dots: &[(f32, f32)] = match level % 3 {
+            2 => &[(0.0, 0.0)],
+            0 => &[(-0.25, -0.25), (0.25, -0.25), (-0.25, 0.25), (0.25, 0.25)],
+            _ => &[],
+        };
+        if size >= 6.0 {
+            for (dx, dy) in dots {
+                draw_rectangle(p.x + dx * size - 0.75, p.y + dy * size - 0.75, 1.5, 1.5, WX_STIPPLE);
+            }
         }
     }
 }
@@ -333,59 +337,156 @@ fn draw_dashed(a: Vec2, b: Vec2, color: Color) {
     }
 }
 
-/// Controller's working data on the third line: assigned altitude and intent.
-fn scratchpad(world: &World, ac: &Aircraft) -> String {
+/// The scratchpad, filled in as a controller would: up to four characters
+/// that time-share with the altitude on the data block's second line. Amber
+/// when it shows something wrong: a misheard heading, or a request for weather.
+fn scratchpad(world: &World, ac: &Aircraft) -> Option<(String, bool)> {
     let airport = &world.airport;
+    if ac.deviation.is_some_and(|d| !d.approved) {
+        return Some(("WX".into(), true));
+    }
     if let Some(vfr) = &ac.vfr {
-        return format!("VFR {}", crate::sim::vfr::leg_label(vfr));
+        let leg = match crate::sim::vfr::leg_label(vfr) {
+            "INBND" => "INB",
+            "ENTRY" => "ENT",
+            "UPWND" => "UPW",
+            "XWIND" => "XWD",
+            "DNWND" => "DNW",
+            "FINAL" => "FNL",
+            other => other,
+        };
+        return Some((leg.into(), false));
     }
     if let Lateral::Hold(state) = ac.lateral {
-        let tag = if world.time >= state.spec.efc - EFC_WARNING_S { "EFC" } else { "HLD" };
-        // Timeshared with the fix, to fit the block.
-        let fix: String = airport.fixes[state.spec.fix].name.chars().take(5).collect();
-        let shown = if timeshare() { tag.to_string() } else { fix };
-        return format!("{:03.0} {shown}", ac.assigned_altitude() / 100.0);
+        let tag: String = if world.time >= state.spec.efc - EFC_WARNING_S {
+            "EFC".into()
+        } else {
+            airport.fixes[state.spec.fix].name.chars().take(3).collect()
+        };
+        return Some((tag, false));
     }
-    let intent = match ac.phase {
-        Phase::ClearedApproach | Phase::Localizer | Phase::Glideslope => {
-            format!("I{}", airport.runways[world.arrival_runway()].id)
+    let misheard = matches!(ac.missed_hearback(), Some(SlipKind::Heading { .. }));
+    match ac.phase {
+        Phase::ClearedApproach | Phase::Localizer | Phase::Glideslope | Phase::TowerHandedOff
+            if ac.approach_runway.is_some() || ac.phase != Phase::TowerHandedOff =>
+        {
+            let id = &airport.runways[ac.approach_runway.unwrap_or(world.arrival_runway())].id;
+            Some((format!("I{id}"), false))
         }
-        Phase::GoAround => "GA".into(),
-        Phase::Controlled => match ac.assigned_heading() {
-            Some(h) => format!("H{}", format_heading(airport.to_magnetic(h))),
-            None => active_fix_name(airport, ac),
+        Phase::GoAround => Some(("GA".into(), false)),
+        Phase::Controlled | Phase::OfferedToCenter => match ac.assigned_heading() {
+            Some(h) => Some((format!("H{}", format_heading(airport.to_magnetic(h))), misheard)),
+            None => fix_abbreviation(airport, ac).map(|f| (f, false)),
         },
-        _ => active_fix_name(airport, ac),
+        _ => fix_abbreviation(airport, ac).map(|f| (f, false)),
+    }
+}
+
+/// The fix it's flying to, in three letters, as scratchpads abbreviate them.
+fn fix_abbreviation(airport: &Airport, ac: &Aircraft) -> Option<String> {
+    ac.active_fix().or(ac.exit_fix).map(|f| airport.fixes[f].name.chars().take(3).collect())
+}
+
+/// The character after the ground speed: V for VFR, otherwise the wake
+/// category (H heavy, F Boeing 757, blank for the rest). HL while holding.
+fn category(ac: &Aircraft) -> &'static str {
+    if ac.vfr.is_some() {
+        "V"
+    } else if matches!(ac.lateral, Lateral::Hold(_)) {
+        "HL"
+    } else if ac.ty.designator.starts_with("B75") {
+        "F"
+    } else if ac.ty.wake == WakeCategory::Heavy {
+        "H"
+    } else {
+        ""
+    }
+}
+
+/// The single character between altitude and speed: who a handoff is to.
+fn handoff_char(world: &World, ac: &Aircraft) -> char {
+    match ac.phase {
+        // Inbound: the receiving position, which is the player's.
+        Phase::Offered => player_symbol(world),
+        Phase::OfferedToCenter => 'C',
+        _ => ' ',
+    }
+}
+
+/// The player's own position symbol.
+fn player_symbol(world: &World) -> char {
+    if world.staffing().approach { 'A' } else { 'T' }
+}
+
+/// The alerts on a data block's top line: MSAW (LA), conflict alert (CA) and
+/// the special purpose code, each with whether it's still unacknowledged.
+fn alerts(world: &World, ui: &UiState, ac: &Aircraft) -> Vec<(&'static str, bool)> {
+    let mut alerts = Vec::new();
+    if world.alerts.terrain.contains(&ac.id) {
+        alerts.push(("LA", !ui.acknowledged_low.contains(&ac.id)));
+    }
+    let pairs: Vec<&(u32, u32)> = world
+        .alerts
+        .separation
+        .iter()
+        .chain(&world.alerts.conflict)
+        .filter(|&&(a, b)| a == ac.id || b == ac.id)
+        .collect();
+    if !pairs.is_empty() {
+        alerts.push(("CA", pairs.iter().any(|p| !ui.acknowledged_pairs.contains(p))));
+    }
+    if let Some(tag) = ac.emergency.as_ref().filter(|e| e.declared()).map(|e| e.tag()) {
+        alerts.push((tag, !ui.acknowledged.contains(&ac.id)));
+    }
+    alerts
+}
+
+/// Which data block a track gets.
+#[derive(PartialEq)]
+enum Block {
+    Full,
+    /// A track another position owns: altitude and speed on one line.
+    Partial,
+}
+
+fn block_kind(world: &World, ui: &UiState, ac: &Aircraft, alerting: bool) -> Block {
+    let full = world.is_players(ac)
+        || ac.phase == Phase::Offered
+        || ui.selected == Some(ac.id)
+        || alerting
+        // A tower cab quick-looks the radar positions: their tracks show in full.
+        || !world.staffing().approach;
+    if full { Block::Full } else { Block::Partial }
+}
+
+fn draw_target(world: &World, ui: &UiState, ac: &Aircraft, track: &RadarTrack, atpa: Option<&Atpa>) {
+    let selected = ui.selected == Some(ac.id);
+    let owned = world.is_players(ac);
+    let color = if selected {
+        SELECTED
+    } else if owned {
+        OWNED
+    } else {
+        UNOWNED
     };
-    format!("{:03.0} {intent}", ac.assigned_altitude() / 100.0)
-}
-
-fn active_fix_name(airport: &Airport, ac: &Aircraft) -> String {
-    ac.active_fix()
-        .or(ac.exit_fix)
-        .map(|f| airport.fixes[f].name.chars().take(5).collect())
-        .unwrap_or_default()
-}
-
-fn draw_target(world: &World, ui: &UiState, ac: &Aircraft, track: &RadarTrack) {
-    let color = track_color(world, ac);
     let p = ui.camera.to_screen(track.pos);
 
-    // History trail: older returns in fading blue.
+    // History: the last returns, in darkening blues.
     for (age, old) in track.history.iter().enumerate() {
         let dot = ui.camera.to_screen(*old);
-        let fade = 0.85 * (1.0 - age as f32 / (track.history.len() as f32 + 1.0));
-        draw_circle(dot.x, dot.y, 2.0, Color::new(HISTORY.r, HISTORY.g, HISTORY.b, fade));
+        draw_circle(dot.x, dot.y, 2.5, HISTORY[age.min(HISTORY.len() - 1)]);
     }
 
-    // Lines start clear of the position symbol so it stays readable.
-    let ptl = ui.camera.to_screen(
-        track.pos + track.velocity / crate::sim::units::SECONDS_PER_HOUR * PTL_SECONDS,
-    );
-    let ptl_start = p + (ptl - p).normalize_or_zero() * SYMBOL_CLEAR_PX;
-    if ptl.distance(p) > SYMBOL_CLEAR_PX {
-        let c = Color::new(color.r, color.g, color.b, 0.7);
-        draw_line(ptl_start.x, ptl_start.y, ptl.x, ptl.y, 1.0, c);
+    // Predicted track line, for your own tracks (PTL OWN) and the one selected.
+    if owned || selected {
+        let ptl = ui.camera.to_screen(
+            track.pos + track.velocity / crate::sim::units::SECONDS_PER_HOUR * PTL_SECONDS,
+        );
+        // Lines start clear of the position symbol so it stays readable.
+        let ptl_start = p + (ptl - p).normalize_or_zero() * SYMBOL_CLEAR_PX;
+        if ptl.distance(p) > SYMBOL_CLEAR_PX {
+            draw_line(ptl_start.x, ptl_start.y, ptl.x, ptl.y, 1.0, color);
+        }
     }
 
     let symbol = position_symbol(ac).to_string();
@@ -396,30 +497,25 @@ fn draw_target(world: &World, ui: &UiState, ac: &Aircraft, track: &RadarTrack) {
         draw_circle_lines(p.x, p.y, 14.0, 1.5, Color::new(0.98, 0.95, 0.40, 0.9));
     }
 
-    let selected = ui.selected == Some(ac.id);
+    let alerts = alerts(world, ui, ac);
+    let kind = block_kind(world, ui, ac, !alerts.is_empty());
     let origin = block_origin(ui, ac.id, track.pos);
-    let altitude = format!("{:03.0}", track.altitude / 100.0);
-    let speed = format!("{:02.0}", (track.ground_speed / 10.0).round());
-
-    // Tower's traffic drops to a limited data block: altitude and speed only.
-    let emergency = ac.emergency.as_ref().filter(|e| e.declared()).map(|e| e.tag());
-    if matches!(ac.phase, Phase::TowerHandedOff | Phase::Rollout) && !selected {
-        draw_text(format!("{altitude} {speed}"), p.x + 10.0, p.y - 6.0, BLOCK_FONT, color);
-        if let Some(tag) = emergency.filter(|_| ui.acknowledged.contains(&ac.id) || flash()) {
-            draw_text(tag, p.x + 10.0, p.y - 6.0 - BLOCK_LINE, BLOCK_FONT, CRITICAL);
-        }
-        return;
-    }
 
     // Leader line to the first line of the block, stopping at its edge.
+    // A target beside the block meets its first line; one above or below it
+    // meets its edge, so the line never crosses the text.
+    let first_row = if kind == Block::Full { 0.0 } else { 1.0 };
+    let rows = if kind == Block::Full { 3.0 } else { 1.0 };
+    let (top, bottom) = (origin.y + BLOCK_LINE * first_row, origin.y + BLOCK_LINE * (first_row + rows));
+    let beside = p.x < origin.x || p.x > origin.x + BLOCK_SIZE.x;
     let anchor = vec2(
         p.x.clamp(origin.x, origin.x + BLOCK_SIZE.x),
-        p.y.clamp(origin.y, origin.y + BLOCK_LINE),
+        if beside { p.y.clamp(top, top + BLOCK_LINE) } else { p.y.clamp(top, bottom) },
     );
     let gap = (anchor - p).normalize_or_zero() * SYMBOL_CLEAR_PX;
     draw_line(p.x + gap.x, p.y + gap.y, anchor.x, anchor.y, 1.0, color);
     if selected {
-        draw_rectangle_lines(origin.x - 2.0, origin.y - 2.0, BLOCK_SIZE.x, BLOCK_SIZE.y, 1.0, GHOST);
+        draw_rectangle_lines(origin.x - 2.0, origin.y - 2.0, BLOCK_SIZE.x, BLOCK_SIZE.y, 1.0, SELECTED_BOX);
     }
 
     // An inbound handoff blinks until accepted.
@@ -427,50 +523,100 @@ fn draw_target(world: &World, ui: &UiState, ac: &Aircraft, track: &RadarTrack) {
         return;
     }
 
-    let text = |line: &str, row: f32, c: Color| {
-        draw_text(line, origin.x, origin.y + BLOCK_LINE * (row + 1.0) - 3.0, BLOCK_FONT, c);
+    let text = |line: &str, x: f32, row: f32, c: Color| {
+        draw_text(line, origin.x + x, origin.y + BLOCK_LINE * (row + 1.0) - 3.0, BLOCK_FONT, c);
     };
-    if let Some((tag, tag_color)) = alert_tag(world, ac.id) {
-        text(tag, -1.0, tag_color);
+    let char_width = measure_text("0", None, BLOCK_FONT as u16, 1.0).width;
+
+    // Line 2, which is a partial data block's only line: altitude, timeshared
+    // with the scratchpad; the handoff field; ground speed and category,
+    // timeshared with the aircraft type.
+    let altitude = format!("{:03.0}", track.altitude / 100.0);
+    let speed = format!("{:02.0}{}", (track.ground_speed / 10.0).round(), category(ac));
+    let pad = scratchpad(world, ac);
+    let first_half = timeshare();
+    let (left, left_amber) = match &pad {
+        Some((pad, amber)) if !first_half => (pad.clone(), *amber),
+        _ => (altitude, false),
+    };
+    let width = pad.as_ref().map_or(3, |(s, _)| s.len().max(3));
+    let right = if first_half || kind == Block::Partial { speed } else { ac.ty.designator.to_string() };
+    let handoff = if kind == Block::Full { handoff_char(world, ac) } else { ' ' };
+    text(&left, 0.0, 1.0, if left_amber { WARNING } else { color });
+    text(&format!("{handoff}{right}"), char_width * width as f32, 1.0, color);
+    if kind == Block::Partial {
+        return;
     }
-    text(&ac.callsign, 0.0, color);
-    let second = if timeshare() {
-        format!("{altitude} {speed}")
-    } else {
-        format!("{altitude} {}", ac.ty.designator)
-    };
-    text(&second, 1.0, color);
-    // An emergency code blinks in red until the aircraft is selected, then
-    // timeshares with the scratchpad.
-    let acknowledged = ui.acknowledged.contains(&ac.id);
-    match emergency {
-        Some(tag) if !acknowledged => {
-            if flash() {
-                text(tag, 2.0, CRITICAL);
-            }
+
+    // Line 0: alerts, flashing in red until acknowledged.
+    let mut x = 0.0;
+    for (tag, unacknowledged) in &alerts {
+        if !*unacknowledged || flash() {
+            text(tag, x, -1.0, CRITICAL);
         }
-        Some(tag) if timeshare() => text(tag, 2.0, CRITICAL),
-        // The code it's squawking, when it isn't the one assigned: a readback
-        // error Delivery let through, until radar has it reset.
-        None if crate::sim::delivery::wrong_code_showing(ac).is_some() => {
-            let code = crate::sim::delivery::wrong_code_showing(ac).unwrap_or_default();
-            text(&crate::sim::delivery::code_text(code), 2.0, WARNING);
+        x += char_width * (tag.len() + 1) as f32;
+    }
+
+    // Line 1: callsign; an asterisk for VFR, which MSAW leaves alone.
+    let star = if ac.vfr.is_some() { "*" } else { "" };
+    text(&format!("{}{star}", ac.callsign), 0.0, 0.0, color);
+
+    // Line 3: ATPA's in-trail distance, or the code it's squawking when it
+    // isn't the one assigned; then the assigned altitude, while it's
+    // climbing or descending to it.
+    let mut x = 0.0;
+    if let Some(atpa) = atpa {
+        let c = match atpa.status {
+            AtpaStatus::Monitor => color,
+            AtpaStatus::Warning => WARNING,
+            AtpaStatus::Alert => ATPA_ALERT,
+        };
+        let distance = format!("{:.2}", atpa.distance);
+        text(&distance, 0.0, 2.0, c);
+        x = char_width * (distance.len() + 1) as f32;
+    } else if let Some(code) = crate::sim::delivery::wrong_code_showing(ac) {
+        let assigned = ac
+            .flight_plan
+            .as_ref()
+            .and_then(|p| p.cleared.as_ref())
+            .map(|c| crate::sim::delivery::code_text(c.squawk))
+            .unwrap_or_default();
+        let codes = format!("{} {assigned}", crate::sim::delivery::code_text(code));
+        text(&codes, 0.0, 2.0, WARNING);
+        x = char_width * (codes.len() + 1) as f32;
+    }
+    let misheard = matches!(ac.missed_hearback(), Some(SlipKind::Altitude { .. }));
+    let assigned = ac.assigned_altitude();
+    let on_approach = matches!(ac.phase, Phase::ClearedApproach | Phase::Localizer | Phase::Glideslope | Phase::TowerHandedOff);
+    if ac.vfr.is_none() && !on_approach && (misheard || (track.altitude - assigned).abs() > ASSIGNED_SHOWN_FT) {
+        text(&format!("A{:03.0}", assigned / 100.0), x, 2.0, if misheard { WARNING } else { color });
+    }
+}
+
+/// ATPA cones: from each trailing aircraft toward the one ahead, as long as
+/// the in-trail minimum. Blue while spaced, yellow for a warning, orange for
+/// an alert.
+fn draw_atpa_cones(world: &World, ui: &UiState, atpa: &[Atpa]) {
+    for a in atpa {
+        let (Some(follower), Some(leader)) = (world.track(a.follower), world.track(a.leader)) else { continue };
+        let shown = world.find(a.follower).is_some_and(|ac| world.is_players(ac) || !world.staffing().approach);
+        if !shown {
+            continue;
         }
-        // A misheard altitude or heading the controller let through: the
-        // assigned value in amber, timeshared with what it's really doing.
-        None if ac.missed_hearback().is_some() => {
-            let line = match (ac.missed_hearback(), timeshare()) {
-                (Some(SlipKind::Altitude { heard, .. }), true) => format!("{:03.0} ALT", heard / 100.0),
-                (Some(SlipKind::Heading { heard, .. }), true) => {
-                    format!("H{} HDG", format_heading(world.airport.to_magnetic(*heard)))
-                }
-                _ => scratchpad(world, ac),
-            };
-            text(&line, 2.0, WARNING);
-        }
-        // Asking to go round weather: WX, timeshared with the scratchpad.
-        None if ac.deviation.is_some_and(|d| !d.approved) && timeshare() => text("WX", 2.0, WARNING),
-        _ => text(&scratchpad(world, ac), 2.0, color),
+        let color = match a.status {
+            AtpaStatus::Monitor => ATPA_MONITOR,
+            AtpaStatus::Warning => WARNING,
+            AtpaStatus::Alert => ATPA_ALERT,
+        };
+        let toward = (leader.pos - follower.pos).normalize_or_zero();
+        let across = glam::Vec2::new(-toward.y, toward.x) * (a.required * ATPA_CONE_WIDTH);
+        let tip = ui.camera.to_screen(follower.pos);
+        let end = follower.pos + toward * a.required;
+        let l = ui.camera.to_screen(end + across);
+        let r = ui.camera.to_screen(end - across);
+        draw_line(tip.x, tip.y, l.x, l.y, 1.0, color);
+        draw_line(tip.x, tip.y, r.x, r.y, 1.0, color);
+        draw_line(l.x, l.y, r.x, r.y, 1.0, color);
     }
 }
 
@@ -569,7 +715,13 @@ fn draw_status_area(world: &World, ui: &UiState) {
     for &id in &world.alerts.terrain {
         line(&format!("{} LA", name(id)), CRITICAL);
     }
-    for &(a, b) in &world.alerts.wake {
-        line(&format!("{}*{} WK", name(a), name(b)), WARNING);
+    // Special purpose codes: "EM NVA101 RF N123AB".
+    let codes: Vec<String> = world
+        .aircraft
+        .iter()
+        .filter_map(|a| a.emergency.as_ref().filter(|e| e.declared()).map(|e| format!("{} {}", e.tag(), a.callsign)))
+        .collect();
+    if !codes.is_empty() {
+        line(&codes.join(" "), CRITICAL);
     }
 }

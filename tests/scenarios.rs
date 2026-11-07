@@ -270,6 +270,48 @@ fn wake_spacing_is_flagged_behind_a_heavy_but_not_when_legal() {
 }
 
 #[test]
+fn atpa_warns_and_alerts_as_a_follower_closes_on_the_minimum() {
+    use atcgame::sim::conflict::AtpaStatus;
+    // A large closing on a heavy, which needs 5 NM: about 45 kt faster.
+    let status = |gap: f32| {
+        let mut world = quiet_world(0.0);
+        let rwy = runway_27l(&world);
+        let x = world.airport.runways[rwy].threshold().x + 10.0;
+        let mut leader = Aircraft::new(
+            1,
+            "NVA101",
+            Flow::Arrival,
+            aircraft_type("B77W").unwrap(),
+            Vec2::new(x, -0.6),
+            270.0,
+            3200.0,
+            160.0,
+        );
+        let mut follower = arrival(2, "NVA102", Vec2::new(x + gap, -0.6), 270.0, 5000.0);
+        for ac in [&mut leader, &mut follower] {
+            ac.phase = Phase::Glideslope;
+            ac.lateral = Lateral::Localizer;
+            ac.approach_runway = Some(rwy);
+            ac.on_glideslope = true;
+        }
+        world.add_aircraft(leader);
+        world.add_aircraft(follower);
+        world.tick();
+        world.tick();
+        let atpa = world.atpa();
+        assert_eq!(atpa.len(), 1);
+        let a = atpa[0];
+        assert_eq!((a.leader, a.follower, a.required), (1, 2, 5.0));
+        assert!((a.distance - gap).abs() < 0.1, "{a:?}");
+        a.status
+    };
+    assert_eq!(status(8.0), AtpaStatus::Monitor);
+    assert_eq!(status(5.45), AtpaStatus::Warning, "the minimum goes inside 45 s");
+    assert_eq!(status(5.2), AtpaStatus::Alert, "inside 24 s");
+    assert_eq!(status(4.5), AtpaStatus::Alert, "already lost");
+}
+
+#[test]
 fn descending_below_the_mva_triggers_a_terrain_alert() {
     let mut world = quiet_world(0.0);
     let mut events = Vec::new();

@@ -64,6 +64,10 @@ pub struct UiState {
     pub enter_taken: bool,
     /// Emergencies the player has selected: their EM tag stops blinking.
     pub acknowledged: HashSet<u32>,
+    /// Conflict alert pairs and MSAW tracks acknowledged by selecting one:
+    /// their CA or LA stops blinking.
+    pub acknowledged_pairs: HashSet<(u32, u32)>,
+    pub acknowledged_low: HashSet<u32>,
     /// The flight strip bay.
     pub board: super::strips::Board,
     /// The aircraft whose strip the mouse is over, pointed out on the scope.
@@ -94,6 +98,8 @@ impl UiState {
             lesson: false,
             enter_taken: false,
             acknowledged: HashSet::new(),
+            acknowledged_pairs: HashSet::new(),
+            acknowledged_low: HashSet::new(),
             board: Default::default(),
             hovered: None,
             course_hint: true,
@@ -438,6 +444,20 @@ impl UiState {
         }
         if let Some(id) = self.selected.filter(|&id| world.find(id).is_some_and(|a| a.in_emergency())) {
             self.acknowledged.insert(id);
+        }
+        // A pair that clears and comes back blinks again.
+        let alerts = &world.alerts;
+        self.acknowledged_pairs.retain(|p| alerts.separation.contains(p) || alerts.conflict.contains(p));
+        self.acknowledged_low.retain(|id| alerts.terrain.contains(id));
+        if let Some(id) = self.selected {
+            for &p in alerts.separation.iter().chain(&alerts.conflict) {
+                if p.0 == id || p.1 == id {
+                    self.acknowledged_pairs.insert(p);
+                }
+            }
+            if alerts.terrain.contains(&id) {
+                self.acknowledged_low.insert(id);
+            }
         }
     }
 

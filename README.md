@@ -86,6 +86,65 @@ aircraft not cleared by short final goes around and rejoins the pattern.
 Each airport sets its own VFR rate: KSUS sees about 8 light aircraft an hour
 at Normal traffic, busy Harrowgate about 4.
 
+## Reading the scope
+
+The radar follows the FAA's STARS displays, as documented for VATSIM's CRC
+client, with a few aids kept for playability.
+
+**Tracks and colours**
+- The letter on each target is the position that owns it: `A` Approach, `T`
+  Tower, `C` Center.
+- **Colours:**
+  - Your tracks are white and everyone else's green.
+  - The block you've selected is cyan, with a box round it.
+  - The history trail fades through five blues.
+- The predicted track line (one minute) is drawn for your own tracks and the
+  selected one.
+
+**Full data block**, for your tracks, inbound handoffs and anything alerting:
+
+```
+CA            line 0: alerts (LA, CA, EM, RF), red, blinking until you select the aircraft
+NVA101        line 1: callsign; * after it for VFR
+050 25H       line 2: Mode C altitude, handoff, ground speed (tens of kt) and category
+              timeshared with:  scratchpad  and  aircraft type   e.g.  H270 B738
+4.25 A080     line 3: ATPA in-trail distance; the assigned altitude while climbing
+              or descending to it
+```
+
+- **The middle of line 2** shows who a handoff is to: `C` while Center is being
+  offered it, or your own letter while it's being offered to you (the block
+  blinks until you accept).
+- **After the speed:** `H` heavy, `F` Boeing 757, `V` VFR, `HL` holding.
+- **The scratchpad** is filled in as a controller would:
+  - `I27L` once cleared for the ILS;
+  - `H270` for an assigned heading;
+  - the fix it's flying to, in three letters;
+  - `EFC` near the hold's EFC time;
+  - `WX` (amber) when it's asking to deviate.
+
+**Partial data block** (altitude and speed on one line): tracks another
+position owns, such as Tower's departures before they call you. Select one to
+see it in full. A tower position quick-looks the radar positions, so there
+everything shows in full.
+
+**ATPA** (Automated Terminal Proximity Alert) watches each aircraft behind
+another on the same final:
+- **Cone:** from the follower toward the leader, as long as the in-trail
+  minimum (radar or wake).
+- **Blue** while it's spaced.
+- **Yellow** when the minimum will be lost within 45 seconds.
+- **Orange** within 24 seconds, or once it's lost.
+- The in-trail distance shows on line 3, in the same colour.
+
+**The status area** at the top left has:
+- the time (HHMM/SS);
+- the airport, ATIS letter, wind and runways;
+- the range and PTL length;
+- the conflict alert list (`NVA101*NVA110 CA`);
+- MSAW (`LA`);
+- active emergency codes in red.
+
 ## Weather and runway changes
 
 The wind changes through the shift. It drifts a few degrees and knots at a
@@ -173,8 +232,8 @@ Approach (and Tower, for a missed approach) can hold an arrival at a fix.
 - **Leaving it:** a heading, a direct or R. R takes it on along its route
   past the hold fix. Clear it for the approach only after vectoring it out
   of the hold.
-- **EFC:** the data block reads `HLD` (and `EFC` a couple of minutes before
-  it), and the strip says `EFC` a minute before. At the EFC the pilot asks
+- **EFC:** the data block shows `HL` after the speed and the hold fix in the
+  scratchpad (`EFC` a couple of minutes before it), and the strip says `EFC` a minute before. At the EFC the pilot asks
   for further clearance; two minutes past it with nothing new costs points.
   A new hold instruction gives a new EFC.
 - **Published holds** are drawn faintly on the scope, brighter while
@@ -219,7 +278,8 @@ information Juliett." Its strip waits in the CLEARANCE bay, marked `CLNC`.
   Clearing one costs 100, and a wrong readback left uncorrected costs 75; the
   next controller sorts either out, so the flight still goes.
 - **A wrong code you missed shows on the radar.** Once airborne, the aircraft's
-  data block shows the code it's really squawking, in amber, until Departure
+  data block's third line shows the code it's really squawking and the one
+  assigned, in amber, until Departure
   has it reset at radar contact ("reset transponder, squawk 0415"). When you work Approach
   too, that's your job: select it and press I, then Enter.
 - **F4** hides the course hint, for when you'd rather work it out yourself.
@@ -241,8 +301,9 @@ Each IFR movement has a chance of an emergency, so busier shifts see more:
 | Intense | 1 in 5 | several a shift |
 
 The pilot declares on your frequency ("Mayday, mayday, mayday...", or
-"Pan-pan" for a medical), the alert sounds, and the data block shows `EM` in
-red (`RDOF` for a radio failure), blinking until you select the aircraft. The strip has `EMRG ENG`, `EMRG FUEL` and
+"Pan-pan" for a medical), the alert sounds, and the data block's top line shows
+`EM` in red (`RF` for a radio failure, the STARS codes for 7700 and 7600),
+blinking until you select the aircraft. The status area lists it in red. The strip has `EMRG ENG`, `EMRG FUEL` and
 so on written on it in red, and moves to the top of its bay.
 
 - **Medical:** wants priority, and paramedics at the gate. Ground earns a
@@ -294,7 +355,8 @@ spot by watching.
   heading (10 or 20 degrees off, or the digits swapped), and flies it. Listen
   to the readback. Say it again within a minute, before the aircraft is 300
   ft past your altitude, for 40 points. Missed, it costs 75, and the
-  assigned value in the data block turns amber until you put it right.
+  assigned value in the data block turns amber until you put it right: the
+  altitude on line 3 (`A050`), or the heading in the scratchpad.
 - **Altitude bust:** the readback is right, but the pilot flies 400 to 1,000
   ft through the altitude. Catch it on Mode C once it's 200 ft through and
   restate the altitude for 40 points. If the pilot notices first ("sorry,
@@ -476,10 +538,11 @@ arrival goes around, say), the lesson takes you back and lets you try again.
 
 ## Features
 
-- **STARS-style scope:** position symbols, history trails, timeshared data
-  blocks, a predicted track line and a system status area.
+- **STARS scope:** position symbols, full and partial data blocks with
+  STARS's timeshared fields, ATPA cones and in-trail distances on final,
+  history trails, a predicted track line and a system status area.
 - **Safety net:** conflict alerts 60 seconds ahead, loss of separation (3 NM or
-  1,000 ft), wake turbulence spacing on final, and low-altitude warnings
+  1,000 ft), ATPA wake spacing on final, and low-altitude warnings
   against the MVA.
 - **Real procedures at KSUS:** headings are shown and spoken in magnetic,
   departures pick a runway by aircraft type, and arrivals and departures share

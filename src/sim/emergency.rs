@@ -248,9 +248,11 @@ impl Emergency {
     }
 
     /// What the data block shows: `EM` for 7700, `RDOF` for 7600.
+    /// The special purpose code's ID, as STARS shows it: RF for 7600 (radio
+    /// failure), EM for 7700.
     pub fn tag(&self) -> &'static str {
         if self.kind == EmergencyKind::RadioFailure {
-            "RDOF"
+            "RF"
         } else {
             "EM"
         }
