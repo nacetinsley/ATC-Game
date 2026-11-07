@@ -57,6 +57,9 @@ pub enum Clearance {
     ClearedOption(usize),
     /// Hold at a fix.
     Hold(HoldSpec),
+    /// An IFR clearance from Delivery: the departure route, the altitude to
+    /// expect, and the beacon code.
+    Ifr { route: Vec<usize>, altitude: f32, squawk: u16 },
 }
 
 impl Clearance {
@@ -80,7 +83,6 @@ impl Clearance {
             | Clearance::LineUpAndWait(_)
             | Clearance::ClearedForTakeoff(_)
             | Clearance::ClearedToLand(_)
-            | Clearance::ContactGround
             | Clearance::ContactDeparture
             | Clearance::EnterDownwind(_)
             | Clearance::ExtendDownwind
@@ -89,7 +91,10 @@ impl Clearance {
             | Clearance::ClearedTouchAndGo(_)
             | Clearance::ClearedOption(_) => &[Local],
             Clearance::ContactTower => &[Ground],
+            // Local after landing; Delivery once it has its clearance.
+            Clearance::ContactGround => &[Local, Delivery],
             Clearance::Hold(_) => &[Approach, Local],
+            Clearance::Ifr { .. } => &[Delivery],
         }
     }
 }
@@ -236,6 +241,9 @@ pub fn phrase(clearance: &Clearance, ac: &Aircraft, airport: &Airport) -> String
             format!("runway {}, cleared for the option", airport.runways[*e].id)
         }
         Clearance::Hold(spec) => hold_phrase(spec, airport),
+        Clearance::Ifr { route, altitude, squawk } => {
+            super::delivery::phrase(ac, route, *altitude, *squawk, airport)
+        }
     }
 }
 
@@ -261,6 +269,8 @@ struct Context<'a> {
     airport: &'a Airport,
     arrival_runway: usize,
     now: f32,
+    /// For the pilot's own slips, decided from the seed.
+    seed: u64,
 }
 
 impl World {
@@ -363,6 +373,7 @@ impl World {
             airport: &self.airport,
             arrival_runway: self.arrival_runway(),
             now: self.time,
+            seed: self.config.seed,
         };
         let mut readback = Vec::new();
         let mut events = Vec::new();
@@ -371,6 +382,12 @@ impl World {
         for (clearance, issuer) in &call.clearances {
             let ac = &mut self.aircraft[index];
             let words = phrase(clearance, ac, ctx.airport);
+            let repeat = match clearance {
+                Clearance::Ifr { route, altitude, squawk } => {
+                    super::delivery::is_repeat(ac, route, *altitude, *squawk)
+                }
+                _ => false,
+            };
             let before = ac.frequency();
             let result = match issuer {
                 Some(p) if can_speak(*p, before, staffing) => apply(clearance, ac, &ctx),
@@ -378,6 +395,11 @@ impl World {
             };
             match result {
                 Ok(()) => {
+                    // An IFR clearance is read back as the pilot heard it.
+                    let words = match clearance {
+                        Clearance::Ifr { .. } => super::delivery::readback(ac, repeat, ctx.airport),
+                        _ => words,
+                    };
                     readback.push(words);
                     if let Some(by) = *issuer {
                         ac.strip.push(StripMark { time: ctx.now, by, clearance: clearance.clone() });
@@ -612,10 +634,16 @@ fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), 
             }
             ac.phase = Phase::OfferedToCenter;
         }
+        Clearance::Ifr { route, altitude, squawk } => {
+            super::delivery::apply(ac, route, *altitude, *squawk, ctx.now, ctx.seed)?;
+        }
         Clearance::Taxi { to, via } => {
             let map = surface(ac, airport)?;
             if !matches!(ac.phase, Phase::Parked | Phase::Taxiing) {
                 return Err("not taxiing".into());
+            }
+            if ac.flight_plan.as_ref().is_some_and(|p| !p.is_cleared()) {
+                return Err("we don't have our IFR clearance yet".into());
             }
             let origin = taxi_origin(ac, map);
             let route = map.route(origin, *to, via).ok_or_else(|| "no route that way".to_string())?;
@@ -625,6 +653,11 @@ fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), 
             let here = map.nodes[taxi.node].zones.clone();
             taxi.cleared.retain(|r| here.contains(r));
             ac.phase = Phase::Taxiing;
+            // Taxied straight from a combined Delivery: it's with Ground now.
+            if ac.surface_freq == Position::Delivery {
+                ac.surface_freq = Position::Ground;
+                ac.freq_since = ctx.now;
+            }
         }
         Clearance::HoldPosition => {
             surface(ac, airport)?;
@@ -755,7 +788,11 @@ fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), 
         }
         Clearance::ContactGround => {
             surface(ac, airport)?;
-            if ac.phase != Phase::Taxiing {
+            let at_gate = ac.phase == Phase::Parked && ac.surface_freq == Position::Delivery;
+            if at_gate && ac.flight_plan.as_ref().is_some_and(|p| !p.is_cleared()) {
+                return Err("we still need our clearance".into());
+            }
+            if ac.phase != Phase::Taxiing && !at_gate {
                 return Err("not taxiing".into());
             }
             ac.surface_freq = Position::Ground;

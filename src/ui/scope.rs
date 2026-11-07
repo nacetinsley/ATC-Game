@@ -93,7 +93,7 @@ fn timeshare() -> bool {
 fn position_symbol(ac: &Aircraft) -> char {
     match ac.frequency() {
         Position::Approach => 'A',
-        Position::Local | Position::Ground => 'T',
+        Position::Local | Position::Ground | Position::Delivery => 'T',
         Position::Center => 'C',
     }
 }

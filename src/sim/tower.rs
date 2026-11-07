@@ -272,7 +272,7 @@ impl World {
                 Some(spot) => format!("Ground, {}, clear of the runway, for {spot}.", ac.callsign),
                 None => format!("Ground, {}, with you.", ac.callsign),
             },
-            Position::Center => return,
+            Position::Center | Position::Delivery => return,
         };
         self.say(Speaker::Pilot, line);
     }
@@ -544,6 +544,10 @@ impl World {
             let (waiting, to, next) = if freq == Position::Local && !staffing.ground {
                 let w = self.clear_of_runways(ac) && !self.bound_for_departure_hold(ac);
                 (w && staffing.tower(), "Ground", Position::Ground)
+            } else if freq == Position::Delivery && !staffing.ground {
+                // Cleared, and still on the player's Delivery frequency.
+                let cleared = ac.flight_plan.as_ref().is_some_and(|p| p.is_cleared());
+                (cleared && !self.call_pending(ac.id), "Ground", Position::Ground)
             } else if freq == Position::Ground && !staffing.local {
                 let w = self.at_departure_hold(ac)
                     || ac.taxi.as_ref().is_some_and(|t| t.holding_short.is_some());

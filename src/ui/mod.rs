@@ -49,6 +49,14 @@ const GROUND_BRIEFING: [&str; 3] = [
     "         first to route via them. Ground never crosses a runway: Tower does.",
     "SPACING  Keep taxiing traffic apart: two aircraft nose to nose can't pass.",
 ];
+const DELIVERY_BRIEFING: [&str; 4] = [
+    "CLEARANCE  Departures call from the gate. Check the flight plan, then clear it (I).",
+    "          Cruising altitude by direction (magnetic course): 0-179 odd, 180-359 even;",
+    "          above FL410, FL410/450/490 east, 430/470/510 west. SIDs must be in use.",
+    "READBACK  Listen to it. If the code or altitude comes back wrong, press I again.",
+];
+const DELIVERY_CONTROLS: &str =
+    "DELIVERY  I clearance (again: repeat code and altitude) | Up/Down amend altitude | S next SID | F4 course hint";
 const RADAR_CONTROLS: &str =
     "CONTROLS  Click/Tab select | Drag: heading, or onto a fix: direct (Ctrl: hold) | Arrows hdg, alt | +/- speed | C ILS | R route | H hold";
 const TOWER_CONTROLS: &str =
@@ -61,12 +69,14 @@ const VFR_BRIEFING: &str =
 
 /// What the player is told before a shift, for the positions they work.
 fn briefing(staffing: Staffing, vfr: bool) -> Vec<&'static str> {
-    let mut lines = vec![match (staffing.approach, staffing.local, staffing.ground) {
-        (true, false, false) => "You work Approach radar. Tower, Ground and Center are automated.",
-        (false, true, false) => "You work Local Control (Tower): the runways. Ground and Approach are automated.",
-        (false, false, true) => "You work Ground Control: the taxiways. Tower and Approach are automated.",
-        (false, true, true) => "You work Tower and Ground combined. Approach is automated.",
-        _ => "You work every position: Approach, Tower and Ground. F1 radar, F2 surface.",
+    let mut lines = vec![match (staffing.approach, staffing.local, staffing.ground, staffing.delivery) {
+        (true, false, false, false) => "You work Approach radar. Tower, Ground and Center are automated.",
+        (false, true, false, false) => "You work Local Control (Tower): the runways. Ground and Approach are automated.",
+        (false, false, true, false) => "You work Ground Control: the taxiways. Tower and Approach are automated.",
+        (false, false, false, true) => "You work Clearance Delivery: IFR clearances at the gate. Everything else is automated.",
+        (false, false, true, true) => "You work Ground and Clearance Delivery combined. Tower and Approach are automated.",
+        (false, true, true, false) => "You work Tower and Ground combined. Approach is automated.",
+        _ => "You work every position: Approach, Tower, Ground and Delivery. F1 radar, F2 surface.",
     }];
     lines.push("");
     if staffing.approach {
@@ -79,6 +89,12 @@ fn briefing(staffing: Staffing, vfr: bool) -> Vec<&'static str> {
         }
         if !staffing.approach {
             lines.push("HANDOFF  Hand departures to Departure (T) before 3 NM.");
+        }
+    }
+    if staffing.delivery {
+        lines.extend(DELIVERY_BRIEFING);
+        if !staffing.ground {
+            lines.push("HANDOFF  Once it has read back its clearance, send it to Ground (T).");
         }
     }
     if staffing.ground {
@@ -104,6 +120,9 @@ fn controls(staffing: Staffing) -> Vec<&'static str> {
     }
     if staffing.local {
         lines.push(VFR_CONTROLS);
+    }
+    if staffing.delivery {
+        lines.push(DELIVERY_CONTROLS);
     }
     lines.push(COMMON_CONTROLS);
     lines
@@ -508,7 +527,7 @@ fn start_pressed() -> bool {
 
 /// Five-notch slider for traffic level. Returns a level if one was clicked.
 fn draw_busyness(busyness: Busyness, real_data: bool, x: f32, y: f32) -> Option<Busyness> {
-    const SPACING: f32 = 130.0;
+    const SPACING: f32 = 112.0;
     const HIT: f32 = 14.0;
     draw_text("TRAFFIC  Left/Right or click to choose", x, y, 20.0, DIM);
     let track = y + 30.0;
@@ -539,18 +558,55 @@ fn draw_busyness(busyness: Busyness, real_data: bool, x: f32, y: f32) -> Option<
     picked
 }
 
-/// Position choices as a row of buttons. Returns one if clicked.
+/// Briefing line spacing on the menu, and the least it shrinks to on a short window.
+const BRIEFING_LINE: f32 = 23.0;
+const MIN_BRIEFING_LINE: f32 = 19.0;
+/// Where a wrapped briefing line carries on, under the text after its label.
+const BRIEFING_INDENT: &str = "          ";
+
+/// Split a briefing line to fit `width` pixels, carrying on indented.
+fn wrap_to_width(line: &str, width: f32, size: f32) -> Vec<String> {
+    let fits = |text: &str| measure_text(text, None, size as u16, 1.0).width <= width;
+    if fits(line) {
+        return vec![line.to_string()];
+    }
+    let body = line.trim_start();
+    let mut out = Vec::new();
+    let mut current = line[..line.len() - body.len()].to_string();
+    for word in body.split(' ') {
+        let candidate = if current.trim().is_empty() { format!("{current}{word}") } else { format!("{current} {word}") };
+        if fits(&candidate) || current.trim().is_empty() {
+            current = candidate;
+        } else {
+            out.push(current);
+            current = format!("{BRIEFING_INDENT}{word}");
+        }
+    }
+    out.push(current);
+    out
+}
+
+/// Where the position buttons wrap to a second row.
+const POSITION_ROW_BREAK: usize = 4;
+
+/// Position choices as two rows of buttons. Returns one if clicked.
 fn draw_positions(staffing: Staffing, x: f32, y: f32) -> Option<usize> {
     const GAP: f32 = 10.0;
     draw_text("POSITION  P or click to choose", x, y, 20.0, DIM);
     let mouse = Vec2::from(mouse_position());
     let clicked = is_mouse_button_pressed(MouseButton::Left);
     let mut left = x;
+    let mut top = y + 10.0;
     let mut picked = None;
     for (index, &choice) in Staffing::CHOICES.iter().enumerate() {
+        // The surface positions on the first row, the combinations on the second.
+        if index == POSITION_ROW_BREAK {
+            left = x;
+            top += 38.0;
+        }
         let label = choice.label();
         let width = measure_text(label, None, 20, 1.0).width + 24.0;
-        let rect = Rect::new(left, y + 10.0, width, 30.0);
+        let rect = Rect::new(left, top, width, 30.0);
         let selected = choice == staffing;
         if selected {
             draw_rectangle(rect.x, rect.y, rect.w, rect.h, Color::new(0.10, 0.22, 0.12, 1.0));
@@ -711,34 +767,45 @@ fn draw_menu(airports: &[Airport], choice: usize, state: MenuState) -> MenuPick 
         ..Default::default()
     };
     if staffing.tower() {
-        pick.vfr = draw_vfr_toggle(vfr, x, y + 68.0);
+        pick.vfr = draw_vfr_toggle(vfr, x, y + 106.0);
     }
-    y += 100.0;
-    let vfr = vfr && staffing.tower();
-    for line in briefing(staffing, vfr).iter().chain(&controls(staffing)).chain(std::iter::once(&BRIEFING_VIEW)) {
-        draw_text(line, x, y, 20.0, TEXT);
-        y += 23.0;
-    }
-    y += 16.0;
-    draw_text("AIRPORT  Up/Down to choose", x, y, 20.0, DIM);
-    y += 28.0;
+
+    // The right-hand column: where, how busy, and go.
+    let mut ry = 400.0;
+    draw_text("AIRPORT  Up/Down to choose", right, ry, 20.0, DIM);
+    ry += 28.0;
     for (index, airport) in airports.iter().enumerate() {
         let selected = index == choice;
         let marker = if selected { ">" } else { " " };
         let line = format!("{marker} {}  {}", airport.code, airport.name);
-        draw_text(&line, x, y, 24.0, if selected { TITLE } else { TEXT });
-        y += 28.0;
+        draw_text(&line, right, ry, 24.0, if selected { TITLE } else { TEXT });
+        ry += 28.0;
     }
     let airport = &airports[choice];
     if let Some(source) = &airport.data_source {
-        draw_text(source, x, y, 18.0, DIM);
-        y += 22.0;
-        draw_text("Provided as is, with no warranty. See DATA_NOTICE.md.", x, y, 18.0, DIM);
-        y += 22.0;
+        draw_text(source, right, ry, 16.0, DIM);
+        draw_text("Provided as is, with no warranty. See DATA_NOTICE.md.", right, ry + 19.0, 16.0, DIM);
+        ry += 38.0;
     }
-    y += 16.0;
-    pick.busyness = draw_busyness(busyness, airport.traffic.is_some(), x, y);
-    draw_text("Press ENTER to start your shift", x, y + 120.0, 30.0, TITLE);
+    ry += 26.0;
+    pick.busyness = draw_busyness(busyness, airport.traffic.is_some(), right, ry);
+    draw_text("Press ENTER to start your shift", right, ry + 130.0, 30.0, TITLE);
+
+    // The left: the briefing, wrapped clear of the right column, closer
+    // together if it's long.
+    y += 146.0;
+    let vfr = vfr && staffing.tower();
+    let width = right - x - 30.0;
+    let mut lines = Vec::new();
+    for line in briefing(staffing, vfr).into_iter().chain(controls(staffing)).chain(std::iter::once(BRIEFING_VIEW)) {
+        lines.extend(wrap_to_width(line, width, 20.0));
+    }
+    let spacing = ((screen_height() - y - 8.0) / lines.len() as f32).clamp(MIN_BRIEFING_LINE, BRIEFING_LINE);
+    let size = (20.0 * spacing / BRIEFING_LINE).max(18.0);
+    for line in lines {
+        draw_text(&line, x, y, size, TEXT);
+        y += spacing;
+    }
     pick
 }
 

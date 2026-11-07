@@ -276,6 +276,8 @@ pub struct Aircraft {
     pub emergency: Option<super::emergency::Emergency>,
     /// Every instruction it has accepted, oldest first: the strip's pen marks.
     pub strip: Vec<StripMark>,
+    /// IFR departures only: what it filed and what it's cleared for.
+    pub flight_plan: Option<super::delivery::FlightPlan>,
 }
 
 impl Aircraft {
@@ -328,6 +330,7 @@ impl Aircraft {
             vfr: None,
             emergency: None,
             strip: Vec::new(),
+            flight_plan: None,
         }
     }
 

@@ -16,6 +16,12 @@ pub const PENALTY_LATE_HANDOFF: i32 = -75;
 pub const PENALTY_GO_AROUND: i32 = -25;
 pub const PENALTY_LATE_ACCEPT: i32 = -25;
 pub const PENALTY_MISSED_EFC: i32 = -25;
+/// An IFR clearance given and the aircraft on its way to Ground.
+pub const POINTS_CLEARED: i32 = 30;
+/// A filed flight plan's mistake caught before it was cleared.
+pub const POINTS_PLAN_CAUGHT: i32 = 40;
+pub const PENALTY_PLAN_MISSED: i32 = -100;
+pub const PENALTY_READBACK_MISSED: i32 = -75;
 pub const POINTS_PARKED: i32 = 50;
 pub const PENALTY_INCURSION: i32 = -400;
 pub const PENALTY_RUNWAY_SEPARATION: i32 = -300;
@@ -37,6 +43,9 @@ pub const MAX_SEPARATION_LOSSES: u32 = 5;
 const NOMINAL_ARRIVAL_MINUTES: f32 = 15.0;
 const DELAY_POINTS_PER_MINUTE: f32 = 2.0;
 const MAX_DELAY_PENALTY: f32 = 40.0;
+/// Minutes a pilot can wait for a clearance before it costs points.
+const NOMINAL_CLEARANCE_MINUTES: f32 = 3.0;
+const MAX_CLEARANCE_DELAY_PENALTY: f32 = 30.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoAroundReason {
@@ -87,6 +96,14 @@ pub enum SimEvent {
     ShiftEnded { end: ShiftEnd },
     /// Center is offering an arrival to the player's Approach.
     HandoffOffered { callsign: String },
+    /// An IFR clearance settled as the aircraft left Delivery.
+    Cleared { callsign: String, waited_minutes: f32 },
+    /// A mistake in the filed flight plan, amended before it was cleared.
+    PlanCaught { callsign: String, problem: String },
+    /// Cleared with something wrong: the filed mistake, or a new one.
+    PlanMissed { callsign: String, problem: String },
+    /// Left Delivery with a wrong readback never corrected.
+    ReadbackMissed { callsign: String, what: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +129,8 @@ pub struct Credit {
     pub touch_and_goes: bool,
     /// Arrivals taxied in to the gate.
     pub parking: bool,
+    /// IFR clearances: Delivery.
+    pub clearances: bool,
 }
 
 impl Credit {
@@ -120,13 +139,14 @@ impl Credit {
             landings: staffing.approach || staffing.local,
             touch_and_goes: staffing.local,
             parking: staffing.ground,
+            clearances: staffing.delivery,
         }
     }
 }
 
 impl Default for Credit {
     fn default() -> Self {
-        Credit { landings: true, touch_and_goes: true, parking: true }
+        Credit { landings: true, touch_and_goes: true, parking: true, clearances: true }
     }
 }
 
@@ -141,6 +161,8 @@ pub struct Score {
     pub separation_losses: u32,
     pub parked: u32,
     pub touch_and_goes: u32,
+    /// IFR clearances settled.
+    pub cleared: u32,
     pub incidents: Vec<Incident>,
     /// Every emergency declared this shift and how it ended, whoever worked it.
     pub emergencies: Vec<EmergencyRecord>,
@@ -178,6 +200,11 @@ impl EmergencyRecord {
         };
         format!("{}  {}  {outcome}{go_arounds}", self.callsign, self.kind.describe())
     }
+}
+
+fn clearance_delay_penalty(minutes: f32) -> i32 {
+    let over = (minutes - NOMINAL_CLEARANCE_MINUTES).max(0.0);
+    -((over * DELAY_POINTS_PER_MINUTE).min(MAX_CLEARANCE_DELAY_PENALTY).round() as i32)
 }
 
 fn delay_penalty(minutes: f32) -> i32 {
@@ -402,6 +429,23 @@ impl Score {
                     self.incident(time, format!("{callsign} at the gate for the paramedics"), POINTS_EMERGENCY_PARKED);
                 }
             }
+            SimEvent::Cleared { waited_minutes, .. } => {
+                self.cleared += 1;
+                if self.credit.clearances {
+                    self.points += POINTS_CLEARED + clearance_delay_penalty(*waited_minutes);
+                }
+            }
+            SimEvent::PlanCaught { callsign, problem } => {
+                if self.credit.clearances {
+                    self.incident(time, format!("{callsign} flight plan corrected: filed {problem}"), POINTS_PLAN_CAUGHT);
+                }
+            }
+            SimEvent::PlanMissed { callsign, problem } => {
+                self.incident(time, format!("{callsign} cleared {problem}"), PENALTY_PLAN_MISSED);
+            }
+            SimEvent::ReadbackMissed { callsign, what } => {
+                self.incident(time, format!("{callsign} readback error missed: {what}"), PENALTY_READBACK_MISSED);
+            }
             SimEvent::ConflictAlert { .. }
             | SimEvent::EmergencyDeclared { .. }
             | SimEvent::ShiftEnded { .. }
@@ -430,7 +474,8 @@ impl Score {
         let clean = counted(self.credit.landings, self.landed) * POINTS_LANDED
             + self.exited as i32 * POINTS_EXITED
             + counted(self.credit.parking, self.parked) * POINTS_PARKED
-            + counted(self.credit.touch_and_goes, self.touch_and_goes) * POINTS_TOUCH_AND_GO;
+            + counted(self.credit.touch_and_goes, self.touch_and_goes) * POINTS_TOUCH_AND_GO
+            + counted(self.credit.clearances, self.cleared) * POINTS_CLEARED;
         if clean == 0 {
             return "No rating - no flights completed";
         }
@@ -450,7 +495,7 @@ mod tests {
 
     #[test]
     fn every_emergency_is_recorded_whoever_gets_the_credit() {
-        let mut s = Score::new(Credit { landings: false, touch_and_goes: false, parking: true });
+        let mut s = Score::new(Credit { landings: false, touch_and_goes: false, parking: true, clearances: false });
         let declared = |name: &str, kind| SimEvent::EmergencyDeclared { callsign: name.into(), kind };
         s.apply(60.0, &declared("A", EmergencyKind::Medical));
         s.apply(90.0, &declared("B", EmergencyKind::LowFuel));

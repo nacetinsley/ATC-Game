@@ -6,6 +6,7 @@
 use super::World;
 use super::aircraft::{Aircraft, Flow, Lateral, Leg, Phase, VfrIntent};
 use super::positions::Position;
+use super::delivery::CLEARANCE_WAIT_S;
 use super::tower::TOWER_HANDOFF_GATE_NM;
 
 /// Inside this distance an arrival without a landing clearance is flagged, NM.
@@ -40,6 +41,10 @@ pub enum Awaiting {
     CheckIn,
     /// Holding, and its expect-further-clearance time is close or gone.
     Efc,
+    /// At the gate, calling Clearance Delivery for its IFR clearance.
+    ClearanceRequest,
+    /// Has waited for its clearance long enough to count as delay.
+    ClearanceLate,
 }
 
 impl Awaiting {
@@ -55,12 +60,16 @@ impl Awaiting {
             Awaiting::FrequencyChange => "FREQ",
             Awaiting::CheckIn => "CALL",
             Awaiting::Efc => "EFC",
+            Awaiting::ClearanceRequest | Awaiting::ClearanceLate => "CLNC",
         }
     }
 
     /// About to cost points.
     pub fn urgent(self) -> bool {
-        matches!(self, Awaiting::LandingClearance | Awaiting::HandoffDue | Awaiting::Efc)
+        matches!(
+            self,
+            Awaiting::LandingClearance | Awaiting::HandoffDue | Awaiting::Efc | Awaiting::ClearanceLate
+        )
     }
 }
 
@@ -112,6 +121,15 @@ impl World {
             return Some(Awaiting::Efc);
         }
 
+        if self.wants_clearance(ac) {
+            let waited = ac.flight_plan.as_ref().and_then(|p| p.called_at).map_or(0.0, |t| self.time - t);
+            return Some(if waited >= CLEARANCE_WAIT_S {
+                Awaiting::ClearanceLate
+            } else {
+                Awaiting::ClearanceRequest
+            });
+        }
+
         if ac.on_ground {
             if let Some(taxi) = &ac.taxi
                 && taxi.holding_short.is_some()
@@ -125,7 +143,9 @@ impl World {
                 return Some(Awaiting::ReadyForTakeoff);
             }
             let stopped = ac.taxi.as_ref().is_none_or(|t| t.done());
-            let parked_departure = ac.phase == Phase::Parked && ac.flow == Flow::Departure;
+            // Still on Delivery, cleared: it calls Ground by itself.
+            let parked_departure =
+                ac.phase == Phase::Parked && ac.flow == Flow::Departure && freq != Position::Delivery;
             let clear_of_runway = ac.taxi.as_ref().is_some_and(|t| {
                 self.airport
                     .surface

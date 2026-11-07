@@ -1,10 +1,10 @@
 # Air Traffic Control
 
 A 2D top-down air traffic control game written in Rust with
-[macroquad](https://macroquad.rs). Work a shift, an hour by default, as Approach, Tower
-or Ground, or combine positions the way a real facility does when it's quiet.
+[macroquad](https://macroquad.rs). Work a shift, an hour by default, as Approach, Tower,
+Ground or Clearance Delivery, or combine positions the way a real facility does when it's quiet.
 Vector arrivals onto the ILS, clear them to land, taxi them to the gate, and
-get departures from the gate to their exit fix, all without losing
+get departures from their IFR clearance at the gate to their exit fix, all without losing
 separation or putting two aircraft on one runway.
 
 It aims to be a realistic simulator rather than an arcade game. Aircraft fly
@@ -34,14 +34,16 @@ after an hour on a longer shift, then holds.
 | **Approach** | The radar: arrivals from Center to final, departures out to Center | Tower and Ground |
 | **Local (Tower)** | The runways: landing and takeoff clearances, runway crossings | Ground and Approach |
 | **Ground** | The taxiways: gate to hold line, runway exit to gate | Tower and Approach |
+| **Clearance Delivery** | IFR clearances for departures at the gate | Ground, Tower and Approach |
+| **Ground + Delivery** | The gate and the taxiways, combined | Tower and Approach |
 | **Local + Ground** | Both tower positions, combined | Approach |
-| **All three combined** | Everything | Nothing |
+| **All combined** | Everything | Nothing |
 
 On separate positions you hand each aircraft to the next controller, and a
 forgotten handoff costs points. On a combined position there's nobody to hand
 to, so it happens silently. Without Approach, arrivals turn up established on
 the ILS about 10 miles out. Tower positions get a surface map with a radar
-inset; with all three, F1 and F2 swap which is full size.
+inset; with all of them, F1 and F2 swap which is full size.
 
 ### VFR traffic
 
@@ -128,6 +130,45 @@ Approach (and Tower, for a missed approach) can hold an arrival at a fix.
   runway can't take arrivals, new arrivals wait in the published holds,
   stacked from 5,000 ft, and are sent to final lowest first as room opens.
 
+## Clearance Delivery
+
+With Delivery staffed, every IFR departure files a flight plan and calls from
+the gate: "Clearance, NVA101, at G3, IFR to XKST, ready to copy, with
+information Juliett." Its strip waits in the CLEARANCE bay, marked `CLNC`.
+
+- **Check the plan.** The side panel shows what it filed: the departure
+  route and the cruising altitude, with the magnetic course out by the exit
+  fix. About one plan in six has a mistake:
+  - **an altitude wrong for the direction of flight** (14 CFR 91.179): odd
+    thousands for magnetic courses 0 to 179, even for 180 to 359; above FL410,
+    FL410, 450 and 490 eastbound and FL430, 470 and 510 westbound;
+  - **a SID that isn't in use** with the current runways, filed from the other
+    configuration's list. A runway change can make a plan wrong too.
+- **Amend it.** Up and Down step the altitude (1,000 ft, or 2,000 above
+  FL410). S picks the next SID in use, leaving by the same exit fix where
+  there is one. Nothing changes until you transmit.
+- **Clear it.** I builds the clearance, in the 7110.65 order: "cleared to
+  XKST airport via MAPLE, TOPAZ, then as filed, maintain 5,000, expect FL350
+  one zero minutes after departure, squawk 0415". The strip gets `CLR`, with
+  amendments written over the printed altitude and route.
+- **Listen to the readback.** About one in ten comes back with the code or
+  the initial altitude wrong, and the pilot sets what it heard. Press I again
+  and transmit: "I say again, maintain 5,000, squawk 0415". The repeat says
+  the same thing whether there was an error or not, so the readback is the
+  only clue.
+- **Send it to Ground.** T: "contact ground". On Ground + Delivery the pilot
+  calls for taxi on its own 30 seconds after the readback, or taxis as soon
+  as you give it a route. Ground won't move an aircraft that hasn't been
+  cleared ("unable, we don't have our IFR clearance yet").
+- **Scoring:** 30 points for each clearance, less 2 a minute for a pilot
+  kept waiting more than 3 minutes. Catching a filed mistake earns 40.
+  Clearing one costs 100, and a wrong readback left uncorrected costs 75; the
+  next controller sorts either out, so the flight still goes.
+- **F4** hides the course hint, for when you'd rather work it out yourself.
+
+With Delivery automated, departures are cleared as they reach the gate, as
+filed and without mistakes.
+
 ## Emergencies
 
 The start menu sets how often things go wrong (E steps through the levels).
@@ -195,9 +236,9 @@ out as in FAA Order JO 7110.65 (paragraph 2-3-3): departure strips (Form
 | 3 | Heavy indicator, type, equipment suffix (`H/B77W/L`) | same |
 | 4, 5 | Computer ID, beacon code | same |
 | 6 | Proposed time (`P1432`) | Previous fix (here the origin) |
-| 7 | Requested altitude | Coordination fix |
+| 7 | Requested altitude, struck and rewritten if Delivery amends it | Coordination fix |
 | 8 | Departure airport | ETA at the coordination fix |
-| 9 | Route and destination | Altitude and remarks (the STAR) |
+| 9 | Route and destination, struck and rewritten if Delivery amends the route | Altitude and remarks (the STAR) |
 | 9a, 9b | Vectors and speeds; direct-to and route amendments | same |
 
 Blocks 10 to 18 are set by each facility. This game's facility directive:
@@ -205,7 +246,7 @@ Blocks 10 to 18 are set by each facility. This game's facility directive:
 | Block | Mark |
 |---|---|
 | 10, 11, 12 | Runway, ATIS letter, taxi route |
-| 13 | Ground: `HP` hold position, `HS27L` holding short, `X27L` crossing |
+| 13 | Ground: `HP` hold position, `HS27L` holding short, `X27L` crossing; Delivery: `CLR` IFR clearance given |
 | 14 | Local: `L` cleared to land and `MA` missed approach (from the order's tables), `T→` takeoff, `LUAW`, `TG`, `OPT`, VFR pattern marks |
 | 15 | Approach: `ILS` cleared for the approach; `H ALDER 35` holding at ALDER, expect further clearance at 35 past the hour |
 | 16 | Time of the block 14 mark |
@@ -298,7 +339,7 @@ arrival goes around, say), the lesson takes you back and lets you try again.
 - **Runway safety:** a landing needs a clearance by 1 NM final and a clear
   runway. Entering a runway with traffic inside 2 NM or rolling is an
   incursion; two aircraft nose to nose on a taxiway is a deadlock.
-- **Scoring:** points for landings, parked arrivals and clean handoffs,
+- **Scoring:** points for landings, parked arrivals, IFR clearances and clean handoffs,
   penalties for incidents, and a rating at the end. You only earn points for
   your own positions' work: a Ground controller isn't credited for the
   landings an automated Tower made. Five separation losses
@@ -360,13 +401,17 @@ the Actions tab and download the zips from the run.
 | H | On the ground: hold position, or continue. In the air: hold at the fix it's flying to |
 | Ctrl-drag onto a fix (Cmd on a Mac) | Hold at that fix |
 | X | Cross the runway ahead |
+| I | Delivery: the IFR clearance; again once cleared, repeat the code and altitude |
+| Up / Down at Delivery | Amend the altitude to expect |
+| S at Delivery | The next SID in use |
+| F4 | Delivery: show or hide the course hint |
 | W / K | Line up and wait / Cleared for takeoff |
 | L | Cleared to land (a full stop, for VFR) |
 | E | VFR: enter the downwind, or extend it once in the pattern |
 | B | VFR: turn base now |
 | O / U | VFR: cleared for the option / cleared touch-and-go |
 | Shift-click an aircraft | VFR: follow that traffic |
-| F1 / F2 | Radar or surface full size (all three combined) |
+| F1 / F2 | Radar or surface full size (all combined) |
 | F3 | Strip bay fills the side panel |
 | Click a strip | Select that aircraft, and silence its alarms |
 | Mouse wheel over the strips | Scroll the strip bay |

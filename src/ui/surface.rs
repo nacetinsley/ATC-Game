@@ -368,6 +368,7 @@ fn draw_aircraft(world: &World, ui: &UiState, ac: &Aircraft, inset: bool) {
     }
     let owner = match ac.frequency() {
         crate::sim::positions::Position::Ground => "G",
+        crate::sim::positions::Position::Delivery => "D",
         crate::sim::positions::Position::Local => "T",
         crate::sim::positions::Position::Approach => "A",
         crate::sim::positions::Position::Center => "C",

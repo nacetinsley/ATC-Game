@@ -220,20 +220,37 @@ impl World {
         ac.departure_end = Some(end);
         ac.taxi = Some(Taxi::at(node));
         ac.freq_since = self.time;
+        // IFR with a Delivery controller: it calls for its clearance first.
+        let delivery = tower && self.config.staffing.delivery && ac.flight_plan.is_some();
         if tower {
             ac.phase = Phase::Parked;
-            ac.surface_freq = Position::Ground;
+            ac.surface_freq = if delivery { Position::Delivery } else { Position::Ground };
         } else {
             ac.phase = Phase::Taxiing;
             ac.surface_freq = Position::Local;
         }
+        if delivery {
+            if let Some(plan) = ac.flight_plan.as_mut() {
+                plan.called_at = Some(self.time);
+            }
+        } else {
+            self.clear_automatically(&mut ac);
+        }
         let spot = spot_name.unwrap_or_default();
-        let call = match ac.vfr {
-            Some(_) => self.vfr_ready_call(&ac, &spot),
-            None => format!("Ground, {}, at {spot}, ready to taxi.", ac.callsign),
+        let call = match (&ac.vfr, &ac.flight_plan) {
+            (Some(_), _) => self.vfr_ready_call(&ac, &spot),
+            (None, Some(plan)) if delivery => {
+                let to = if plan.destination.is_empty() { String::new() } else { format!(" to {}", plan.destination) };
+                format!(
+                    "Clearance, {}, at {spot}, IFR{to}, ready to copy, with information {}.",
+                    ac.callsign,
+                    self.weather.letter()
+                )
+            }
+            _ => format!("Ground, {}, at {spot}, ready to taxi.", ac.callsign),
         };
         self.add_aircraft(ac);
-        if tower && self.config.staffing.ground {
+        if delivery || (tower && self.config.staffing.ground) {
             self.say(Speaker::Pilot, call);
         }
     }

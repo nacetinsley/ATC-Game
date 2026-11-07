@@ -407,7 +407,9 @@ impl World {
         ac.route = route;
         let initial = self.airport.departure_initial_altitude;
         let initial = if has_profile { initial.min(ty.arrival_altitude) } else { initial };
-        self.departure_queue.push_back(queued_departure(ac, initial));
+        let mut ac = queued_departure(ac, initial);
+        self.file_flight_plan(&mut ac);
+        self.departure_queue.push_back(ac);
     }
 }
 

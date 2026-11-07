@@ -3,8 +3,9 @@
 use super::camera::{PANEL_WIDTH, scope_width};
 use super::input::UiState;
 use super::strips;
-use crate::sim::aircraft::{Landing, Phase};
-use crate::sim::clearance::phrase;
+use crate::sim::aircraft::{Aircraft, Landing, Phase};
+use crate::sim::clearance::{Clearance, phrase};
+use crate::sim::delivery;
 use crate::sim::positions::Position;
 use crate::sim::{Speaker, World};
 use macroquad::prelude::*;
@@ -97,14 +98,21 @@ fn draw_status(world: &World, ui: &UiState, x: f32) {
         18.0,
         DIM,
     );
-    let parked = if world.staffing().surface_traffic() {
+    let mut parked = if world.staffing().surface_traffic() {
         format!("   Parked {}", world.score.parked)
     } else {
         String::new()
     };
+    // With Delivery's count too, the line needs shorter words.
+    let (off, go_arounds) = if world.staffing().delivery {
+        parked += &format!("   Cleared {}", world.score.cleared);
+        ("Out", "G/A")
+    } else {
+        ("Handed off", "Go-arounds")
+    };
     label(
         &format!(
-            "Landed {}{parked}   Handed off {}   Go-arounds {}",
+            "Landed {}{parked}   {off} {}   {go_arounds} {}",
             world.score.landed, world.score.exited, world.score.go_arounds
         ),
         left,
@@ -150,6 +158,14 @@ fn draw_clearance(world: &mut World, ui: &mut UiState, x: f32, top: f32) {
         TEXT,
     );
 
+    let at_delivery = ac.on_ground
+        && ac.phase == Phase::Parked
+        && ac.frequency() == Position::Delivery
+        && ac.flight_plan.is_some();
+    if at_delivery {
+        draw_delivery(world, ui, &ac, left, top);
+        return;
+    }
     let tower = ac.on_ground
         || (world.staffing().tower() && matches!(ac.frequency(), Position::Local | Position::Ground));
     if tower {
@@ -212,7 +228,74 @@ fn draw_clearance(world: &mut World, ui: &mut UiState, x: f32, top: f32) {
         ui.cancel();
     }
 
-    draw_pending_words(world, ui, left, y + 44.0);
+    draw_pending_words(world, ui, left, y + 44.0, 2);
+}
+
+/// Clearance Delivery: the flight plan as filed, and the clearance being built.
+/// The course is a fact to check the altitude against, never a verdict.
+fn draw_delivery(world: &mut World, ui: &mut UiState, ac: &Aircraft, left: f32, top: f32) {
+    let Some(plan) = ac.flight_plan.as_ref() else { return };
+    let airport = &world.airport;
+    let dest = if plan.destination.is_empty() { "destination" } else { plan.destination.as_str() };
+    let filed = format!(
+        "IFR to {dest}   filed {}  {}",
+        delivery::route_short(airport, &plan.route),
+        delivery::altitude_text(plan.altitude)
+    );
+    label(&filed, left, top + 42.0, 17.0, TEXT);
+    let status = match &plan.cleared {
+        Some(c) => format!("Cleared {}  squawk {}", world.utc(c.time), delivery::code_text(c.squawk)),
+        None => {
+            let waited = plan.called_at.map_or(0.0, |t| world.time - t);
+            format!("Waiting {}:{:02}", (waited / 60.0) as i32, (waited % 60.0) as i32)
+        }
+    };
+    label(&status, left, top + 60.0, 16.0, DIM);
+    if ui.course_hint {
+        // The route being cleared, if amended: that's the course that counts.
+        let route = ui
+            .pending
+            .tower
+            .iter()
+            .find_map(|c| match c {
+                Clearance::Ifr { route, .. } => Some(route.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| plan.route.clone());
+        let course = delivery::course(airport, &route);
+        let (way, levels) = if delivery::eastbound(course) { ("eastbound", "odd") } else { ("westbound", "even") };
+        let hint = format!("Course {:03.0} M, {way}: {levels}   (F4 hides)", course.round() % 360.0);
+        label(&hint, left + 190.0, top + 60.0, 16.0, DIM);
+    }
+
+    let bh = 24.0;
+    let w = (PANEL_WIDTH - PADDING * 2.0 - 18.0) / 4.0;
+    let col = |i: f32| left + (w + 6.0) * i;
+    let y = top + 70.0;
+    if button("IFR I", col(0.0), y, w, bh) {
+        ui.ifr(world);
+    }
+    if button("SID S", col(1.0), y, w, bh) {
+        ui.cycle_sid(world);
+    }
+    if button("Alt Down", col(2.0), y, w, bh) {
+        ui.amend_altitude(world, -1);
+    }
+    if button("Alt Up", col(3.0), y, w, bh) {
+        ui.amend_altitude(world, 1);
+    }
+    let y = y + 28.0;
+    let third = (PANEL_WIDTH - PADDING * 2.0 - 12.0) / 3.0;
+    if button("Ground T", left, y, third, bh) {
+        ui.handoff(world);
+    }
+    if button("Transmit Enter", left + third + 6.0, y, third, bh) {
+        ui.transmit(world);
+    }
+    if button("Cancel Bksp", left + (third + 6.0) * 2.0, y, third, bh) {
+        ui.cancel();
+    }
+    draw_pending_words(world, ui, left, y + 46.0, 5);
 }
 
 /// Runway and surface instructions, for an aircraft on a tower frequency.
@@ -276,11 +359,11 @@ fn draw_tower_buttons(world: &mut World, ui: &mut UiState, left: f32, top: f32) 
     if button("Cancel Bksp", left + wide + 6.0, y, wide, bh) {
         ui.cancel();
     }
-    draw_pending_words(world, ui, left, y + 44.0);
+    draw_pending_words(world, ui, left, y + 44.0, 2);
 }
 
 /// What will be said if the player transmits now.
-fn draw_pending_words(world: &World, ui: &UiState, left: f32, y: f32) {
+fn draw_pending_words(world: &World, ui: &UiState, left: f32, y: f32, lines: usize) {
     let pending = ui.pending.to_clearances();
     if pending.is_empty() {
         label("No clearance pending", left, y, 16.0, DIM);
@@ -288,7 +371,7 @@ fn draw_pending_words(world: &World, ui: &UiState, left: f32, y: f32) {
         let words: Vec<String> =
             pending.iter().map(|c| phrase(c, ac, &world.airport)).collect();
         let text = words.join(", ");
-        for (i, line) in wrap(&text, 52).iter().take(2).enumerate() {
+        for (i, line) in wrap(&text, 52).iter().take(lines).enumerate() {
             label(line, left, y - 6.0 + i as f32 * 15.0, 16.0, TEXT);
         }
     }

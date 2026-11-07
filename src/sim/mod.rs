@@ -6,6 +6,7 @@ pub mod autopilot;
 pub mod awaiting;
 pub mod clearance;
 pub mod conflict;
+pub mod delivery;
 pub mod emergency;
 pub mod ground;
 pub mod holding;
@@ -374,6 +375,7 @@ impl World {
         self.run_ground();
         self.run_automated_approach();
         self.run_holding();
+        self.run_delivery();
         self.check_handoffs();
         self.check_sector();
         self.run_safety_net();

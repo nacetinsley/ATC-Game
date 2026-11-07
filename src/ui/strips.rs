@@ -20,6 +20,7 @@ use super::input::UiState;
 use crate::sim::World;
 use crate::sim::aircraft::{Aircraft, Flow, Phase, VfrIntent};
 use crate::sim::clearance::{Clearance, spoken_runway};
+use crate::sim::delivery;
 use crate::sim::emergency::EmergencyKind;
 use crate::sim::positions::Position;
 use crate::sim::units::vec_heading;
@@ -193,11 +194,13 @@ fn beacon(ac: &Aircraft) -> String {
     if ac.vfr.is_some() {
         return "1200".into();
     }
-    let code = match ac.flow {
-        Flow::Arrival => 0o2000 + (ac.id.wrapping_mul(29) % 0o4000),
-        Flow::Departure => 0o400 + (ac.id.wrapping_mul(13) % 0o400),
-    };
-    format!("{code:04o}")
+    if let Some(plan) = &ac.flight_plan {
+        return delivery::code_text(plan.squawk);
+    }
+    match ac.flow {
+        Flow::Arrival => format!("{:04o}", 0o2000 + (ac.id.wrapping_mul(29) % 0o4000)),
+        Flow::Departure => delivery::code_text(delivery::departure_code(ac.id)),
+    }
 }
 
 fn star_name(world: &World, ac: &Aircraft) -> Option<String> {
@@ -260,10 +263,15 @@ pub fn print(world: &World, ac: &Aircraft, clock_start: f64) -> Printed {
             .city_pair(bearing, ac.id)
             .unwrap_or_default()
             .to_string();
-        let b9 = match vfr.map(|v| v.intent) {
-            Some(VfrIntent::Closed) => "CLOSED TFC".to_string(),
-            Some(_) => format!("{} {destination}", compass_short(bearing)),
-            None => format!("{} {destination}", departure_route(world, ac))
+        let plan = ac.flight_plan.as_ref();
+        let destination = plan.map_or(destination, |p| p.destination.clone());
+        let b9 = match (vfr.map(|v| v.intent), plan) {
+            (Some(VfrIntent::Closed), _) => "CLOSED TFC".to_string(),
+            (Some(_), _) => format!("{} {destination}", compass_short(bearing)),
+            (None, Some(p)) => format!("{} {destination}", delivery::route_short(airport, &p.route))
+                .trim()
+                .to_string(),
+            (None, None) => format!("{} {destination}", departure_route(world, ac))
                 .trim()
                 .to_string(),
         };
@@ -274,10 +282,10 @@ pub fn print(world: &World, ac: &Aircraft, clock_start: f64) -> Printed {
             cid,
             beacon: beacon(ac),
             b6: format!("P{}", hhmm(clock_start, ac.spawn_time)),
-            b7: if vfr.is_some() {
-                "VFR".into()
-            } else {
-                format!("{:03}", ac.ty.filed_altitude())
+            b7: match (vfr, plan) {
+                (Some(_), _) => "VFR".into(),
+                (None, Some(p)) => format!("{:03.0}", p.altitude / 100.0),
+                (None, None) => format!("{:03}", ac.ty.filed_altitude()),
             },
             b8: airport.code.clone(),
             b9,
@@ -326,6 +334,8 @@ pub struct Marks {
     /// Block 2: revision number, once the route has been amended.
     pub revision: Option<u32>,
     pub beacon: Vec<Pen>,
+    /// Block 7: requested altitude, amended by Delivery.
+    pub b7: Vec<Pen>,
     pub b9: Vec<Pen>,
     pub b9a: Vec<Pen>,
     pub b9b: Vec<Pen>,
@@ -409,6 +419,9 @@ pub fn marks(
     let mut approach: Vec<Pen> = Vec::new();
     let mut handoff: Option<(Position, Pen)> = None;
     let mut revision = 0;
+    // Delivery's amendments to the filed route and altitude.
+    let mut route_amended: Option<String> = None;
+    let mut altitude_amended: Vec<Pen> = Vec::new();
     for mark in &ac.strip {
         match &mark.clearance {
             Clearance::Altitude(a) => {
@@ -511,6 +524,24 @@ pub fn marks(
             Clearance::ExtendDownwind => local.push((Pen::hand("EXT"), mark.time)),
             Clearance::TurnBase => local.push((Pen::hand("B"), mark.time)),
             Clearance::Follow { .. } => local.push((Pen::hand("FOL"), mark.time)),
+            Clearance::Ifr { route, altitude, .. } => {
+                if let Some(plan) = &ac.flight_plan {
+                    let new_route = delivery::route_short(&world.airport, route);
+                    let current = route_amended.clone().unwrap_or_else(|| delivery::route_short(&world.airport, &plan.route));
+                    if new_route != current {
+                        route_amended = Some(new_route);
+                        revision += 1;
+                    }
+                    let text = format!("{:03.0}", altitude / 100.0);
+                    let last = altitude_amended.last().map_or(printed.b7.clone(), |p| p.text.clone());
+                    if text != last {
+                        altitude_amended.push(Pen::hand(text));
+                    }
+                }
+                if !ground.iter().any(|p| p.text == "CLR") {
+                    ground.push(Pen::hand("CLR"));
+                }
+            }
         }
     }
     // Holding short now: written when it stopped at the line.
@@ -540,10 +571,16 @@ pub fn marks(
             }
         }
         Form::Departure => {
-            m.b9.push(Pen::printed(&printed.b9));
+            m.b9.push(Pen::printed(&printed.b9).struck(route_amended.is_some()));
+            if let Some(route) = route_amended {
+                m.b9.push(Pen::hand(route));
+            }
             m.b9.extend(altitudes);
         }
     }
+    strike_all_but_last(&mut altitude_amended);
+    m.b7.push(Pen::printed(&printed.b7).struck(!altitude_amended.is_empty()));
+    m.b7.extend(altitude_amended);
     if let Some(e) = emergency {
         m.b9.push(Pen::red(e.strip()));
         if e.kind == EmergencyKind::LowFuel {
@@ -606,6 +643,8 @@ pub enum Bay {
     HoldShort,
     TaxiOut,
     TaxiIn,
+    /// At the gate, calling Delivery or cleared and not yet with Ground.
+    Clearance,
     Pending,
 }
 
@@ -622,6 +661,7 @@ impl Bay {
             Bay::HoldShort => "HOLD SHORT",
             Bay::TaxiOut => "TAXI OUT",
             Bay::TaxiIn => "TAXI IN",
+            Bay::Clearance => "CLEARANCE",
             Bay::Pending => "PENDING",
         }
     }
@@ -658,6 +698,9 @@ pub fn bay(world: &World, ac: &Aircraft) -> Option<Bay> {
             } else {
                 Bay::TaxiIn
             })
+        }
+        Phase::Parked if ac.flow == Flow::Departure && ac.surface_freq == Position::Delivery => {
+            Some(Bay::Clearance)
         }
         Phase::Parked if ac.flow == Flow::Departure => Some(Bay::Pending),
         _ => None,
@@ -963,7 +1006,7 @@ fn draw_strip(world: &World, ui: &mut UiState, ac: &Aircraft, x: f32, y: f32) {
 
     // Blocks 6, 7, 2a and 8, 8a, 8b.
     text(&printed.b6, c2 + 2.0, 0, SMALL);
-    text(&printed.b7, c2 + 2.0, 1, SMALL);
+    write_block(&m.b7, c2 + 2.0, base(1), COL_6 - 4.0, SMALL, faded);
     text(printed.originator, c2 + 2.0, 2, SMALL);
     text(&printed.b8, c3 + 2.0, 0, SMALL);
 
@@ -1124,7 +1167,9 @@ fn layout<'a>(world: &'a World, available: f32) -> Vec<Item<'a>> {
                 items.push(Item::Header(bay, counts[&bay]));
             }
             let mine = world.is_players(ac) || ac.phase == Phase::Offered;
-            items.push(Item::Strip(ac, fold && !mine));
+            // A clearance given folds up until it goes to Ground.
+            let cleared = bay == Bay::Clearance && ac.flight_plan.as_ref().is_some_and(|p| p.is_cleared());
+            items.push(Item::Strip(ac, (fold && !mine) || cleared));
         }
         items
     };
@@ -1372,6 +1417,35 @@ mod tests {
         let m = marks(&w, &ac, &p, &[], 0.0);
         assert_eq!(m.b9b[0].text, "H ALDER 35");
         assert!(m.b9a[0].struck, "the vector is superseded");
+    }
+
+    #[test]
+    fn delivery_amendments_strike_the_filed_altitude_and_route() {
+        let w = world();
+        let mut ac = departure(&w);
+        let filed = fixes(&w, &["JUNIP", "SEGUN"]);
+        let mut plan_world = World::new(
+            Airport::from_toml(DEFAULT_AIRPORT).unwrap(),
+            WorldConfig { traffic: false, ..WorldConfig::default() },
+        );
+        plan_world.request_departure(aircraft_type("B77W").unwrap(), filed.clone(), 13000.0);
+        plan_world.tick();
+        let mut plan = plan_world.aircraft[0].flight_plan.clone().unwrap();
+        plan.route = filed;
+        plan.altitude = 36000.0;
+        ac.flight_plan = Some(plan);
+        let p = print(&w, &ac, 0.0);
+        assert_eq!(p.b7, "360");
+        assert!(p.b9.starts_with("JUNIP SEGUN"), "{}", p.b9);
+        let route = ac.route.clone();
+        mark(&mut ac, Position::Delivery, Clearance::Ifr { route, altitude: 37000.0, squawk: 0o452 });
+        let m = marks(&w, &ac, &p, &[], 0.0);
+        let texts = |pens: &[Pen]| pens.iter().map(|p| (p.text.clone(), p.struck)).collect::<Vec<_>>();
+        assert_eq!(texts(&m.b7), [("360".to_string(), true), ("370".to_string(), false)]);
+        assert!(m.b9[0].struck && m.b9[1].text == "IVORY TOPAZ", "{:?}", m.b9);
+        assert_eq!(m.revision, Some(1));
+        assert!(m.grid[3].iter().any(|p| p.text == "CLR"));
+        assert_eq!(p.beacon, delivery::code_text(ac.flight_plan.as_ref().unwrap().squawk));
     }
 
     #[test]

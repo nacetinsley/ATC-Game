@@ -67,6 +67,8 @@ pub struct UiState {
     pub board: super::strips::Board,
     /// The aircraft whose strip the mouse is over, pointed out on the scope.
     pub hovered: Option<u32>,
+    /// Show the direction of flight beside a flight plan (F4 hides it).
+    pub course_hint: bool,
 }
 
 impl UiState {
@@ -91,6 +93,7 @@ impl UiState {
             acknowledged: HashSet::new(),
             board: Default::default(),
             hovered: None,
+            course_hint: true,
         };
         ui.frame_views(airport);
         ui
@@ -171,7 +174,7 @@ impl UiState {
             }
             _ if ac.on_ground => match ac.frequency() {
                 Position::Ground => self.pending.add_tower(Clearance::ContactTower),
-                Position::Local => self.pending.add_tower(Clearance::ContactGround),
+                Position::Local | Position::Delivery => self.pending.add_tower(Clearance::ContactGround),
                 _ => {}
             },
             (Phase::TowerRelease | Phase::GoAround | Phase::Pattern, _) => {
@@ -195,6 +198,60 @@ impl UiState {
         }
         let holding = ac.taxi.as_ref().is_some_and(|t| t.holding);
         self.pending.add_tower(if holding { Clearance::ContinueTaxi } else { Clearance::HoldPosition });
+    }
+
+    /// The selected aircraft, if it's at the gate on Delivery's frequency.
+    fn at_delivery<'a>(&self, world: &'a World) -> Option<&'a crate::sim::aircraft::Aircraft> {
+        self.selected
+            .and_then(|id| world.find(id))
+            .filter(|a| a.on_ground && a.phase == Phase::Parked && a.frequency() == Position::Delivery)
+            .filter(|a| a.flight_plan.is_some())
+    }
+
+    /// The IFR clearance being put together: the pending one, or a fresh one
+    /// from what it's cleared for already or what it filed.
+    fn ifr_draft(&self, world: &World) -> Option<(Vec<usize>, f32, u16)> {
+        let ac = self.at_delivery(world)?;
+        for c in &self.pending.tower {
+            if let Clearance::Ifr { route, altitude, squawk } = c {
+                return Some((route.clone(), *altitude, *squawk));
+            }
+        }
+        let plan = ac.flight_plan.as_ref()?;
+        Some(match &plan.cleared {
+            Some(c) => (c.route.clone(), c.altitude, c.squawk),
+            None => (plan.route.clone(), plan.altitude, plan.squawk),
+        })
+    }
+
+    /// I: the IFR clearance, as filed or amended. Again once cleared, it
+    /// repeats the altitude and code, to put a wrong readback right.
+    pub fn ifr(&mut self, world: &World) {
+        if let Some((route, altitude, squawk)) = self.ifr_draft(world) {
+            self.pending.add_tower(Clearance::Ifr { route, altitude, squawk });
+        }
+    }
+
+    /// Up/Down at Delivery: amend the altitude to expect.
+    pub fn amend_altitude(&mut self, world: &World, by: i32) {
+        if let Some((route, altitude, squawk)) = self.ifr_draft(world) {
+            let altitude = crate::sim::delivery::step_altitude(altitude, by);
+            self.pending.add_tower(Clearance::Ifr { route, altitude, squawk });
+        }
+    }
+
+    /// S at Delivery: the next SID in use, leaving by the same exit fix if one does.
+    pub fn cycle_sid(&mut self, world: &World) {
+        let Some((route, altitude, squawk)) = self.ifr_draft(world) else { return };
+        let choices = crate::sim::delivery::sid_choices(&world.airport, world.config_name(), &route);
+        if choices.is_empty() {
+            return;
+        }
+        let next = match choices.iter().position(|r| *r == route) {
+            Some(i) => choices[(i + 1) % choices.len()].clone(),
+            None => choices[0].clone(),
+        };
+        self.pending.add_tower(Clearance::Ifr { route: next, altitude, squawk });
     }
 
     /// Cross the runway it's holding short of, or the next one on its route.
@@ -305,6 +362,10 @@ impl UiState {
     }
 
     pub fn nudge_altitude(&mut self, world: &World, feet: f32) {
+        if self.at_delivery(world).is_some() {
+            self.amend_altitude(world, feet.signum() as i32);
+            return;
+        }
         if let Some(ac) = self.selected.and_then(|id| world.find(id)) {
             self.pending.nudge_altitude(ac, feet);
         }
@@ -417,6 +478,15 @@ impl UiState {
             if is_key_pressed(KeyCode::U) {
                 self.vfr_landing(world, Landing::TouchAndGo);
             }
+            if is_key_pressed(KeyCode::I) {
+                self.ifr(world);
+            }
+            if is_key_pressed(KeyCode::S) {
+                self.cycle_sid(world);
+            }
+        }
+        if is_key_pressed(KeyCode::F4) {
+            self.course_hint = !self.course_hint;
         }
         if is_key_pressed(KeyCode::F1) {
             self.show(View::Radar, &world.airport);

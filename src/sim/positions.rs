@@ -11,6 +11,8 @@ pub enum Position {
     Local,
     /// Ground control: the taxiways.
     Ground,
+    /// Clearance Delivery: IFR clearances for departures at the gate.
+    Delivery,
 }
 
 impl Position {
@@ -20,6 +22,7 @@ impl Position {
             Position::Approach => "Approach",
             Position::Local => "Tower",
             Position::Ground => "Ground",
+            Position::Delivery => "Clearance",
         }
     }
 }
@@ -30,6 +33,7 @@ pub struct Staffing {
     pub approach: bool,
     pub local: bool,
     pub ground: bool,
+    pub delivery: bool,
 }
 
 impl Default for Staffing {
@@ -39,18 +43,28 @@ impl Default for Staffing {
 }
 
 impl Staffing {
-    pub const APPROACH: Staffing = Staffing { approach: true, local: false, ground: false };
-    pub const LOCAL: Staffing = Staffing { approach: false, local: true, ground: false };
-    pub const GROUND: Staffing = Staffing { approach: false, local: false, ground: true };
-    pub const LOCAL_GROUND: Staffing = Staffing { approach: false, local: true, ground: true };
-    pub const ALL: Staffing = Staffing { approach: true, local: true, ground: true };
+    pub const APPROACH: Staffing = Staffing { approach: true, local: false, ground: false, delivery: false };
+    pub const LOCAL: Staffing = Staffing { approach: false, local: true, ground: false, delivery: false };
+    pub const GROUND: Staffing = Staffing { approach: false, local: false, ground: true, delivery: false };
+    pub const DELIVERY: Staffing = Staffing { approach: false, local: false, ground: false, delivery: true };
+    pub const GROUND_DELIVERY: Staffing = Staffing { approach: false, local: false, ground: true, delivery: true };
+    pub const LOCAL_GROUND: Staffing = Staffing { approach: false, local: true, ground: true, delivery: false };
+    pub const ALL: Staffing = Staffing { approach: true, local: true, ground: true, delivery: true };
     /// Everything automated: for tests and demos, not offered on the menu.
-    pub const NONE: Staffing = Staffing { approach: false, local: false, ground: false };
+    pub const NONE: Staffing = Staffing { approach: false, local: false, ground: false, delivery: false };
 
     /// The combinations offered, in menu order. Approach with Local but without
-    /// Ground isn't one: a tower cab combines Local with Ground first.
-    pub const CHOICES: [Staffing; 5] =
-        [Staffing::APPROACH, Staffing::LOCAL, Staffing::GROUND, Staffing::LOCAL_GROUND, Staffing::ALL];
+    /// Ground isn't one: a tower cab combines Local with Ground first, and
+    /// Ground with Delivery.
+    pub const CHOICES: [Staffing; 7] = [
+        Staffing::APPROACH,
+        Staffing::LOCAL,
+        Staffing::GROUND,
+        Staffing::DELIVERY,
+        Staffing::GROUND_DELIVERY,
+        Staffing::LOCAL_GROUND,
+        Staffing::ALL,
+    ];
 
     pub fn works(self, position: Position) -> bool {
         match position {
@@ -58,12 +72,13 @@ impl Staffing {
             Position::Approach => self.approach,
             Position::Local => self.local,
             Position::Ground => self.ground,
+            Position::Delivery => self.delivery,
         }
     }
 
     /// Any tower position: the surface matters to the player.
     pub fn tower(self) -> bool {
-        self.local || self.ground
+        self.local || self.ground || self.delivery
     }
 
     /// Traffic starts and ends at parking, rather than at the runway. Only the
@@ -73,12 +88,14 @@ impl Staffing {
     }
 
     pub fn label(self) -> &'static str {
-        match (self.approach, self.local, self.ground) {
-            (true, false, false) => "Approach",
-            (false, true, false) => "Local (Tower)",
-            (false, false, true) => "Ground",
-            (false, true, true) => "Local + Ground",
-            (true, true, true) => "All three combined",
+        match (self.approach, self.local, self.ground, self.delivery) {
+            (true, false, false, false) => "Approach",
+            (false, true, false, false) => "Local (Tower)",
+            (false, false, true, false) => "Ground",
+            (false, false, false, true) => "Clearance Delivery",
+            (false, false, true, true) => "Ground + Delivery",
+            (false, true, true, false) => "Local + Ground",
+            (true, true, true, true) => "All combined",
             _ => "Custom",
         }
     }
@@ -94,7 +111,7 @@ mod tests {
 
     #[test]
     fn approach_with_local_but_no_ground_is_not_offered() {
-        let odd = Staffing { approach: true, local: true, ground: false };
+        let odd = Staffing { approach: true, local: true, ground: false, delivery: false };
         assert!(!odd.is_offered());
         assert!(Staffing::CHOICES.iter().all(|s| s.is_offered()));
         assert_eq!(Staffing::default(), Staffing::APPROACH);
@@ -105,5 +122,7 @@ mod tests {
         assert!(!Staffing::ALL.works(Position::Center));
         assert!(Staffing::LOCAL_GROUND.works(Position::Ground));
         assert!(!Staffing::LOCAL.works(Position::Ground));
+        assert!(Staffing::GROUND_DELIVERY.works(Position::Delivery));
+        assert!(Staffing::DELIVERY.tower() && Staffing::DELIVERY.surface_traffic());
     }
 }
