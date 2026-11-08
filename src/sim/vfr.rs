@@ -19,13 +19,17 @@ const BASE_NM: f32 = 1.2;
 const MIN_BASE_NM: f32 = 0.5;
 /// Extended this far with no gap to turn into, pilots break off and re-enter, NM.
 const MAX_EXTEND_NM: f32 = 4.0;
-/// Turn crosswind past the runway end, once at least this high above the field.
-const CROSSWIND_AGL: f32 = 600.0;
-const CROSSWIND_PAST_END_NM: f32 = 0.3;
-/// On a long runway, turn crosswind this far from the threshold at the latest, NM.
+/// Turn crosswind past the runway end, within 300 feet of pattern altitude
+/// (AIM 4-3-3): at least this high above the field.
+const CROSSWIND_AGL: f32 = PATTERN_AGL - 300.0;
+/// ... and at least half a mile beyond the departure end (AIM 4-3-3), NM.
+const CROSSWIND_PAST_END_NM: f32 = 0.5;
+/// On a long runway, turn crosswind this far from the threshold at the
+/// latest, NM. A deliberate departure from AIM 4-3-3 so the circuit stays
+/// compact at Harrowgate's long shared runway.
 const CROSSWIND_MAX_ALONG_NM: f32 = 1.5;
-/// VFR departures turn on course at this height above the field.
-const DEPARTURE_TURN_AGL: f32 = 500.0;
+/// VFR departures turn on course once at pattern altitude (AIM 4-3-3).
+const DEPARTURE_TURN_AGL: f32 = PATTERN_AGL;
 /// A landing clearance is needed by this distance from the threshold, NM.
 const LANDING_CHECK_NM: f32 = 0.3;
 /// VFR arrivals hold outside this distance from the field until told how to enter.
@@ -108,7 +112,7 @@ const BUSY_DEPARTURES: usize = 4;
 /// Retry a spawn this much later when there's no room, seconds.
 const SPAWN_RETRY_S: f32 = 30.0;
 /// Light aircraft that fly VFR.
-pub const VFR_FLEET: [&str; 3] = ["C172", "PA28", "SR22"];
+pub const VFR_FLEET: [&str; 3] = ["C172", "P28A", "SR22"];
 /// Shares of closed traffic and arrivals among VFR movements; the rest depart.
 const CLOSED_SHARE: f32 = 0.45;
 const ARRIVAL_SHARE: f32 = 0.30;

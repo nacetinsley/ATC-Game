@@ -543,6 +543,16 @@ impl GroundMap {
         n.hold.is_some() || !n.zones.is_empty()
     }
 
+    /// The taxiway a route along these nodes crosses this runway at.
+    pub fn crossing_taxiway(&self, path: &[usize], runway: usize) -> Option<&str> {
+        let entering = path.windows(2).find(|w| !self.in_zone(w[0], runway) && self.in_zone(w[1], runway))?;
+        // The taxiway onto the runway, or failing that the one across it.
+        self.edge_between(entering[0], entering[1]).and_then(Edge::taxiway).or_else(|| {
+            let start = path.iter().position(|&n| n == entering[1])?;
+            path[start..].windows(2).take_while(|w| self.in_zone(w[0], runway)).find_map(|w| self.edge_between(w[0], w[1])?.taxiway())
+        })
+    }
+
     pub fn in_zone(&self, node: usize, runway: usize) -> bool {
         self.nodes[node].zones.contains(&runway)
     }

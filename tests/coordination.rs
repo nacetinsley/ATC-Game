@@ -365,7 +365,7 @@ fn approach_puts_departures_on_call_for_release_and_releases_them() {
     // Still sorting out the missed approach: hold.
     run(&mut world, 8.0, &mut events);
     let last = landline(&world).last().unwrap().to_string();
-    assert!(last.contains("DAL20 hold for release, missed approach in progress. I'll call you"), "{last}");
+    assert!(last.contains("DAL20 hold for release, expect 2 minute departure delay, missed approach in progress. I'll call you"), "{last}");
     // The go-around is with Approach now: the release comes.
     set_phase(&mut world, 2, Phase::Controlled);
     run_until(&mut world, 10.0, &mut events, |w| w.release_approved(1));

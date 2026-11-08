@@ -475,6 +475,8 @@ def render(data):
         out.append(f'vfr_runway = "{data["vfr_runway"]}"')
     if data.get("vfr_rate") is not None:
         out.append(f"vfr_rate = {fmt(data['vfr_rate'])}")
+    if data.get("airspace"):
+        out.append(f'airspace = "{data["airspace"]}"')
     out.append("")
     out.append(f"# Game-defined sector: the real {data['tracon']} boundary isn't published.")
     out.append(f"sector = {toml_ring(data['sector'])}")
@@ -698,6 +700,7 @@ def build(lines, nasr_lines, mva_root, overrides, airport_code, cycle, mva_descr
         "ramp_control": overrides.get("ramp_control"),
         "vfr_runway": overrides.get("vfr_runway"),
         "vfr_rate": overrides.get("vfr_rate"),
+        "airspace": overrides.get("airspace"),
         "references": references,
         "city_pairs": [
             {"bearing": float(p["bearing"]), "airports": list(p["airports"])}

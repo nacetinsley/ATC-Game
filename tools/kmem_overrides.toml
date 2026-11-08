@@ -23,6 +23,8 @@ exit_altitude = 12000.0
 # and there isn't much of it.
 vfr_runway = "shared"
 vfr_rate = 2.0
+# Memphis Class B.
+airspace = "B"
 
 # Nearby fields shown on the scope for orientation. Their traffic isn't simulated.
 [[references]]
@@ -115,7 +117,7 @@ callsign_prefixes = ["FDX", "DAL", "SWA", "AAL"]
 # The FedEx hub fleet (777F, MD-11F, 767F, A300F, 757F and Cessna Caravan
 # feeders) and the passenger airlines. Shares are a judgement call from
 # FedEx's fleet and the airlines serving MEM, not movement counts.
-fleet = ["B77L", "MD11", "B763", "A306", "B752", "C208", "A320", "B738", "E175", "CRJ9"]
+fleet = ["B77L", "MD11", "B763", "A306", "B752", "C208", "A320", "B738", "E75L", "CRJ9"]
 fleet_weights = [8.0, 12.0, 15.0, 10.0, 10.0, 8.0, 10.0, 10.0, 8.0, 9.0]
 # Who flies each type here: FedEx, its Caravan feeder operator Mountain Air
 # Cargo, Delta, Allegiant, Southwest, American, Envoy, SkyWest and Endeavor.

@@ -19,6 +19,12 @@ pub const ROLLOUT_DECEL: f32 = 4.0;
 pub const EXIT_SPEED: f32 = 20.0;
 const SPEED_LIMIT_ALTITUDE: f32 = 10000.0;
 const SPEED_LIMIT: f32 = 250.0;
+/// 14 CFR 91.117(b): near a Class C or D airport, this fast at most...
+const SURFACE_SPEED_LIMIT: f32 = 200.0;
+/// ... at or below this height above the surface ...
+const SURFACE_SPEED_LIMIT_AGL: f32 = 2500.0;
+/// ... within this distance of the airport, NM.
+const SURFACE_SPEED_LIMIT_NM: f32 = 4.0;
 /// Light aircraft get up to speed quicker than their cruise acceleration suggests.
 const LIGHT_ROLL_ACCEL: f32 = 3.0;
 /// On a visual approach a pilot will descend this much faster than usual to
@@ -510,6 +516,13 @@ impl Aircraft {
         }
         if self.altitude < SPEED_LIMIT_ALTITUDE {
             speed = speed.min(SPEED_LIMIT);
+        }
+        // 14 CFR 91.117(b), or the minimum safe speed if higher (91.117(d)).
+        if airport.airspace.surface_speed_limit()
+            && self.altitude - airport.elevation <= SURFACE_SPEED_LIMIT_AGL
+            && self.pos.length() <= SURFACE_SPEED_LIMIT_NM
+        {
+            speed = speed.min(SURFACE_SPEED_LIMIT.max(self.ty.min_speed));
         }
         if let Lateral::Hold(_) = self.lateral {
             speed = speed.min(super::holding::max_speed(self.altitude));

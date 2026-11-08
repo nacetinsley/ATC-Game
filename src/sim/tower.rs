@@ -7,7 +7,6 @@ use super::approach::ApproachKind;
 use super::autopilot::should_capture_localizer;
 use super::clearance::{AT_NODE_NM, Clearance, PILOT_DELAY, issuer_for};
 use super::ground_map::{GroundMap, Parking, StandUse};
-use super::performance::WakeCategory;
 use super::positions::Position;
 use super::scoring::{GoAroundReason, SimEvent};
 use super::traffic::airline_of;
@@ -35,8 +34,9 @@ const SHORT_FINAL_HOLD_NM: f32 = 2.5;
 /// Or send an aircraft across a runway with an arrival closer than this.
 pub(super) const CROSSING_HOLD_NM: f32 = 5.0;
 /// Minimum time between departures, seconds.
+/// The automated Tower's pace between IFR departures, seconds. Wake
+/// turbulence intervals come on top (`wake_wait`).
 pub const DEPARTURE_INTERVAL: f32 = 90.0;
-pub const DEPARTURE_INTERVAL_AFTER_HEAVY: f32 = 150.0;
 /// Entering a runway with an arrival closer than this is an incursion.
 pub const INCURSION_FINAL_NM: f32 = 2.0;
 /// A departure should be talking to Departure by this far past the runway end.
@@ -367,7 +367,8 @@ impl World {
             .then(|| self.airport.runways[end].id.clone())
     }
 
-    /// A takeoff roll has begun: space the next one, and check the runway was clear.
+    /// A takeoff roll has begun: space the next one, and check the runway
+    /// was clear and the wake turbulence interval had passed.
     pub(super) fn begin_takeoff(&mut self, index: usize) {
         let ac = &self.aircraft[index];
         let Some(end) = ac.departure_end else { return };
@@ -375,8 +376,67 @@ impl World {
         let interval = departure_interval(ac);
         self.next_departure_time = self.next_departure_time.max(self.time + interval);
         let (id, callsign) = (ac.id, ac.callsign.clone());
+        let wake = self.wake_wait(ac);
         if self.runway_occupied(physical, id) {
-            self.emit(SimEvent::RunwaySeparation { callsign });
+            self.emit(SimEvent::RunwaySeparation { callsign: callsign.clone() });
+        }
+        if let Some((_, leader)) = wake {
+            self.emit(SimEvent::WakeDeparture { leader, follower: callsign });
+        }
+        self.record_takeoff(index);
+    }
+
+    /// Remember a takeoff roll for the wake intervals behind it.
+    pub(super) fn record_takeoff(&mut self, index: usize) {
+        let ac = &self.aircraft[index];
+        let Some(end) = ac.departure_end else { return };
+        let takeoff = Takeoff { end, time: self.time, cwt: ac.ty.cwt, callsign: ac.callsign.clone() };
+        let now = self.time;
+        self.takeoffs.retain(|t| now - t.time < TAKEOFF_MEMORY_S);
+        self.takeoffs.push(takeoff);
+    }
+
+    /// A departure still waiting out a wake turbulence interval behind an
+    /// earlier takeoff from its runway, or one less than 2,500 feet away
+    /// (JO 7110.65 3-9-6): the seconds left, and who it's behind.
+    pub fn wake_wait(&self, ac: &Aircraft) -> Option<(f32, String)> {
+        let end = ac.departure_end?;
+        self.takeoffs
+            .iter()
+            .filter(|t| t.callsign != ac.callsign && self.airport.same_lane(t.end, end))
+            .filter_map(|t| {
+                let interval = super::performance::wake_interval_s(t.cwt, ac.ty.cwt)?;
+                let left = t.time + interval - self.time;
+                (left > 0.0).then(|| (left, t.callsign.clone()))
+            })
+            .max_by(|a, b| a.0.total_cmp(&b.0))
+    }
+
+    /// The caution a takeoff or landing clearance carries behind an aircraft
+    /// that leaves wake on the same runway (JO 7110.65 3-10-3).
+    pub(super) fn wake_caution(&self, ac: &Aircraft, clearance: &Clearance) -> bool {
+        use super::performance::wake_advisory;
+        let now = self.time;
+        let recent = |end: usize| {
+            self.takeoffs.iter().any(|t| {
+                t.callsign != ac.callsign && self.airport.same_lane(t.end, end) && now - t.time < 120.0 && wake_advisory(t.cwt, ac.ty.cwt)
+            })
+        };
+        match *clearance {
+            Clearance::ClearedForTakeoff(end) => recent(end),
+            Clearance::ClearedToLand(end) => {
+                let along = self.airport.runways[end].along(ac.pos);
+                // The arrival ahead on the same final, or one just landed.
+                let ahead = self.aircraft.iter().any(|a| {
+                    a.id != ac.id
+                        && a.flow == Flow::Arrival
+                        && a.approach_runway.is_some_and(|r| self.airport.same_lane(r, end))
+                        && self.airport.runways[end].along(a.pos) < along
+                        && wake_advisory(a.ty.cwt, ac.ty.cwt)
+                });
+                ahead || recent(end)
+            }
+            _ => false,
         }
     }
 
@@ -467,6 +527,7 @@ impl World {
                 if self.sky().lvp() { super::visibility::LVP_RELEASE_NM } else { SHORT_FINAL_HOLD_NM };
             let safe = !launched
                 && self.time >= self.next_departure_time
+                && self.wake_wait(ac).is_none()
                 && !self.runway_occupied(r, ac.id)
                 // Ground has been promised a crossing.
                 && !self.crossing_reserved(r)
@@ -727,14 +788,20 @@ impl World {
 
 /// Time to hold the next departure behind this one.
 pub(super) fn departure_interval(ac: &Aircraft) -> f32 {
-    if ac.vfr.is_some() {
-        VFR_DEPARTURE_INTERVAL
-    } else if ac.ty.wake == WakeCategory::Heavy {
-        DEPARTURE_INTERVAL_AFTER_HEAVY
-    } else {
-        DEPARTURE_INTERVAL
-    }
+    if ac.vfr.is_some() { VFR_DEPARTURE_INTERVAL } else { DEPARTURE_INTERVAL }
 }
+
+/// A takeoff roll that began, for wake turbulence intervals behind it.
+#[derive(Debug, Clone)]
+pub(super) struct Takeoff {
+    pub end: usize,
+    pub time: f32,
+    pub cwt: super::performance::Cwt,
+    pub callsign: String,
+}
+
+/// Takeoffs are remembered this long, seconds: the longest wake interval.
+const TAKEOFF_MEMORY_S: f32 = 180.0;
 
 /// Departure ready for release; position and phase are set when it's placed.
 pub(super) fn queued_departure(mut ac: Aircraft, initial_altitude: f32) -> Aircraft {

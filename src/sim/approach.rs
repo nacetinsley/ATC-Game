@@ -37,14 +37,27 @@ const FOLLOW_SLOW_KT: f32 = 10.0;
 const CLEAR_SM: f32 = 10.0;
 /// Statute miles to nautical miles.
 const SM_TO_NM: f32 = 0.869;
-/// Parallel finals closer than this are one final for wake and spacing, feet.
+/// Parallel finals closer than this are one final for wake and spacing,
+/// feet (7110.65 5-5-4 note: one runway for wake turbulence).
 pub const SAME_LANE_FT: f32 = 2500.0;
-/// Parallel finals at least this far apart are independent: no separation
-/// is needed between aircraft established on each, feet.
-pub const INDEPENDENT_FT: f32 = 4300.0;
-/// Between those: dependent finals, with this diagonal between aircraft
-/// established on each, NM.
-pub const DEPENDENT_NM: f32 = 1.5;
+/// Dual parallel finals at least this far apart are independent: no
+/// separation is needed between aircraft established on each, feet
+/// (7110.65 5-9-7). The game has no triple approaches (KMEM's 18L and 18C
+/// share a final), so the 3,900 ft triple standard never applies.
+pub const INDEPENDENT_FT: f32 = 3600.0;
+
+/// The diagonal between aircraft established on dependent parallel finals
+/// this far apart, NM (7110.65 5-9-6): 1 mile up to 3,600 ft, 1.5 to
+/// 8,300 ft, 2 to 9,000 ft. `None` outside that range.
+pub fn dependent_diagonal_nm(spacing_ft: f32) -> Option<f32> {
+    match spacing_ft {
+        s if s < SAME_LANE_FT => None,
+        s if s <= 3600.0 => Some(1.0),
+        s if s <= 8300.0 => Some(1.5),
+        s if s <= 9000.0 => Some(2.0),
+        _ => None,
+    }
+}
 /// Share of shifts with Variable or Low IFR weather that see the ILS fail.
 const OUTAGE_SHARE: f32 = 0.3;
 /// When it fails and for how long, in a 30-minute shift, seconds.
@@ -189,7 +202,11 @@ impl Airport {
         if !self.parallel(a, b) || self.same_lane(a, b) {
             return None;
         }
-        (self.centreline_spacing_ft(a, b) < INDEPENDENT_FT).then_some(DEPENDENT_NM)
+        let spacing = self.centreline_spacing_ft(a, b);
+        if spacing >= INDEPENDENT_FT {
+            return None;
+        }
+        dependent_diagonal_nm(spacing)
     }
 
     /// Where an approach's published fixes are, in order from `fix` to the
@@ -418,7 +435,7 @@ impl World {
     /// The minimum a visual follower keeps behind its leader: the wake
     /// minimum where one applies, otherwise a little room, NM.
     pub fn visual_minimum(&self, leader: &Aircraft, follower: &Aircraft) -> f32 {
-        let wake = super::performance::wake_required_nm(leader.ty.wake, follower.ty.wake);
+        let wake = super::performance::wake_required_nm(leader.ty.cwt, follower.ty.cwt);
         if wake > super::conflict::SEPARATION_NM { wake } else { VISUAL_FOLLOW_MIN_NM }
     }
 

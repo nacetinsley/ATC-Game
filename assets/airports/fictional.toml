@@ -12,6 +12,8 @@ mva_default = 2000.0
 vfr_runway = "shared"
 # Half the light aircraft of a general aviation field like KSUS.
 vfr_rate = 4.0
+# Class C: an airline airport with a radar approach control.
+airspace = "C"
 
 # Sector boundary.
 sector = [

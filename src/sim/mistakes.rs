@@ -556,7 +556,10 @@ impl World {
         let physical = map.runway_of_end[end];
         let id = ac.id;
         let close = self.arrivals_within(physical, super::tower::INCURSION_FINAL_NM, super::tower::VFR_INCURSION_NM);
-        let conflict = self.runway_occupied(physical, id) || !close.is_empty() || self.time < self.next_departure_time;
+        let conflict = self.runway_occupied(physical, id)
+            || !close.is_empty()
+            || self.time < self.next_departure_time
+            || self.wake_wait(ac).is_some();
         let callsign = ac.callsign.clone();
         let now = self.time;
         let ac = &mut self.aircraft[index];
@@ -567,6 +570,7 @@ impl World {
         }
         let interval = super::tower::departure_interval(&self.aircraft[index]);
         self.next_departure_time = self.next_departure_time.max(now + interval);
+        self.record_takeoff(index);
         if self.config.staffing.works(self.aircraft[index].frequency()) {
             self.say(Speaker::Pilot, format!("{callsign}, rolling."));
         }

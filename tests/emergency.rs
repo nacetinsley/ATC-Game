@@ -292,7 +292,7 @@ fn low_fuel_diverts_after_its_second_go_around() {
     let mut world = harrowgate(Staffing::APPROACH);
     let mut events = Vec::new();
     let rwy = end(&world, "27L");
-    let mut ac = arrival(1, "ORN501", Vec2::new(15.0, 3.0), 240.0, 3000.0);
+    let mut ac = arrival(1, "ORN501", Vec2::new(20.0, 3.0), 240.0, 3000.0);
     let mut e = Emergency::new(EmergencyKind::LowFuel, Trigger::OnCheckIn, 120, 20);
     e.go_arounds = 1;
     ac.emergency = Some(e);

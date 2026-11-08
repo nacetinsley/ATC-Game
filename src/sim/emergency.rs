@@ -778,12 +778,12 @@ impl World {
             let (gap, required) = if d < PRIORITY_FINAL_NM {
                 (
                     PRIORITY_FINAL_NM - d,
-                    wake_required_nm(a.ty.wake, ac.ty.wake),
+                    wake_required_nm(a.ty.cwt, ac.ty.cwt),
                 )
             } else {
                 (
                     d - PRIORITY_FINAL_NM,
-                    wake_required_nm(ac.ty.wake, a.ty.wake),
+                    wake_required_nm(ac.ty.cwt, a.ty.cwt),
                 )
             };
             gap < required + PRIORITY_MARGIN_NM

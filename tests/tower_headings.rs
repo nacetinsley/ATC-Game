@@ -91,7 +91,7 @@ fn departed_on_a_heading(staffing: Staffing) -> (World, Vec<SimEvent>) {
     let rwy = end(&world, "27R");
     assert!(world.transmit(1, vec![Clearance::Heading(240.0), Clearance::ClearedForTakeoff(rwy)]));
     run_until(&mut world, 10.0, &mut events, |w| w.find(1).unwrap().tower_heading.is_some());
-    assert!(pilot_said(&world, &format!("fly heading {}", heading(&world, 240.0))), "{:?}", log(&world));
+    assert!(pilot_said(&world, &format!("turn left heading {}", heading(&world, 240.0))), "{:?}", log(&world));
     (world, events)
 }
 

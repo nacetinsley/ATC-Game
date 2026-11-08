@@ -196,6 +196,8 @@ pub struct World {
     next_sweep: f32,
     next_spawn_time: f32,
     next_departure_time: f32,
+    /// Recent takeoff rolls, for wake turbulence intervals.
+    takeoffs: Vec<tower::Takeoff>,
     next_vfr_time: f32,
     departure_queue: VecDeque<Aircraft>,
     /// Ticks run so far.
@@ -240,6 +242,7 @@ impl World {
             next_sweep: 0.0,
             next_spawn_time: 0.0,
             next_departure_time: 0.0,
+            takeoffs: Vec::new(),
             next_vfr_time: FIRST_VFR_S,
             departure_queue: VecDeque::new(),
             ticks: 0,

@@ -167,7 +167,7 @@ fn late_tower_handoff_causes_a_go_around() {
     let mut world = quiet_world(0.0);
     let mut events = Vec::new();
     let rwy = runway_27l(&world);
-    world.add_aircraft(arrival(1, "NVA101", Vec2::new(15.0, 3.0), 240.0, 3000.0));
+    world.add_aircraft(arrival(1, "NVA101", Vec2::new(20.0, 3.0), 240.0, 3000.0));
     world.transmit(1, vec![Clearance::ClearedIls(rwy)]);
 
     run_until(&mut world, 400.0, &mut events, |w| w.find(1).unwrap().phase == Phase::GoAround);

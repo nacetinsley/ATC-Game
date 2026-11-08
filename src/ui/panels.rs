@@ -267,10 +267,11 @@ fn draw_clearance(world: &mut World, ui: &mut UiState, x: f32, top: f32) {
 
     label(
         &format!(
-            "{}  {} {}  IAS {:.0}",
+            "{}  {} {} CWT {}  IAS {:.0}",
             ac.callsign,
             ac.ty.designator,
             ac.ty.wake.letter(),
+            ac.ty.cwt.letter(),
             ac.ias
         ),
         left,

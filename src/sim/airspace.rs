@@ -251,6 +251,24 @@ pub enum VfrRunway {
     Shared,
 }
 
+/// The class of the airspace around the airport's surface.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+pub enum AirspaceClass {
+    B,
+    C,
+    #[default]
+    D,
+}
+
+impl AirspaceClass {
+    /// 14 CFR 91.117(b): 200 knots at or below 2,500 feet above the surface
+    /// within 4 NM of the primary airport of a Class C or D area. Class B
+    /// airports come under 91.117(a) instead.
+    pub fn surface_speed_limit(self) -> bool {
+        matches!(self, AirspaceClass::C | AirspaceClass::D)
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Airport {
     pub name: String,
@@ -279,6 +297,9 @@ pub struct Airport {
     /// VFR movements per hour at the Normal traffic level.
     #[serde(default = "default_vfr_rate")]
     pub vfr_rate: f32,
+    /// Class B, C or D surface airspace.
+    #[serde(default)]
+    pub airspace: AirspaceClass,
     pub sector: Vec<[f32; 2]>,
     pub mva: Vec<MvaArea>,
     pub runways: Vec<Runway>,
@@ -485,6 +506,14 @@ impl Airport {
     }
 
     /// The RNAV approach to a runway end, if one is published.
+    /// The approach gate on this runway end's final: a mile outside the
+    /// final approach fix or 5 NM from the threshold, whichever is farther
+    /// (Pilot/Controller Glossary), NM from the threshold.
+    pub fn approach_gate_nm(&self, end: usize) -> f32 {
+        let faf = self.rnav(end).and_then(|a| self.fix_index(a.faf())).map(|f| self.runways[end].along(self.fixes[f].pos()));
+        faf.map_or(5.0, |d| (d + 1.0).max(5.0))
+    }
+
     pub fn rnav(&self, end: usize) -> Option<&Approach> {
         let id = &self.runways.get(end)?.id;
         self.approaches.iter().find(|a| &a.runway == id)

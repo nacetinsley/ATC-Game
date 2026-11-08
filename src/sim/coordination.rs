@@ -32,6 +32,8 @@ pub const RELEASE_VOID_S: f32 = 120.0;
 /// Once Approach puts departures on call for release, it keeps them there at
 /// least this long after the reason has gone, seconds.
 pub const CALL_FOR_RELEASE_MIN_S: f32 = 300.0;
+/// The departure delay automated Approach quotes when it holds a release, minutes.
+const HOLD_FOR_RELEASE_MIN: u32 = 2;
 /// Tower has this long after a go-around to tell Approach, seconds.
 pub const GO_AROUND_CALL_S: f32 = 60.0;
 /// Severe weather this far along a departure's first leg holds it, NM.
@@ -313,6 +315,10 @@ impl World {
     fn unable_text(&self, kind: CoordKind, callsign: &str, why: Option<&str>) -> String {
         let what = match kind {
             CoordKind::Crossing { runway } => format!("{callsign} hold short runway {}", self.runway_name(runway)),
+            // 7110.65 4-3-4: hold for release with the delay to expect.
+            CoordKind::Release { .. } if why.is_some() => {
+                format!("{callsign} hold for release, expect {HOLD_FOR_RELEASE_MIN} minute departure delay")
+            }
             CoordKind::Release { .. } => format!("{callsign} hold for release"),
             CoordKind::GoAround { .. } => callsign.to_string(),
         };

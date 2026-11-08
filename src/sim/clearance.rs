@@ -15,7 +15,13 @@ use serde::{Deserialize, Serialize};
 
 pub const MIN_ASSIGNED_ALTITUDE: f32 = 1000.0;
 pub const MAX_ASSIGNED_ALTITUDE: f32 = 17000.0;
+/// 7110.65 5-9-2, TBL 5-9-1: the steepest intercept of the final approach
+/// course 2 miles or more outside the approach gate...
 pub const MAX_INTERCEPT_DEG: f32 = 30.0;
+/// ... and closer than that, degrees.
+pub const MAX_INTERCEPT_NEAR_GATE_DEG: f32 = 20.0;
+/// No speed adjustments inside this distance from the runway (7110.65 5-7-2), NM.
+pub const NO_SPEED_INSIDE_NM: f32 = 5.0;
 /// Pilot response time range, seconds.
 pub(super) const PILOT_DELAY: (f32, f32) = (2.0, 6.0);
 /// Below this distance there is no room left to establish and hand to Tower.
@@ -204,14 +210,24 @@ fn taxi_phrase(to: usize, via: &[String], ac: &Aircraft, airport: &Airport, in_u
     words
 }
 
-/// The controller's wording, as sent. Decided from the aircraft's state at transmission.
-/// `in_use` names runway ends the way `spoken_runway` does.
 /// Tower's heading for a departure is at most this far off the runway, degrees.
 pub const MAX_TOWER_TURN: f32 = 90.0;
 
+/// The controller's wording, as sent. Decided from the aircraft's state at transmission.
+/// `in_use` names runway ends the way `spoken_runway` does.
 pub fn phrase(clearance: &Clearance, ac: &Aircraft, airport: &Airport, in_use: &[usize]) -> String {
     match clearance {
-        Clearance::Heading(h) if ac.on_ground => format!("fly heading {}", format_heading(airport.to_magnetic(*h))),
+        // 7110.65 5-8-2: before departure, a turn off the runway heading.
+        Clearance::Heading(h) if ac.on_ground => {
+            let runway = ac.departure_end.map_or(ac.heading, |e| airport.runways[e].heading);
+            let turn = heading_diff(runway, *h);
+            if turn.abs() < 1.0 {
+                "fly runway heading".into()
+            } else {
+                let dir = if turn > 0.0 { "right" } else { "left" };
+                format!("turn {dir} heading {}", format_heading(airport.to_magnetic(*h)))
+            }
+        }
         Clearance::Heading(h) => {
             let dir = if heading_diff(ac.heading, *h) >= 0.0 { "right" } else { "left" };
             format!("turn {dir} heading {}", format_heading(airport.to_magnetic(*h)))
@@ -223,7 +239,15 @@ pub fn phrase(clearance: &Clearance, ac: &Aircraft, airport: &Airport, in_use: &
         Clearance::Speed(s) => format!("maintain {s:.0} knots"),
         Clearance::DirectFix(f) => format!("direct {}", airport.fixes[*f].name),
         Clearance::ResumeRoute => "resume own navigation".into(),
-        Clearance::ClearedIls(r) => format!("cleared ILS runway {}", airport.runways[*r].id),
+        // 7110.65 5-9-4: an altitude to maintain until established, then the clearance.
+        Clearance::ClearedIls(r) if ac.lateral == Lateral::Localizer => {
+            format!("cleared ILS runway {} approach", airport.runways[*r].id)
+        }
+        Clearance::ClearedIls(r) => format!(
+            "maintain {} until established on the localizer, cleared ILS runway {} approach",
+            thousands(ac.target_altitude),
+            airport.runways[*r].id
+        ),
         Clearance::ClearedRnav(r) => format!("cleared RNAV runway {} approach", airport.runways[*r].id),
         Clearance::ClearedVisual { runway, follow } => {
             let cleared = format!("cleared visual approach runway {}", airport.runways[*runway].id);
@@ -238,8 +262,19 @@ pub fn phrase(clearance: &Clearance, ac: &Aircraft, airport: &Airport, in_use: &
         Clearance::Taxi { to, via } => taxi_phrase(*to, via, ac, airport, in_use),
         Clearance::HoldPosition => "hold position".into(),
         Clearance::ContinueTaxi => "continue taxi".into(),
+        // 7110.65 3-7-2: the runway, and where to cross it.
         Clearance::CrossRunway(r) => match airport.surface.as_ref() {
-            Some(map) => format!("cross runway {}", spoken_runway(airport, map, *r, in_use)),
+            Some(map) => {
+                let runway = spoken_runway(airport, map, *r, in_use);
+                let at = ac.taxi.as_ref().and_then(|t| {
+                    let ahead: Vec<usize> = std::iter::once(t.node).chain(t.path.iter().skip(t.index).copied()).collect();
+                    map.crossing_taxiway(&ahead, *r)
+                });
+                match at {
+                    Some(taxiway) => format!("cross runway {runway} at {taxiway}"),
+                    None => format!("cross runway {runway}"),
+                }
+            }
             None => "cross the runway".into(),
         },
         Clearance::LineUpAndWait(e) => {
@@ -392,8 +427,21 @@ impl World {
             return false;
         };
         let in_use = self.ends_in_use();
-        let words: Vec<String> =
-            clearances.iter().map(|(c, _)| phrase(c, ac, &self.airport, &in_use)).collect();
+        // Worded as the call goes out: an altitude in it is the one later
+        // instructions refer to ("maintain 3,000 until established").
+        let mut preview = ac.clone();
+        for (c, _) in &clearances {
+            if let Clearance::Altitude(a) = c {
+                preview.target_altitude = *a;
+            }
+        }
+        let words: Vec<String> = clearances
+            .iter()
+            .map(|(c, _)| {
+                let words = phrase(c, &preview, &self.airport, &in_use);
+                if self.wake_caution(ac, c) { format!("{words}, caution wake turbulence") } else { words }
+            })
+            .collect();
         // Automated controllers are only heard when the player works in the tower.
         let logged = automated.is_none() || self.config.staffing.tower();
         let line = match automated {
@@ -713,6 +761,14 @@ fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), 
             ac.target_altitude = *a;
         }
         Clearance::Speed(s) => {
+            // 7110.65 5-7-2: no speed adjustments inside the final approach
+            // fix or 5 miles from the runway.
+            if let Some(rwy) = ac.approach_runway
+                && ac.on_final()
+                && airport.runways[rwy].along(ac.pos) < NO_SPEED_INSIDE_NM
+            {
+                return Err("inside the final approach fix".into());
+            }
             if *s < ac.ty.min_speed || *s > ac.ty.max_speed {
                 return Err(format!("{} performance", ac.ty.designator));
             }
@@ -1089,8 +1145,13 @@ fn check_final(ac: &Aircraft, rwy: usize, kind: ApproachKind, airport: &Airport)
     if intercept.abs() > MAX_INTERCEPT_DEG {
         return Err("intercept angle too steep".into());
     }
-    // Right of the course must be heading left of it, and vice versa.
+    // Joining the course less than 2 miles outside the approach gate: 20 degrees.
     let cross = runway.cross(ac.pos);
+    let joins_at = along - cross.abs() / intercept.abs().to_radians().tan().max(1e-3);
+    if intercept.abs() > MAX_INTERCEPT_NEAR_GATE_DEG && joins_at - airport.approach_gate_nm(rwy) < 2.0 {
+        return Err("intercept angle too steep".into());
+    }
+    // Right of the course must be heading left of it, and vice versa.
     if cross.abs() > 0.3 && cross * intercept > 0.0 {
         return Err("heading won't intercept".into());
     }

@@ -518,7 +518,7 @@ fn category(ac: &Aircraft) -> &'static str {
 }
 
 fn piston(ac: &Aircraft) -> bool {
-    matches!(ac.ty.designator, "C172" | "C182" | "PA28" | "PA32" | "PA44" | "SR20" | "SR22" | "BE36" | "BE58" | "DA40" | "DA42")
+    matches!(ac.ty.designator, "C172" | "C182" | "P28A" | "PA32" | "PA44" | "SR20" | "SR22" | "BE36" | "BE58" | "DA40" | "DA42")
 }
 
 /// Heavies, B757s and supers get ASDE-X's heavy target icon.

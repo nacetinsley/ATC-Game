@@ -145,11 +145,12 @@ It's set before the shift starts and stays that way until the shift ends. With
 it on, light aircraft share the field with the airliners:
 
 - **Closed traffic** taxis out, departs and flies circuits at 1,000 ft above
-  the field, doing touch-and-goes until it makes a full stop.
+  the field, doing touch-and-goes until it makes a full stop. It turns
+  crosswind past the runway end at 700 ft or higher (AIM 4-3-3).
 - **VFR arrivals** call from about 9 miles out on the pattern side and hold
   outside the pattern until you tell them to enter the downwind.
-- **VFR departures** climb out ahead and want a frequency change (T) by 3
-  miles.
+- **VFR departures** climb out ahead, turning on course at pattern altitude
+  (AIM 4-3-3), and want a frequency change (T) by 3 miles.
 
 VFR traffic flies from the parallel normally used for departures. At KSUS
 (26R or 08L, as in real life) it gets that runway to itself, and IFR
@@ -364,7 +365,7 @@ working ILS has a tick every mile; RNAV and visual only, just the dashes.
 
 | Approach | How it's flown | Needs |
 |---|---|---|
-| **ILS** | Vectored to intercept the localizer within 30°, 6 to 35 miles out, below the glideslope. | A runway with an ILS that's working, and Category I weather (or a Category III aircraft below it). |
+| **ILS** | Vectored to intercept the localizer within 30°, or 20° if it would join less than 2 miles outside the approach gate (a mile outside the final approach fix, and at least 5 miles out), 6 to 35 miles out, below the glideslope (7110.65 5-9-2). The clearance gives an altitude to hold until established: "maintain 3,000 until established on the localizer, cleared ILS runway 27L approach." | A runway with an ILS that's working, and Category I weather (or a Category III aircraft below it). |
 | **RNAV (GPS)** | Two ways in. **Via a fix:** drag the aircraft to an initial, intermediate or final approach fix, then press C, and the RNAV through that fix comes first ("direct BRICK, cleared RNAV runway 27L approach"). It flies the published fixes, steps down to each fix's at-or-above altitude (never climbing), and joins the final course at the final approach fix. **On vectors:** the same intercept as the ILS, onto the RNAV final. The scope draws the fixes still to fly. | A published RNAV approach (KSUS from the FAA CIFP; XHGT has fictional ones). A 300 ft ceiling and 1 mile visibility. |
 | **Visual** | The pilot makes their own way onto final, joining closer in than an ILS allows. It descends steeply if it has to, and may go to Tower as soon as it's cleared (by 2 miles). Too high or not lined up at 1 mile is an unstable go-around. | Visibility of 3 miles or more, a ceiling 500 ft above the MVA, the field in sight (below the cloud and within the visibility, up to 12 miles), and at least 3 miles from the runway. |
 
@@ -375,16 +376,33 @@ visibility, up to 8 miles. Once it has it, the follower keeps its own
 spacing. That's **visual separation**: the pair is exempt from loss of
 separation and conflict alerts, though a near collision still counts. The
 follower slows when it closes within a mile of its minimum. That minimum is
-the wake turbulence minimum behind a heavy, or for a small behind a large,
-and otherwise 2 miles.
+the wake turbulence minimum where one applies, and otherwise 2 miles.
 
 **Parallel finals** depend on how far apart the centrelines are:
 
 | Spacing | Treated as |
 |---|---|
 | Under 2,500 ft (KMEM 18L/18C) | One final, for wake spacing and ATPA. |
-| 2,500 to 4,300 ft (KSUS 26L/26R) | Dependent. Aircraft established on each final need 1.5 miles diagonally. |
-| 4,300 ft or more (XHGT, 7,300 ft; KMEM 18L/18R, 4,320 ft) | Independent. No separation is needed between aircraft established on each. |
+| 2,500 to 3,600 ft (KSUS 26L/26R, 2,800 ft) | Dependent. Aircraft established on each final need 1 mile diagonally (7110.65 5-9-6). |
+| 3,600 ft or more (XHGT, 7,300 ft; KMEM 18L/18R, 4,320 ft) | Independent. No separation is needed between aircraft established on each (7110.65 5-9-7). |
+
+**Wake turbulence** follows the FAA's Consolidated Wake Turbulence (CWT)
+categories, A (super) to I (light singles), as listed in FAA Order JO 7360.1K.
+The selected aircraft's category shows in the clearance panel (`B738 L CWT F`).
+- **On final** (7110.65 5-5-4): 5 miles for an F behind a B such as a 777,
+  3.5 behind a C such as a 767 or MD-11, 4 for an I behind a 757 (E), and the
+  3-mile radar minimum where no wake minimum applies.
+- **Between takeoffs** from the same runway (3-9-6): 2 minutes behind a B or
+  D, 2 behind a C for E to I, and 2 for an I behind a 757. A takeoff inside
+  the interval costs points; the automated Tower waits it out.
+- **Advisories** (3-10-3): takeoff and landing clearances behind such traffic
+  end "caution wake turbulence".
+
+**Speeds:** pilots keep to 250 kt below 10,000 ft, and to 200 kt at or below
+2,500 ft within 4 miles of a Class C or D airport such as Harrowgate or KSUS
+(14 CFR 91.117). Memphis is Class B, where the 250 kt limit applies. A speed
+assignment inside 5 miles on final is refused, since none may be given inside
+the final approach fix (7110.65 5-7-2).
 
 **ILS outages:** on Variable or Low IFR weather the landing runway's ILS
 sometimes fails for 20 to 40 minutes. A new ATIS reports it, and the status

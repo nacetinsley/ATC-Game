@@ -345,10 +345,11 @@ fn independent_parallel_finals_need_no_separation() {
 }
 
 #[test]
-fn dependent_parallel_finals_need_a_mile_and_a_half_diagonal() {
+fn dependent_parallel_finals_need_a_mile_diagonal() {
     let mut world = ksus();
     let spacing = world.airport.centreline_spacing_ft(end(&world, "26L"), end(&world, "26R"));
-    assert!((2500.0..4300.0).contains(&spacing), "{spacing}");
+    assert!((2500.0..3600.0).contains(&spacing), "{spacing}");
+    assert_eq!(world.airport.parallel_minimum(end(&world, "26L"), end(&world, "26R")), Some(1.0));
     let mut events = Vec::new();
     world.add_aircraft(on_final(&world, 1, "B738", "26L", 14.0));
     world.add_aircraft(on_final(&world, 2, "B738", "26R", 17.0));

@@ -355,7 +355,7 @@ impl World {
         if follower.visual_follow == Some(leader.id) {
             self.visual_minimum(leader, follower)
         } else {
-            wake_required_nm(leader.ty.wake, follower.ty.wake)
+            wake_required_nm(leader.ty.cwt, follower.ty.cwt)
         }
     }
 

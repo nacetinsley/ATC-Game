@@ -88,6 +88,8 @@ pub enum SimEvent {
     NearCollision { a: String, b: String },
     ConflictAlert { a: String, b: String },
     WakeViolation { leader: String, follower: String },
+    /// A takeoff inside the wake turbulence interval behind the leader's.
+    WakeDeparture { leader: String, follower: String },
     Msaw { callsign: String },
     SectorBust { callsign: String },
     WrongExit { callsign: String },
@@ -350,6 +352,13 @@ impl Score {
                 self.incident(
                     time,
                     format!("Wake spacing: {follower} too close behind {leader}"),
+                    PENALTY_WAKE,
+                );
+            }
+            SimEvent::WakeDeparture { leader, follower } => {
+                self.incident(
+                    time,
+                    format!("Wake turbulence: {follower} took off too soon behind {leader}"),
                     PENALTY_WAKE,
                 );
             }
