@@ -515,6 +515,7 @@ impl World {
                 ac.heading = self.airport.runways[end].heading;
                 ac.ias = 0.0;
                 let roll = ac.cleared_takeoff;
+                ac.in_position_since = (!roll).then_some(now);
                 ac.taxi = Some(taxi);
                 if roll {
                     start_roll(ac, &self.airport);

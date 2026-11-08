@@ -2,7 +2,8 @@
 //! the automated Tower, Ground and Approach positions for whatever the player
 //! isn't working.
 
-use super::aircraft::{Aircraft, Flow, Lateral, Phase};
+use super::aircraft::{Aircraft, Flow, Lateral, Leg, Phase};
+use super::performance::{Cwt, WakeCategory};
 use super::approach::ApproachKind;
 use super::autopilot::should_capture_localizer;
 use super::clearance::{AT_NODE_NM, Clearance, PILOT_DELAY, issuer_for};
@@ -63,6 +64,16 @@ const TAKEOFF_MARGIN_S: f32 = 15.0;
 const LINE_UP_S: f32 = 30.0;
 /// Minimum time between a VFR departure and the next, seconds.
 const VFR_DEPARTURE_INTERVAL: f32 = 45.0;
+/// 7110.65 3-9-4 NOTE: no more than this long in position without further
+/// instructions, seconds.
+pub const LINE_UP_MAX_S: f32 = 90.0;
+/// 7110.65 3-9-4: an aircraft told to line up and wait hears about the
+/// closest arrival to its runway within this many flying miles.
+pub const LINE_UP_TRAFFIC_NM: f32 = 6.0;
+/// 7110.65 3-9-4g, 3-10-5: even with safety logic, no landing clearance with
+/// traffic in position below this ceiling (feet) or visibility (SM).
+const SAFETY_LOGIC_CEILING_FT: f32 = 800.0;
+const SAFETY_LOGIC_VISIBILITY_SM: f32 = 2.0;
 
 impl World {
     pub(super) fn surface(&self) -> &GroundMap {
@@ -437,6 +448,143 @@ impl World {
                 ahead || recent(end)
             }
             _ => false,
+        }
+    }
+
+    /// A departure holding in position on this physical runway, or cleared
+    /// to line up and wait and taxiing there, other than `except`.
+    pub fn holding_in_position(&self, physical: usize, except: u32) -> Option<&Aircraft> {
+        let map = self.surface();
+        self.aircraft.iter().find(|a| {
+            let mine = a.departure_end.is_some_and(|e| map.runway_of_end[e] == physical);
+            let waiting = match a.phase {
+                Phase::LinedUp => true,
+                Phase::Taxiing => a.taxi.as_ref().is_some_and(|t| t.lineup),
+                _ => false,
+            };
+            a.id != except && a.flow == Flow::Departure && a.on_ground && mine && waiting && !a.cleared_takeoff
+        })
+    }
+
+    /// An airborne aircraft cleared to land, touch and go or for the option
+    /// on this physical runway, other than `except`.
+    pub fn cleared_to_land_on(&self, physical: usize, except: u32) -> Option<&Aircraft> {
+        let map = self.surface();
+        self.aircraft.iter().find(|a| {
+            let end = match &a.vfr {
+                Some(v) => v.landing.is_some().then_some(v.end),
+                None => a.approach_runway.filter(|_| a.cleared_to_land),
+            };
+            a.id != except && !a.on_ground && end.is_some_and(|e| map.runway_of_end[e] == physical)
+        })
+    }
+
+    /// Safety logic in full core alert, in good enough weather, lets a
+    /// landing clearance and line up and wait share a runway (3-9-4g).
+    fn safety_logic_on(&self) -> bool {
+        self.airport.safety_logic && !self.sky().below(SAFETY_LOGIC_CEILING_FT, SAFETY_LOGIC_VISIBILITY_SM)
+    }
+
+    /// The line up and wait rule (7110.65 3-9-4, 3-9-6, 3-10-5) this
+    /// clearance would break, said as the score shows it.
+    pub(super) fn line_up_breach(&self, ac: &Aircraft, clearance: &Clearance) -> Option<String> {
+        let map = self.surface();
+        let cs = &ac.callsign;
+        match *clearance {
+            Clearance::LineUpAndWait(end) if !(ac.phase == Phase::LinedUp && ac.departure_end == Some(end)) => {
+                let physical = map.runway_of_end[end];
+                let rwy = &self.airport.runways[end].id;
+                if !self.safety_logic_on()
+                    && let Some(other) = self.cleared_to_land_on(physical, ac.id)
+                {
+                    return Some(format!("{cs} onto runway {rwy} with {} cleared to land", other.callsign));
+                }
+                // 3-9-6: a small aircraft doesn't wait out a super's or a
+                // heavy's wake interval on the runway.
+                if ac.ty.wake == WakeCategory::Small
+                    && let Some(leader) = self.wake_leader(ac, end, |c| c <= Cwt::D)
+                {
+                    return Some(format!("{cs} lined up behind departing heavy {leader}"));
+                }
+                None
+            }
+            Clearance::ClearedToLand(end) | Clearance::ClearedTouchAndGo(end) | Clearance::ClearedOption(end) => {
+                let physical = map.runway_of_end[end];
+                let other = self.holding_in_position(physical, ac.id).filter(|_| !self.safety_logic_on())?;
+                let rwy = &self.airport.runways[end].id;
+                Some(format!("{cs} cleared to land on {rwy} with {} in position", other.callsign))
+            }
+            _ => None,
+        }
+    }
+
+    /// A takeoff from this runway whose wake interval `ac` is still inside,
+    /// by a leader whose category passes `which`.
+    fn wake_leader(&self, ac: &Aircraft, end: usize, which: impl Fn(Cwt) -> bool) -> Option<String> {
+        self.takeoffs
+            .iter()
+            .filter(|t| t.callsign != ac.callsign && self.airport.same_lane(t.end, end) && which(t.cwt))
+            .find(|t| {
+                super::performance::wake_interval_s(t.cwt, ac.ty.cwt).is_some_and(|i| t.time + i > self.time)
+            })
+            .map(|t| t.callsign.clone())
+    }
+
+    /// The traffic a line up and wait or landing clearance carries
+    /// (7110.65 3-9-4, 3-10-5).
+    pub(super) fn line_up_traffic(&self, ac: &Aircraft, clearance: &Clearance) -> Option<String> {
+        let map = self.surface();
+        match *clearance {
+            Clearance::LineUpAndWait(end) if ac.phase != Phase::LinedUp => {
+                let physical = map.runway_of_end[end];
+                // The closest arrival to the runway within 6 flying miles.
+                let (miles, arrival) = self
+                    .aircraft
+                    .iter()
+                    .filter(|a| !a.on_ground && a.id != ac.id)
+                    .filter_map(|a| {
+                        let landing = match &a.vfr {
+                            Some(v) => matches!(v.leg, Leg::Base | Leg::Final).then_some(v.end),
+                            None => a.approach_runway.filter(|_| a.flow == Flow::Arrival),
+                        }?;
+                        let runway = &self.airport.runways[landing];
+                        let miles = runway.along(a.pos);
+                        let on_final = runway.cross(a.pos).abs() < 2.0;
+                        (map.runway_of_end[landing] == physical && on_final && miles > 0.0 && miles <= LINE_UP_TRAFFIC_NM)
+                            .then_some((miles, a))
+                    })
+                    .min_by(|a, b| a.0.total_cmp(&b.0))?;
+                Some(format!("traffic, {}, {} mile final", arrival.ty.designator, miles.round().max(1.0)))
+            }
+            Clearance::ClearedToLand(end) | Clearance::ClearedTouchAndGo(end) | Clearance::ClearedOption(end) => {
+                self.holding_in_position(map.runway_of_end[end], ac.id).map(|_| "traffic holding in position".to_string())
+            }
+            _ => None,
+        }
+    }
+
+    /// An aircraft in position 90 seconds with nothing more said calls the
+    /// tower about it (7110.65 3-9-4 NOTE).
+    pub(super) fn check_line_up_time(&mut self) {
+        if !self.config.staffing.local {
+            return;
+        }
+        let now = self.time;
+        let mut calls = Vec::new();
+        for ac in &mut self.aircraft {
+            let waiting = ac.phase == Phase::LinedUp && !ac.cleared_takeoff;
+            if let Some(since) = ac.in_position_since
+                && waiting
+                && now - since > LINE_UP_MAX_S
+            {
+                ac.in_position_since = None;
+                let end = ac.departure_end.map(|e| self.airport.runways[e].id.clone()).unwrap_or_default();
+                calls.push((ac.callsign.clone(), end));
+            }
+        }
+        for (callsign, end) in calls {
+            self.say(Speaker::Pilot, format!("Tower, {callsign}, still holding in position runway {end}."));
+            self.emit(SimEvent::LongLineUp { callsign });
         }
     }
 

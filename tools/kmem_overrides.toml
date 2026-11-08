@@ -25,6 +25,8 @@ vfr_runway = "shared"
 vfr_rate = 2.0
 # Memphis Class B.
 airspace = "B"
+# ASDE-X, so Tower may clear arrivals with traffic in position.
+safety_logic = true
 
 # Nearby fields shown on the scope for orientation. Their traffic isn't simulated.
 [[references]]

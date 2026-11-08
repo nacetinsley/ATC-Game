@@ -300,6 +300,10 @@ pub struct Airport {
     /// Class B, C or D surface airspace.
     #[serde(default)]
     pub airspace: AirspaceClass,
+    /// Runway safety logic (ASDE-X or ASSC) in full core alert: Tower may
+    /// clear an arrival with traffic holding in position (7110.65 3-9-4g).
+    #[serde(default)]
+    pub safety_logic: bool,
     pub sector: Vec<[f32; 2]>,
     pub mva: Vec<MvaArea>,
     pub runways: Vec<Runway>,

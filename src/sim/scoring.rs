@@ -40,6 +40,11 @@ pub const PENALTY_UNCOORDINATED_CROSSING: i32 = -100;
 pub const PENALTY_COORDINATION_LATE: i32 = -25;
 /// Tower launched an IFR departure Approach hadn't released.
 pub const PENALTY_UNRELEASED_DEPARTURE: i32 = -100;
+/// A landing clearance and line up and wait on the same runway, or a small
+/// aircraft lined up behind a departing heavy.
+pub const PENALTY_LINE_UP: i32 = -100;
+/// An aircraft left in position more than 90 seconds.
+pub const PENALTY_LONG_LINE_UP: i32 = -25;
 /// A go-around reached Approach without Tower's call.
 pub const PENALTY_UNCOORDINATED_GO_AROUND: i32 = -50;
 /// A pilot asked to go round weather and had to go without an answer.
@@ -148,6 +153,10 @@ pub enum SimEvent {
     /// The player, on Local, cleared a departure for takeoff without the
     /// release Approach asked for.
     UnreleasedDeparture { callsign: String },
+    /// The player, on Local, broke a line up and wait rule (7110.65 3-9-4).
+    LineUpAndWait { what: String },
+    /// Left holding in position over 90 seconds with nothing more said.
+    LongLineUp { callsign: String },
     /// The player, on Local, let a go-around reach Approach without telling it.
     UncoordinatedGoAround { callsign: String },
 }
@@ -442,6 +451,16 @@ impl Score {
                     time,
                     format!("{callsign} took off without Approach's release"),
                     PENALTY_UNRELEASED_DEPARTURE,
+                );
+            }
+            SimEvent::LineUpAndWait { what } => {
+                self.incident(time, format!("Line up and wait: {what}"), PENALTY_LINE_UP);
+            }
+            SimEvent::LongLineUp { callsign } => {
+                self.incident(
+                    time,
+                    format!("{callsign} held in position over 90 seconds"),
+                    PENALTY_LONG_LINE_UP,
                 );
             }
             SimEvent::UncoordinatedGoAround { callsign } => {

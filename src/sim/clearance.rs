@@ -277,6 +277,10 @@ pub fn phrase(clearance: &Clearance, ac: &Aircraft, airport: &Airport, in_use: &
             }
             None => "cross the runway".into(),
         },
+        // Already in position: told to stay there (7110.65 3-9-4).
+        Clearance::LineUpAndWait(e) if ac.phase == Phase::LinedUp && ac.departure_end == Some(*e) => {
+            format!("runway {}, continue holding", airport.runways[*e].id)
+        }
         Clearance::LineUpAndWait(e) => {
             format!("runway {}, line up and wait", airport.runways[*e].id)
         }
@@ -438,7 +442,10 @@ impl World {
         let words: Vec<String> = clearances
             .iter()
             .map(|(c, _)| {
-                let words = phrase(c, &preview, &self.airport, &in_use);
+                let mut words = phrase(c, &preview, &self.airport, &in_use);
+                if let Some(traffic) = self.line_up_traffic(ac, c) {
+                    words = format!("{words}, {traffic}");
+                }
                 if self.wake_caution(ac, c) { format!("{words}, caution wake turbulence") } else { words }
             })
             .collect();
@@ -498,6 +505,15 @@ impl World {
                 matches!(c, Clearance::ClearedForTakeoff(_))
                     && *issuer == Some(Position::Local)
                     && self.needs_release(call.aircraft)
+            })
+            .collect();
+        // The player breaking a line up and wait rule, judged as it's heard.
+        let line_up: Vec<Option<String>> = call
+            .clearances
+            .iter()
+            .map(|(c, issuer)| {
+                let player = issuer.is_some_and(|p| staffing.works(p));
+                if player { self.line_up_breach(&self.aircraft[index], c) } else { None }
             })
             .collect();
         let in_use = self.ends_in_use();
@@ -561,6 +577,9 @@ impl World {
                     }
                     if unreleased[n] {
                         events.push(SimEvent::UnreleasedDeparture { callsign: ac.callsign.clone() });
+                    }
+                    if let Some(what) = &line_up[n] {
+                        events.push(SimEvent::LineUpAndWait { what: what.clone() });
                     }
                     if *clearance == Clearance::GoAround {
                         let callsign = ac.callsign.clone();
@@ -985,6 +1004,9 @@ fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), 
                 }
                 if takeoff {
                     start_roll(ac, airport);
+                } else {
+                    // "Continue holding": the 90 seconds start again.
+                    ac.in_position_since = Some(ctx.now);
                 }
                 return Ok(());
             }

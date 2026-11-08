@@ -431,6 +431,7 @@ impl World {
         self.run_pattern();
         self.run_coordination();
         self.run_local();
+        self.check_line_up_time();
         self.run_ground();
         self.run_automated_approach();
         self.run_holding();

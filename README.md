@@ -117,6 +117,25 @@ and an automated one. On a combined position you're both ends.
   - Tower calls you about each go-around. Acknowledge with Y; leaving it 45
     seconds costs points.
 
+### Line up and wait
+
+W tells a departure to line up and wait (7110.65 3-9-4): "runway 27L, line up
+and wait, traffic, A320, 5 mile final." The closest arrival to that runway
+within 6 miles is called with it.
+- **No landing clearance with traffic in position:** clearing an aircraft to
+  land, touch and go or for the option on a runway where a departure is
+  lined up, or on its way to line up, costs points. So does lining one up
+  behind an arrival already cleared to land.
+  - Memphis has runway safety logic (ASDE-X), which allows both, with
+    "traffic holding in position" added to the landing clearance. It
+    doesn't apply when the ceiling is below 800 ft or the visibility below 2
+    miles.
+- **Not behind a heavy:** a small aircraft mustn't wait out a departing
+  heavy's wake interval on the runway (3-9-6). Hold it short instead.
+- **90 seconds at most:** a departure left in position longer calls the
+  tower ("still holding in position") and costs a few points. W again
+  tells it "continue holding" and starts the time again.
+
 ### Tower headings
 
 On Local you can give an IFR departure or a go-around a heading, to keep it
@@ -125,7 +144,7 @@ heading and go-arounds climb straight out.
 
 - **Departures:** select one at the hold line or lined up and use Left/Right
   (or the panel's Hdg buttons), then send it, alone or with the takeoff
-  clearance: "fly heading 240, runway 27R, cleared for takeoff."
+  clearance: "turn left heading 240, runway 27R, cleared for takeoff."
   - It flies runway heading until 400 feet above the field, then turns.
   - Tower can only give a heading within 90 degrees of the runway.
   - Once it's switched to Departure, an automated Approach turns it on

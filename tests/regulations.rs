@@ -12,6 +12,7 @@ use atcgame::sim::holding;
 use atcgame::sim::performance::{Cwt, aircraft_type, wake_advisory, wake_interval_s, wake_required_nm};
 use atcgame::sim::positions::{Position, Staffing};
 use atcgame::sim::scoring::SimEvent;
+use atcgame::sim::tower::{LINE_UP_MAX_S, LINE_UP_TRAFFIC_NM};
 use atcgame::sim::units::{Wind, format_heading, heading_vec};
 use atcgame::sim::vfr::PATTERN_AGL;
 use atcgame::sim::{Speaker, TICK, World, WorldConfig};
@@ -61,13 +62,18 @@ fn said(world: &World, speaker: Speaker, words: &str) -> bool {
 
 /// An IFR departure of this type at the 27R hold line, talking to Tower.
 fn ready_departure(world: &World, id: u32, callsign: &str, ty: &str) -> Aircraft {
+    ready_departure_on(world, id, callsign, ty, "27R")
+}
+
+/// An IFR departure of this type at a runway's hold line, talking to Tower.
+fn ready_departure_on(world: &World, id: u32, callsign: &str, ty: &str, runway: &str) -> Aircraft {
     let map = world.airport.surface.as_ref().unwrap();
-    let hold = map.departure_hold(end(world, "27R")).unwrap();
+    let hold = map.departure_hold(end(world, runway)).unwrap();
     let mut ac = Aircraft::new(id, callsign, Flow::Departure, aircraft_type(ty).unwrap(), map.nodes[hold].pos, 0.0, world.airport.elevation, 0.0);
     ac.on_ground = true;
     ac.phase = Phase::Taxiing;
     ac.taxi = Some(Taxi::at(hold));
-    ac.departure_end = Some(end(world, "27R"));
+    ac.departure_end = Some(end(world, runway));
     ac.surface_freq = Position::Local;
     ac.msaw_armed = false;
     ac.entered_sector = true;
@@ -374,4 +380,144 @@ fn landing_behind_a_heavy_is_cautioned() {
     assert!(world.transmit(2, vec![Clearance::ClearedToLand(end(&world, "27L"))]));
     run(&mut world, 1.0, &mut events);
     assert!(said(&world, Speaker::Controller, "NVA101, runway 27L, cleared to land, caution wake turbulence"), "{:?}", log(&world));
+}
+
+// ---- Line up and wait ----
+
+/// 7110.65 3-9-4 NOTE: 90 seconds in position at most; traffic within 6
+/// flying miles is called.
+#[test]
+fn line_up_and_wait_limits() {
+    assert_eq!(LINE_UP_MAX_S, 90.0);
+    assert_eq!(LINE_UP_TRAFFIC_NM, 6.0);
+}
+
+fn line_up_breaches(events: &[SimEvent]) -> Vec<&str> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            SimEvent::LineUpAndWait { what } => Some(what.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Lined up on 27L, the landing runway, with an arrival 5 miles out.
+fn in_position_with_arrival(safety_logic: bool) -> (World, Vec<SimEvent>) {
+    let mut airport = Airport::default_airport();
+    airport.safety_logic = safety_logic;
+    let config = WorldConfig {
+        seed: 7,
+        traffic: false,
+        wind: Some(Wind { from: 270.0, speed: 0.0 }),
+        staffing: Staffing::LOCAL,
+        ..Default::default()
+    };
+    let mut world = World::new(airport, config);
+    let mut events = Vec::new();
+    world.add_aircraft(ready_departure_on(&world, 1, "DAL10", "B738", "27L"));
+    world.add_aircraft(on_final(&world, 2, "NVA101", "A320", 5.0));
+    assert!(world.transmit(1, vec![Clearance::LineUpAndWait(end(&world, "27L"))]));
+    run(&mut world, 1.0, &mut events);
+    // 3-9-4: the closest arrival within 6 flying miles.
+    assert!(said(&world, Speaker::Controller, "runway 27L, line up and wait, traffic, A320, 5 mile final"), "{:?}", log(&world));
+    run(&mut world, 5.0, &mut events);
+    (world, events)
+}
+
+/// 7110.65 3-9-4g, 3-10-5: without safety logic, no landing clearance with
+/// traffic holding in position (or taxiing to).
+#[test]
+fn no_landing_clearance_with_traffic_in_position() {
+    let (mut world, mut events) = in_position_with_arrival(false);
+    assert!(world.transmit(2, vec![Clearance::ClearedToLand(end(&world, "27L"))]));
+    run(&mut world, 6.0, &mut events);
+    assert_eq!(line_up_breaches(&events), ["NVA101 cleared to land on 27L with DAL10 in position"]);
+    assert!(said(&world, Speaker::Controller, "cleared to land, traffic holding in position"), "{:?}", log(&world));
+}
+
+/// 3-9-4g: safety logic in full core alert allows it, with traffic called.
+#[test]
+fn safety_logic_allows_a_landing_clearance_with_traffic_in_position() {
+    let (mut world, mut events) = in_position_with_arrival(true);
+    assert!(world.transmit(2, vec![Clearance::ClearedToLand(end(&world, "27L"))]));
+    run(&mut world, 6.0, &mut events);
+    assert!(line_up_breaches(&events).is_empty(), "{events:?}");
+    assert!(said(&world, Speaker::Controller, "NVA101, runway 27L, cleared to land, traffic holding in position"), "{:?}", log(&world));
+}
+
+/// 3-9-4g: no line up and wait once an arrival is cleared to land.
+#[test]
+fn no_line_up_and_wait_after_a_landing_clearance() {
+    let mut world = harrowgate(Staffing::LOCAL);
+    let mut events = Vec::new();
+    world.add_aircraft(ready_departure_on(&world, 1, "DAL10", "B738", "27L"));
+    world.add_aircraft(on_final(&world, 2, "NVA101", "A320", 5.0));
+    assert!(world.transmit(2, vec![Clearance::ClearedToLand(end(&world, "27L"))]));
+    run(&mut world, 6.0, &mut events);
+    assert!(world.transmit(1, vec![Clearance::LineUpAndWait(end(&world, "27L"))]));
+    run(&mut world, 6.0, &mut events);
+    assert_eq!(line_up_breaches(&events), ["DAL10 onto runway 27L with NVA101 cleared to land"]);
+}
+
+/// The other runway is fine.
+#[test]
+fn line_up_and_wait_on_another_runway_is_fine() {
+    let mut world = harrowgate(Staffing::LOCAL);
+    let mut events = Vec::new();
+    world.add_aircraft(ready_departure(&world, 1, "DAL10", "B738"));
+    world.add_aircraft(on_final(&world, 2, "NVA101", "A320", 5.0));
+    assert!(world.transmit(2, vec![Clearance::ClearedToLand(end(&world, "27L"))]));
+    assert!(world.transmit(1, vec![Clearance::LineUpAndWait(end(&world, "27R"))]));
+    run(&mut world, 6.0, &mut events);
+    assert!(line_up_breaches(&events).is_empty(), "{events:?}");
+    assert!(said(&world, Speaker::Controller, "DAL10, runway 27R, line up and wait."), "{:?}", log(&world));
+}
+
+/// 3-9-6: no small aircraft lined up behind a departing heavy to wait out
+/// its wake interval.
+#[test]
+fn no_small_lined_up_behind_a_departing_heavy() {
+    let mut world = harrowgate(Staffing::LOCAL);
+    let mut events = Vec::new();
+    let rwy = end(&world, "27R");
+    world.add_aircraft(ready_departure(&world, 1, "BAW1", "B77W"));
+    assert!(world.transmit(1, vec![Clearance::ClearedForTakeoff(rwy)]));
+    run_until(&mut world, 180.0, &mut events, |w| !w.find(1).unwrap().on_ground);
+    world.add_aircraft(ready_departure(&world, 2, "N123AB", "C172"));
+    assert!(world.transmit(2, vec![Clearance::LineUpAndWait(rwy)]));
+    run(&mut world, 6.0, &mut events);
+    assert_eq!(line_up_breaches(&events), ["N123AB lined up behind departing heavy BAW1"]);
+}
+
+/// 3-9-4 NOTE: past 90 seconds in position the pilot calls, and it's scored;
+/// "continue holding" starts the time again.
+#[test]
+fn ninety_seconds_in_position() {
+    let mut world = harrowgate(Staffing::LOCAL);
+    let mut events = Vec::new();
+    let rwy = end(&world, "27R");
+    world.add_aircraft(ready_departure(&world, 1, "DAL10", "B738"));
+    world.add_aircraft(ready_departure(&world, 2, "DAL20", "A320"));
+    world.find_mut(2).unwrap().departure_end = Some(end(&world, "27L"));
+    let hold = world.airport.surface.as_ref().unwrap().departure_hold(end(&world, "27L")).unwrap();
+    world.find_mut(2).unwrap().pos = world.airport.surface.as_ref().unwrap().nodes[hold].pos;
+    world.find_mut(2).unwrap().taxi = Some(Taxi::at(hold));
+    assert!(world.transmit(1, vec![Clearance::LineUpAndWait(rwy)]));
+    assert!(world.transmit(2, vec![Clearance::LineUpAndWait(end(&world, "27L"))]));
+    run_until(&mut world, 60.0, &mut events, |w| w.find(2).unwrap().phase == Phase::LinedUp);
+    // Number 2 is told to keep holding after a minute.
+    run(&mut world, 60.0, &mut events);
+    assert!(world.transmit(2, vec![Clearance::LineUpAndWait(end(&world, "27L"))]));
+    run(&mut world, 45.0, &mut events);
+    assert!(said(&world, Speaker::Controller, "DAL20, runway 27L, continue holding."), "{:?}", log(&world));
+    let long: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            SimEvent::LongLineUp { callsign } => Some(callsign.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(long, ["DAL10"]);
+    assert!(said(&world, Speaker::Pilot, "Tower, DAL10, still holding in position runway 27R."), "{:?}", log(&world));
 }

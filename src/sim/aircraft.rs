@@ -275,6 +275,9 @@ pub struct Aircraft {
     pub cleared_to_land: bool,
     /// Line up and roll without stopping, once lined up.
     pub cleared_takeoff: bool,
+    /// Holding in position since this time, until it's told something more
+    /// (7110.65 3-9-4: no more than 90 seconds). None once it has called.
+    pub in_position_since: Option<f32>,
     /// Departures only: the runway end it will take off from.
     pub departure_end: Option<usize>,
     /// A heading Tower gave before takeoff, flown once clear of the ground.
@@ -351,6 +354,7 @@ impl Aircraft {
             taxi: None,
             cleared_to_land: false,
             cleared_takeoff: false,
+            in_position_since: None,
             departure_end: None,
             tower_heading: None,
             parking: None,
