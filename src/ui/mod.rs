@@ -33,6 +33,8 @@ use gfx::{clear_background, draw_circle, draw_line, draw_rectangle, draw_rectang
 
 /// Longest frame time to catch up on, so a stall doesn't fast-forward the sim.
 const MAX_FRAME_SECONDS: f32 = 0.25;
+/// A shift quit before this many ticks (a minute) isn't worth a replay.
+const LEAVE_KEEP_TICKS: u32 = crate::sim::replay::SNAPSHOT_TICKS;
 
 const TITLE: Color = Color::new(0.35, 0.95, 0.45, 1.0);
 const TEXT: Color = Color::new(0.85, 0.90, 0.88, 1.0);
@@ -431,6 +433,20 @@ impl App {
         self.screen = Screen::Debrief { end, choice: None, scroll: 0 };
     }
 
+    /// Quitting a shift to the main menu or the desktop: keep its replay, unless it was a
+    /// tutorial or barely begun.
+    fn save_left_shift(&mut self) {
+        if self.tutorial.is_some() || self.world.ticks() < LEAVE_KEEP_TICKS {
+            return;
+        }
+        self.world.leave_shift();
+        if let (Some(recording), Some(code)) = (&mut self.recording, &self.code) {
+            recording.finish(&self.world);
+            let file = replays::ReplayFile::new(code, &self.world);
+            self.replay_path = replays::save(&file).map(|p| p.display().to_string());
+        }
+    }
+
     /// The world at the end of the shift, for the debrief.
     fn final_world(&self) -> &World {
         self.recording.as_ref().map_or(&self.world, |r| r.last())
@@ -627,7 +643,7 @@ impl App {
         let mouse = Vec2::from(mouse_position());
         let mut open = start_pressed() && count > 0;
         if count == 0 {
-            draw_text("No replays yet. Every shift you finish is saved here.", x, top + 20.0, 22.0, TEXT);
+            draw_text("No replays yet. Every shift you finish or leave is saved here.", x, top + 20.0, 22.0, TEXT);
         }
         for (n, (_, file)) in self.replay_list.iter().enumerate().skip(first).take(rows) {
             let y = top + row * (n - first) as f32;
@@ -923,10 +939,14 @@ impl App {
                 self.screen = Screen::Paused { choice, show_controls };
             }
             PauseItem::MainMenu => {
+                self.save_left_shift();
                 self.tutorial = None;
                 self.screen = Screen::Menu;
             }
-            PauseItem::Quit => macroquad::miniquad::window::order_quit(),
+            PauseItem::Quit => {
+                self.save_left_shift();
+                macroquad::miniquad::window::order_quit();
+            }
             PauseItem::Back => {}
         }
     }

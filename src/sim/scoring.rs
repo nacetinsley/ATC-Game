@@ -166,6 +166,8 @@ pub enum ShiftEnd {
     Completed,
     Decertified,
     NearCollision,
+    /// The player quit to the main menu before the shift was over.
+    Left,
 }
 
 #[derive(Debug, Clone, PartialEq)]

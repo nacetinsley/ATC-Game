@@ -8,6 +8,7 @@ use atcgame::sim::emergency::EmergencyRate;
 use atcgame::sim::mistakes::PilotMistakes;
 use atcgame::sim::positions::Staffing;
 use atcgame::sim::replay::{Recording, ShiftCode};
+use atcgame::sim::scoring::ShiftEnd;
 use atcgame::sim::weather::WeatherKind;
 use atcgame::sim::{World, WorldConfig};
 
@@ -121,4 +122,33 @@ fn a_shift_code_gives_the_same_traffic() {
         b.tick();
     }
     assert_eq!(a.state_digest(), b.state_digest());
+}
+
+/// Quitting to the main menu ends the shift where it was, and the replay
+/// stops there too.
+#[test]
+fn a_shift_left_early_rebuilds_to_where_it_was_left() {
+    let mut world = World::new(ksus(), config());
+    let mut recording = Recording::new(&world);
+    for step in 0..2000 {
+        player(&mut world, step);
+        world.tick();
+        recording.update(&world);
+    }
+    world.leave_shift();
+    recording.finish(&world);
+    assert_eq!(world.ended, Some(ShiftEnd::Left));
+    // Nothing more happens once it's left.
+    world.tick();
+    assert_eq!(world.ticks(), 2000);
+
+    let mut rebuilt = Recording::from_start(World::new(ksus(), config()), recording.commands.clone());
+    let mut chunks = 0;
+    while !rebuilt.rebuild_step(500) {
+        chunks += 1;
+        assert!(chunks < 1000, "the rebuild never finishes");
+    }
+    assert_eq!(rebuilt.last().ended, Some(ShiftEnd::Left));
+    assert_eq!(rebuilt.last().summary(), world.summary());
+    assert_eq!(rebuilt.last().state_digest(), world.state_digest());
 }

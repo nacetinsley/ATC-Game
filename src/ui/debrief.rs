@@ -173,8 +173,9 @@ pub fn frame(world: &World, end: ShiftEnd, choice: &mut Option<usize>, scroll: &
         ShiftEnd::Completed => "SHIFT COMPLETE",
         ShiftEnd::Decertified => "DECERTIFIED",
         ShiftEnd::NearCollision => "NEAR COLLISION",
+        ShiftEnd::Left => "LEFT EARLY",
     };
-    let color = if end == ShiftEnd::Completed { TITLE } else { BAD };
+    let color = if matches!(end, ShiftEnd::Completed | ShiftEnd::Left) { TITLE } else { BAD };
     draw_text(headline, x, 80.0, 56.0, color);
     draw_text(format!("Rating: {}", score.rating(end)), x, 118.0, 28.0, TEXT);
     draw_text(

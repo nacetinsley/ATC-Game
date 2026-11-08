@@ -12,6 +12,7 @@ use super::clearance::Clearance;
 use super::emergency::EmergencyRate;
 use super::mistakes::PilotMistakes;
 use super::positions::Staffing;
+use super::scoring::ShiftEnd;
 use super::traffic::Busyness;
 use super::weather::WeatherKind;
 use super::{World, WorldConfig};
@@ -43,6 +44,8 @@ pub enum Action {
     CallForRelease { on: bool },
     /// On Local, telling Approach about a go-around.
     CallGoAround,
+    /// Quitting to the main menu: the shift ends here.
+    Leave,
 }
 
 impl World {
@@ -70,6 +73,19 @@ impl World {
             Action::RequestRelease => self.request_release(command.id),
             Action::CallForRelease { on } => self.set_call_for_release(*on),
             Action::CallGoAround => self.call_go_around(command.id),
+            Action::Leave => {
+                self.end_shift(ShiftEnd::Left);
+                true
+            }
+        }
+    }
+
+    /// The player quits before the shift is over: it ends here, and its
+    /// replay stops here too.
+    pub fn leave_shift(&mut self) {
+        if self.ended.is_none() {
+            self.record(0, Action::Leave);
+            self.end_shift(ShiftEnd::Left);
         }
     }
 
