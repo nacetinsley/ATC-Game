@@ -368,7 +368,7 @@ impl World {
         let line = format!("{callsign} going around, climbing to {:.0}.", ac.target_altitude);
         // No radio: Tower sees it go around, but nobody hears it.
         let speaker = if ac.nordo() { Speaker::System } else { Speaker::Pilot };
-        self.say(speaker, line);
+        self.pilot_say(speaker, callsign.clone(), line);
         self.emit(SimEvent::GoAround { callsign, reason });
         self.emergency_go_around(index);
         if let Some(end) = end {

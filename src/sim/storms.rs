@@ -387,7 +387,7 @@ impl World {
                 let wanted = self.way_round(pos, bearing, nm);
                 let mut deviation = Deviation { track: bearing, wanted, offset: 0.0, asked_at: now, approved: false };
                 if players {
-                    self.say(Speaker::Pilot, format!("{callsign}, request {} for weather.", deviation.spoken()));
+                    self.pilot_say(Speaker::Pilot, callsign.clone(), format!("{callsign}, request {} for weather.", deviation.spoken()));
                 } else {
                     // Center, or an automated controller, approves it.
                     deviation.offset = wanted;
@@ -403,7 +403,7 @@ impl World {
                 if now - d.asked_at >= DEVIATION_WAIT_S || close {
                     self.aircraft[index].deviation = Some(Deviation { offset: d.wanted, approved: true, ..d });
                     let line = format!("{callsign}, deviating {} for weather, unable to wait.", d.spoken());
-                    self.say(Speaker::Pilot, line);
+                    self.pilot_say(Speaker::Pilot, callsign.clone(), line);
                     self.emit(SimEvent::DeviationIgnored { callsign });
                 }
             }
@@ -438,7 +438,7 @@ impl World {
                 "{}, {} is under the weather, proceeding direct {}.",
                 ac.callsign, self.airport.fixes[fix].name, self.airport.fixes[next].name
             );
-            self.say(Speaker::Pilot, line);
+            self.pilot_say(Speaker::Pilot, self.aircraft[index].callsign.clone(), line);
         }
     }
 
@@ -490,8 +490,9 @@ impl World {
                 None => "back on course".to_string(),
             },
         };
-        let line = format!("{}, clear of the weather, {back}.", ac.callsign);
-        self.say(Speaker::Pilot, line);
+        let callsign = ac.callsign.clone();
+        let line = format!("{callsign}, clear of the weather, {back}.");
+        self.pilot_say(Speaker::Pilot, callsign, line);
     }
 }
 

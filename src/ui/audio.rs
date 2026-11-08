@@ -21,8 +21,10 @@
 //!
 //! Tones are synthesised at startup. The ASDE-X words are clips rendered by
 //! `tools/make_voice.py` with Piper, so every platform plays the same clips.
+//! The radio voices (`voice.rs`) are rendered the same way.
 
 use super::input::UiState;
+use super::voice::Voices;
 use crate::sim::aircraft::{Aircraft, Phase};
 use crate::sim::clearance::spoken_runway;
 use crate::sim::scoring::SimEvent;
@@ -32,7 +34,9 @@ use macroquad::audio::{
 };
 use std::collections::{HashMap, HashSet};
 
-const SAMPLE_RATE: u32 = 22050;
+pub const SAMPLE_RATE: u32 = 22050;
+/// More new log lines than this in one frame is a jump, not radio traffic.
+const MAX_LINES_SAID: usize = 6;
 /// How long the MSAW aural alarm sounds before it stops by itself, seconds.
 const MSAW_AURAL_S: f64 = 10.0;
 /// ASDE-X repeats its alert this often while the hazard lasts, seconds.
@@ -452,6 +456,8 @@ pub struct Sounds {
     owned: HashSet<String>,
     /// When each ASDE-X hazard may sound again.
     asdex_next: HashMap<(String, bool), f64>,
+    /// Pilots and controllers speaking on the radio and the landline.
+    pub voices: Voices,
     debug: bool,
 }
 
@@ -546,6 +552,7 @@ impl Sounds {
             urgent: HashSet::new(),
             owned: HashSet::new(),
             asdex_next: HashMap::new(),
+            voices: Voices::load(),
             debug: std::env::var_os("ATC_SOUND_LOG").is_some(),
         }
     }
@@ -558,6 +565,7 @@ impl Sounds {
 
     /// Stop everything: paused, or not playing.
     pub fn silence(&mut self) {
+        self.voices.silence();
         if let Some(alarm) = self.playing.take()
             && let Some(s) = self.alarms.get(&alarm)
         {
@@ -701,12 +709,26 @@ impl Sounds {
         let new_lines =
             (world.said - self.said.min(world.said)).min(world.log.len() as u64) as usize;
         self.said = world.said;
-        if world.log[world.log.len() - new_lines..]
-            .iter()
-            .any(|l| matches!(l.speaker, Speaker::Pilot | Speaker::Emergency))
-        {
+        let callsigns: Vec<&str> = world.aircraft.iter().map(|a| a.callsign.as_str()).collect();
+        let mut radio_cue = false;
+        // A jump (a replay seek, a takeover) brings many lines at once: they
+        // aren't said, as no one hears them as they happened.
+        let jumped = new_lines > MAX_LINES_SAID;
+        for line in &world.log[world.log.len() - new_lines..] {
+            let voiced = !jumped && self.voices.hear(line, &callsigns, now);
+            if voiced {
+                self.log(&format!("voice: {}", line.text));
+            }
+            // A voiced transmission makes its own key-up and squelch. With
+            // voices on, a pilot on a frequency the player doesn't work isn't
+            // heard at all.
+            let heard = !self.voices.enabled || line.radio.as_ref().is_none_or(|r| r.heard);
+            radio_cue |= !voiced && heard && matches!(line.speaker, Speaker::Pilot | Speaker::Emergency);
+        }
+        if radio_cue {
             cues.push(Cue::Radio);
         }
+        self.voices.update(now, self.volume.level());
         for event in events {
             match event {
                 SimEvent::HandoffOffered { .. } | SimEvent::CoordinationRequest { .. } => cues.push(Cue::Handoff),

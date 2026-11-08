@@ -375,7 +375,7 @@ impl World {
         }
         ac.phase = Phase::Controlled;
         let line = format!("{}, radar contact.", ac.callsign);
-        self.say(Speaker::Controller, line);
+        self.controller_say(line, None);
         self.record(id, super::replay::Action::AcceptHandoff);
         true
     }
@@ -458,7 +458,7 @@ impl World {
         let delay = PILOT_DELAY.0 + self.rng.f32() * (PILOT_DELAY.1 - PILOT_DELAY.0);
         self.radio.push(RadioCall { due: self.time + delay, aircraft: id, clearances, logged });
         if logged {
-            self.say(Speaker::Controller, line);
+            self.controller_say(line, automated);
         }
         true
     }
@@ -526,6 +526,7 @@ impl World {
             storms: &self.storms,
             player_approach: staffing.approach,
         };
+        let heard_on = self.aircraft[index].frequency();
         let mut readback = Vec::new();
         let mut events = Vec::new();
         let mut rolled = false;
@@ -603,7 +604,7 @@ impl World {
         let callsign = self.aircraft[index].callsign.clone();
         if call.logged {
             let line = format!("{}, {}.", readback.join(", "), callsign);
-            self.say(Speaker::Pilot, line);
+            self.pilot_say_on(Speaker::Pilot, callsign.clone(), line, heard_on);
         }
         for event in events {
             self.emit(event);

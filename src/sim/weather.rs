@@ -533,7 +533,7 @@ impl World {
                 vfr.end = pattern;
                 vfr.cleared_pattern = true;
                 if local {
-                    self.say(Speaker::Pilot, format!("{callsign}, re-entering the downwind for runway {runway}."));
+                    self.pilot_say(Speaker::Pilot, callsign.clone(), format!("{callsign}, re-entering the downwind for runway {runway}."));
                 }
             }
             // Committed to the old runway: land there and stop.

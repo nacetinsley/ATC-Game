@@ -23,6 +23,8 @@ use toml::{Table, Value};
 pub struct Settings {
     pub volume: Volume,
     pub game_cues: bool,
+    /// Radio transmissions spoken aloud.
+    pub voices: bool,
     /// One of `gfx::SCALES`.
     pub ui_scale: f32,
     pub palette: Palette,
@@ -39,6 +41,7 @@ impl Default for Settings {
         Settings {
             volume: Volume::default(),
             game_cues: true,
+            voices: true,
             ui_scale: 1.0,
             palette: Palette::Standard,
             airport: String::new(),
@@ -98,6 +101,9 @@ impl Settings {
         if let Some(v) = boolean(&sound, "game_cues") {
             s.game_cues = v;
         }
+        if let Some(v) = boolean(&sound, "voices") {
+            s.voices = v;
+        }
         let scale = display.get("ui_scale").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
         if let Some(v) = scale.and_then(|v| SCALES.iter().copied().find(|s| (*s as f64 - v).abs() < 0.01)) {
             s.ui_scale = v;
@@ -143,7 +149,11 @@ impl Settings {
         let name = |v: &dyn std::fmt::Debug| Value::String(format!("{v:?}"));
         table.insert(
             "sound".into(),
-            section(vec![("volume", name(&self.volume)), ("game_cues", Value::Boolean(self.game_cues))]),
+            section(vec![
+                ("volume", name(&self.volume)),
+                ("game_cues", Value::Boolean(self.game_cues)),
+                ("voices", Value::Boolean(self.voices)),
+            ]),
         );
         table.insert(
             "display".into(),
@@ -195,6 +205,7 @@ mod tests {
         let s = Settings {
             volume: Volume::High,
             game_cues: false,
+            voices: false,
             ui_scale: 1.25,
             palette: Palette::RedGreen,
             airport: "KSUS".into(),

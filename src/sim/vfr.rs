@@ -337,7 +337,7 @@ impl World {
                 compass(bearing),
                 super::clearance::thousands((altitude / 100.0).round() * 100.0)
             );
-            self.say(Speaker::Pilot, line);
+            self.pilot_say(Speaker::Pilot, ac.callsign.clone(), line);
         }
         self.add_aircraft(ac);
         true
@@ -621,10 +621,11 @@ impl World {
             }
         }
         let id = ac.id;
+        let callsign = ac.callsign.clone();
         let leg = vfr.leg;
         ac.vfr = Some(vfr);
         for line in lines {
-            self.say(Speaker::Pilot, line);
+            self.pilot_say(Speaker::Pilot, callsign.clone(), line);
         }
         if matches!(leg, Leg::Upwind | Leg::Crosswind | Leg::Downwind | Leg::Base | Leg::Final) {
             self.keep_spacing(index);

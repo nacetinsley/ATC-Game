@@ -552,7 +552,7 @@ impl World {
                     "{}, level {:.0}, request vectors to land.",
                     ac.callsign, ac.target_altitude
                 );
-                self.say(Speaker::Emergency, line);
+                self.pilot_say(Speaker::Emergency, self.aircraft[index].callsign.clone(), line);
             }
         }
         for index in 0..self.aircraft.len() {
@@ -649,7 +649,7 @@ impl World {
             };
             format!("{call}, {station}, {callsign}, {request}{tail}.")
         };
-        self.say(Speaker::Emergency, line);
+        self.pilot_say(Speaker::Emergency, callsign.clone(), line);
         self.emit(SimEvent::EmergencyDeclared { callsign, kind });
     }
 
@@ -713,7 +713,7 @@ impl World {
             {
                 let ac = self.aircraft.remove(index);
                 let line = format!("{}, minimum fuel, diverting to our alternate.", ac.callsign);
-                self.say(Speaker::Emergency, line);
+                self.pilot_say(Speaker::Emergency, ac.callsign.clone(), line);
                 self.emit(SimEvent::EmergencyDiverted {
                     callsign: ac.callsign,
                 });
@@ -839,7 +839,7 @@ impl World {
             } else {
                 Speaker::Emergency
             };
-            self.say(speaker, line);
+            self.pilot_say(speaker, callsign.clone(), line);
         }
         self.add_aircraft(ac);
     }
@@ -986,7 +986,7 @@ impl World {
             ac.target_altitude = ac.target_altitude.max(elevation + 1000.0);
             if committed && local {
                 let line = format!("{}, breaking off, leaving the pattern.", ac.callsign);
-                self.say(Speaker::Pilot, line);
+                self.pilot_say(Speaker::Pilot, self.aircraft[index].callsign.clone(), line);
             }
         }
     }

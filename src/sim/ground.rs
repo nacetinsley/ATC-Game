@@ -258,9 +258,10 @@ impl World {
             }
             _ => format!("Ground, {}, at {spot}, ready to taxi.", ac.callsign),
         };
+        let callsign = ac.callsign.clone();
         self.add_aircraft(ac);
         if delivery || (tower && self.config.staffing.ground && !ramp) {
-            self.say(Speaker::Pilot, call);
+            self.pilot_say(Speaker::Pilot, callsign, call);
         }
     }
 

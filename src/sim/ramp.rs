@@ -186,7 +186,7 @@ impl World {
         ac.freq_since = now;
         set_route(ac, self.airport.surface.as_ref().expect("has a surface"), from, route.nodes);
         if speaks {
-            self.say(Speaker::Pilot, line);
+            self.pilot_say(Speaker::Pilot, self.aircraft[index].callsign.clone(), line);
         }
         // Ground's job is done: it counts as parked.
         self.emit(SimEvent::Parked { callsign: snapshot.callsign });
@@ -205,7 +205,7 @@ impl World {
         ac.parking = None;
         let line = format!("Ground, {}, at {name}, ready to taxi.", ac.callsign);
         if self.config.staffing.ground {
-            self.say(Speaker::Pilot, line);
+            self.pilot_say(Speaker::Pilot, self.aircraft[index].callsign.clone(), line);
         }
     }
 }

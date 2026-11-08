@@ -15,7 +15,7 @@ use super::positions::Position;
 use super::replay::Action;
 use super::scoring::SimEvent;
 use super::units::{format_heading, heading_diff, vec_heading};
-use super::{Speaker, World};
+use super::World;
 
 /// An automated controller answers the landline after this long, seconds.
 const LANDLINE_DELAY: (f32, f32) = (3.0, 6.0);
@@ -287,7 +287,7 @@ impl World {
     }
 
     fn landline(&mut self, from: Position, to: Position, text: String) {
-        self.say(Speaker::Landline, format!("{} to {}: {text}", from.name(), to.name()));
+        self.landline_say(from, to, format!("{} to {}: {text}", from.name(), to.name()));
     }
 
     fn runway_name(&self, runway: usize) -> String {

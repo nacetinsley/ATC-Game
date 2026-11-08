@@ -343,7 +343,7 @@ impl World {
                 runway.id,
                 self.weather.information()
             );
-            self.say(super::Speaker::Pilot, line);
+            self.pilot_say(super::Speaker::Pilot, ac.callsign.clone(), line);
         }
         self.add_aircraft(ac);
     }

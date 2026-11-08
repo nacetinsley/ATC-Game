@@ -382,7 +382,7 @@ fn final_arrival(w: &mut World) {
     ac.entered_sector = true;
     ac.spawn_time = w.time;
     add(w, ac);
-    w.say(Speaker::Pilot, "Tower, NVA101, six mile final runway 27L.".into());
+    w.pilot_say(Speaker::Pilot, "NVA101".into(), "Tower, NVA101, six mile final runway 27L.".into());
 }
 
 /// An aircraft stopped on the ground at a node, talking to Ground.
@@ -429,7 +429,7 @@ fn just_landed(w: &mut World) {
     let node = map(w).nearest_node(Vec2::new(-0.75, -0.4));
     let ac = on_the_ground(w, TAXI_IN, "TRL412", Flow::Arrival, node, 0.0);
     add(w, ac);
-    w.say(Speaker::Pilot, "Ground, TRL412, clear of 27L at A2.".into());
+    w.pilot_say(Speaker::Pilot, "TRL412".into(), "Ground, TRL412, clear of 27L at A2.".into());
 }
 
 // The lessons.

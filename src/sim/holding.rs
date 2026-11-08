@@ -518,7 +518,7 @@ impl World {
         for (callsign, fix) in calls {
             let name = &self.airport.fixes[fix].name;
             let line = format!("{callsign}, holding at {name}, it's our EFC time, request further clearance.");
-            self.say(Speaker::Pilot, line);
+            self.pilot_say(Speaker::Pilot, callsign.clone(), line);
         }
         for callsign in missed {
             self.emit(SimEvent::MissedEfc { callsign });

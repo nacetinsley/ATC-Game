@@ -668,7 +668,7 @@ how it repeats and how it's silenced.
 | **Low altitude** (STARS MSAW) | Your aircraft below the minimum vectoring altitude. The same family of tone, modulated differently, as the real ones are | When you select it, or after 10 seconds, when the real aural alarm stops while the LA keeps flashing |
 | **Special code** (STARS) | An aircraft squawking 7700 or 7600 | When you select it |
 | **ASDE-X** | Tower positions: a voice, "Warning, runway two seven left, arrival, runway occupied" (or "departure"), on a runway incursion, a takeoff with the runway occupied, or an arrival within 1.5 NM with the runway occupied | Repeats every 5 seconds while it lasts |
-| **Radio** | Each pilot transmission: the key-up, the carrier and the squelch tail. No roger beep: aviation radios don't have one | |
+| **Radio** | Each pilot transmission: the key-up, the carrier and the squelch tail. No roger beep: aviation radios don't have one. With radio voices on, the voice carries these itself | |
 
 Sources for the real behaviour: [AVweb](https://avweb.com/flight-safety/computer-generated-safety-alerts/)
 and the [vNAS STARS documentation](https://docs.virtualnas.net/crc/stars/)
@@ -686,22 +686,62 @@ ding when Center offers you an arrival, a quiet double tick when a strip
 starts waiting urgently, and a chime when one of your aircraft lands, parks
 or leaves. The pause menu turns game cues off, and sets the volume.
 
-The ASDE-X words are WAV clips in `assets/sounds/voice`, rendered once with
-the open-source [Piper](https://github.com/OHF-Voice/piper1-gpl) speech
-synthesizer and its `en_US-ljspeech-high` voice, trained on the public-domain
-[LJ Speech](https://keithito.com/LJ-Speech-Dataset/) recordings. The game
-plays them the same on every platform. To render them again:
+### Radio voices
+
+Radio calls are spoken, as they'd sound on the frequency:
+
+- **Pilots:** readbacks, check-ins, requests and maydays, when they're on a
+  frequency you work. A pilot reading back to an automated Ground isn't
+  heard. Each aircraft keeps its own voice: one of three, each pitched three
+  ways.
+- **You:** every instruction you send, in the controller's voice.
+- **Landlines:** coordination calls you make or take. The other facility
+  has its own voice.
+
+Automated controllers stay silent, so only your frequencies are heard. One
+transmission plays at a time, as on a real frequency. Any that wait more
+than 6 seconds are dropped, so the radio keeps up at x2 and x4. The settings
+turn radio voices off.
+
+Each voice is built from word and phrase clips. Callsigns are said with their
+telephony ("Nova one zero one", "November three niner six niner uniform"),
+runways digit by digit ("two seven left"), and altitudes as controllers say
+them ("one two thousand", "flight level two three zero"). A fix with no clip
+is spelled phonetically. The telephony comes from FAA JO 7340.2; the game's
+own fictional airlines (Nova, Bronze, Trail, Orion, Meridian, Crown) are
+added to it.
+
+### Voice clips
+
+All the speech is rendered once with the open-source
+[Piper](https://github.com/OHF-Voice/piper1-gpl) speech synthesizer and
+committed to `assets/sounds/voice`, so the game plays it the same on every
+platform. Only Piper voices trained from scratch on public-domain recordings
+are used:
+
+- the ASDE-X words, and one pilot voice: `en_US-ljspeech-high`, trained on the
+  [LJ Speech](https://keithito.com/LJ-Speech-Dataset/) recordings;
+- the controller: `en_US-norman-medium`, trained on LibriVox recordings;
+- two more pilot voices: `en_US-john-medium` and `en_US-kristin-medium`,
+  also trained on LibriVox recordings.
+
+The radio clips are packed one file per voice (`<voice>.pack`): 8 kHz µ-law,
+which holds all of a VHF voice's band. The words come from
+`assets/sounds/voice/words.txt`, written by the game's tests from every
+radio line it can produce. To render them again:
 
 ```sh
-python -m pip install piper-tts
-python tools/make_voice.py
+python -m pip install piper-tts onnx
+cargo test --release --test voice -- --ignored write_vocabulary
+python tools/make_voice.py            # the radio voices
+python tools/make_voice.py --asdex    # the ASDE-X words
 ```
 
 ## Settings
 
 **O** on the start menu, or the pause menu during a shift, sets:
 
-- **Sound** and **game cues** (see Sound).
+- **Sound**, **radio voices** and **game cues** (see Sound).
 - **UI scale:** 75% to 200%. Everything grows together and text stays sharp.
   Above 100%, a window too small for the layout gets the largest scale that
   fits, and the setting says so ("UI scale: 150% (125% fits)").
@@ -787,6 +827,9 @@ arrival goes around, say), the lesson takes you back and lets you try again.
   deviate round.
 - **Pilot mistakes:** hearback errors, altitude busts, wrong turns, and the
   rare incursion or takeoff without clearance, for you to catch.
+- **Spoken radio:** pilots read back and call in their own voices, your
+  instructions are spoken in the controller's, and landline calls are heard
+  too, all from clips that play the same on every platform.
 - **Runway safety:** a landing needs a clearance by 1 NM final and a clear
   runway. Entering a runway with traffic inside 2 NM or rolling is an
   incursion; two aircraft nose to nose on a taxiway is a deadlock.
@@ -944,7 +987,7 @@ python tools/import_osm.py --airport KMEM --cycle 261029 --box 0.035
 src/sim/      headless simulation: aircraft, autopilot, clearances, positions, ground
               graph and movement, tower, traffic, conflicts, scoring
 src/ui/       macroquad front end: radar scope, surface map, side panel, input, menus, audio
-assets/       airport data files and the ASDE-X voice clips
+assets/       airport data files and the voice clips
 tests/        scenario tests for each airport
 tools/        FAA and OpenStreetMap importers and their tests
 ```

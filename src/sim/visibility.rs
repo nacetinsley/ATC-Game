@@ -90,7 +90,7 @@ impl World {
                 let ac = self.aircraft.remove(index);
                 if players {
                     let line = format!("{}, with the weather going down we'll cancel, back to the ramp.", ac.callsign);
-                    self.say(Speaker::Pilot, line);
+                    self.pilot_say(Speaker::Pilot, ac.callsign.clone(), line);
                 }
                 continue;
             }
@@ -103,7 +103,7 @@ impl World {
                     vfr.landing = Some(Landing::FullStop);
                 }
                 if local {
-                    self.say(Speaker::Pilot, format!("{callsign}, weather's coming down, we'll make this one a full stop."));
+                    self.pilot_say(Speaker::Pilot, callsign.clone(), format!("{callsign}, weather's coming down, we'll make this one a full stop."));
                 }
             }
             index += 1;
@@ -155,7 +155,7 @@ impl World {
         self.aircraft[index].weather_go_arounds += 1;
         if self.is_players(&self.aircraft[index]) {
             let line = format!("{}, minimums, no runway in sight.", self.aircraft[index].callsign);
-            self.say(Speaker::Pilot, line);
+            self.pilot_say(Speaker::Pilot, self.aircraft[index].callsign.clone(), line);
         }
         self.go_around(index, GoAroundReason::Weather);
     }
@@ -186,7 +186,7 @@ impl World {
             let players = self.is_players(&self.aircraft[index]);
             let ac = self.aircraft.remove(index);
             if players {
-                self.say(Speaker::Pilot, format!("{}, we'll divert to our alternate.", ac.callsign));
+                self.pilot_say(Speaker::Pilot, ac.callsign.clone(), format!("{}, we'll divert to our alternate.", ac.callsign));
             }
             self.emit(SimEvent::Diverted { callsign: ac.callsign });
         }

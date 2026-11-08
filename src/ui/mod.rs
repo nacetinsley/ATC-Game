@@ -14,6 +14,7 @@ pub mod shift;
 pub mod strips;
 pub mod surface;
 pub mod tutorial;
+pub mod voice;
 
 use crate::sim::airspace::{Airport, CATALOG};
 use crate::sim::positions::Staffing;
@@ -148,6 +149,8 @@ enum PauseItem {
     Sound,
     /// Sounds no real facility makes: the handoff ding and the like.
     GameCues,
+    /// Pilots and controllers speaking their transmissions.
+    Voices,
     UiScale,
     /// The colour-blind palettes.
     Colours,
@@ -158,10 +161,11 @@ enum PauseItem {
     Back,
 }
 
-const PAUSE_ITEMS: [PauseItem; 9] = [
+const PAUSE_ITEMS: [PauseItem; 10] = [
     PauseItem::Resume,
     PauseItem::Restart,
     PauseItem::Sound,
+    PauseItem::Voices,
     PauseItem::GameCues,
     PauseItem::UiScale,
     PauseItem::Colours,
@@ -170,8 +174,8 @@ const PAUSE_ITEMS: [PauseItem; 9] = [
     PauseItem::Quit,
 ];
 /// The settings screen, from the start menu.
-const SETTINGS_ITEMS: [PauseItem; 5] =
-    [PauseItem::Sound, PauseItem::GameCues, PauseItem::UiScale, PauseItem::Colours, PauseItem::Back];
+const SETTINGS_ITEMS: [PauseItem; 6] =
+    [PauseItem::Sound, PauseItem::Voices, PauseItem::GameCues, PauseItem::UiScale, PauseItem::Colours, PauseItem::Back];
 const PAUSE_ROW: f32 = 40.0;
 const PAUSE_WIDTH: f32 = 340.0;
 const BRIEFING_VIEW: &str =
@@ -307,6 +311,7 @@ impl App {
         let mut sounds = Sounds::load(&runways).await;
         sounds.volume = settings.volume;
         sounds.game_cues = settings.game_cues;
+        sounds.voices.enabled = settings.voices;
         let choice = airports.iter().position(|a| a.code == settings.airport).unwrap_or(0);
         let position = Staffing::CHOICES.iter().position(|&s| s == settings.staffing).unwrap_or(0);
         App {
@@ -350,6 +355,7 @@ impl App {
         let now = Settings {
             volume: self.sounds.volume,
             game_cues: self.sounds.game_cues,
+            voices: self.sounds.voices.enabled,
             ui_scale: self.ui_scale,
             palette: self.palette,
             airport: self.airports[self.choice].code.clone(),
@@ -372,6 +378,12 @@ impl App {
                 self.sounds.volume = if step < 0 { self.sounds.volume.previous() } else { self.sounds.volume.next() };
             }
             PauseItem::GameCues => self.sounds.game_cues = !self.sounds.game_cues,
+            PauseItem::Voices => {
+                self.sounds.voices.enabled = !self.sounds.voices.enabled;
+                if !self.sounds.voices.enabled {
+                    self.sounds.voices.silence();
+                }
+            }
             PauseItem::UiScale => {
                 let i = SCALES.iter().position(|&s| s == self.ui_scale).unwrap_or(2) as i32;
                 // Enter goes round; the arrows stop at the ends.
@@ -933,7 +945,9 @@ impl App {
         match PAUSE_ITEMS[choice] {
             PauseItem::Resume => self.resume(),
             PauseItem::Restart => self.restart(),
-            PauseItem::Sound | PauseItem::GameCues | PauseItem::UiScale | PauseItem::Colours => self.adjust(item, 0),
+            PauseItem::Sound | PauseItem::Voices | PauseItem::GameCues | PauseItem::UiScale | PauseItem::Colours => {
+                self.adjust(item, 0)
+            }
             PauseItem::Controls => {
                 show_controls = !show_controls;
                 self.screen = Screen::Paused { choice, show_controls };
@@ -957,6 +971,7 @@ impl App {
             PauseItem::Restart => "Restart shift".into(),
             PauseItem::Sound => format!("Sound: {}", self.sounds.volume.label()),
             PauseItem::GameCues => format!("Game cues: {}", if self.sounds.game_cues { "On" } else { "Off" }),
+            PauseItem::Voices => format!("Radio voices: {}", if self.sounds.voices.enabled { "On" } else { "Off" }),
             PauseItem::UiScale => {
                 let chosen = percent(self.ui_scale);
                 let fits = gfx::effective_scale(self.ui_scale, gfx::GAME_ROOM);

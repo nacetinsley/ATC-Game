@@ -452,7 +452,7 @@ impl World {
                     let ac = &mut self.aircraft[index];
                     ac.surface_freq = Position::Ground;
                     ac.freq_since = now;
-                    self.say(Speaker::Pilot, line);
+                    self.pilot_say(Speaker::Pilot, self.aircraft[index].callsign.clone(), line);
                     self.score_clearance(index);
                 }
                 continue;

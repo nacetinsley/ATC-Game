@@ -424,7 +424,7 @@ impl World {
             ac.lateral = Lateral::Heading(ac.heading.round());
             if players {
                 let line = format!("{}, localizer's gone, request vectors.", ac.callsign);
-                self.say(Speaker::Pilot, line);
+                self.pilot_say(Speaker::Pilot, self.aircraft[index].callsign.clone(), line);
             }
         }
         for index in go_arounds {

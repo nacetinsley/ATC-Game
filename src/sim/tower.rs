@@ -133,7 +133,7 @@ impl World {
             ac.phase = Phase::Controlled;
             ac.approach_runway = None;
             let line = format!("{}, missed the localizer, request vectors.", ac.callsign);
-            self.say(Speaker::Pilot, line);
+            self.pilot_say(Speaker::Pilot, self.aircraft[index].callsign.clone(), line);
         }
     }
 
@@ -364,7 +364,7 @@ impl World {
             },
             Position::Center | Position::Delivery | Position::Ramp => return,
         };
-        self.say(Speaker::Pilot, line);
+        self.pilot_say(Speaker::Pilot, self.aircraft[index].callsign.clone(), line);
     }
 
     fn holding_short_of(&self, ac: &Aircraft) -> Option<String> {
@@ -583,7 +583,7 @@ impl World {
             }
         }
         for (callsign, end) in calls {
-            self.say(Speaker::Pilot, format!("Tower, {callsign}, still holding in position runway {end}."));
+            self.pilot_say(Speaker::Pilot, callsign.clone(), format!("Tower, {callsign}, still holding in position runway {end}."));
             self.emit(SimEvent::LongLineUp { callsign });
         }
     }

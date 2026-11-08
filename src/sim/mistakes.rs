@@ -512,7 +512,7 @@ impl World {
         let over = (peak - assigned).abs();
         let back = if peak > assigned { "descending" } else { "climbing" };
         if self.config.staffing.works(ac.frequency()) {
-            self.say(Speaker::Pilot, format!("{callsign}, sorry, {back} back to {}.", thousands(assigned)));
+            self.pilot_say(Speaker::Pilot, callsign.clone(), format!("{callsign}, sorry, {back} back to {}.", thousands(assigned)));
         }
         let what = format!("altitude bust missed: {over:.0} ft through {}", thousands(assigned));
         self.emit(SimEvent::SlipMissed { callsign, what, major: false });
@@ -545,7 +545,7 @@ impl World {
             super::positions::Position::Local => "Tower",
             _ => "Ground",
         };
-        self.say(Speaker::Pilot, format!("{to}, {callsign}, I think we missed our turn, request progressive taxi."));
+        self.pilot_say(Speaker::Pilot, callsign.clone(), format!("{to}, {callsign}, I think we missed our turn, request progressive taxi."));
         self.emit(SimEvent::SlipMissed { callsign, what: "wrong turn missed".to_string(), major: false });
     }
 
@@ -572,7 +572,7 @@ impl World {
         self.next_departure_time = self.next_departure_time.max(now + interval);
         self.record_takeoff(index);
         if self.config.staffing.works(self.aircraft[index].frequency()) {
-            self.say(Speaker::Pilot, format!("{callsign}, rolling."));
+            self.pilot_say(Speaker::Pilot, callsign.clone(), format!("{callsign}, rolling."));
         }
         let what = "took off without a takeoff clearance".to_string();
         self.emit(SimEvent::PilotDeviation { callsign, what });

@@ -18,6 +18,7 @@ pub mod positions;
 pub mod ramp;
 pub mod scoring;
 pub mod sky;
+pub mod speech;
 pub mod storms;
 pub mod visibility;
 pub mod tower;
@@ -67,6 +68,27 @@ pub struct LogEntry {
     pub time: f32,
     pub speaker: Speaker,
     pub text: String,
+    /// A radio or landline transmission: who keyed the mike, and whether the
+    /// player hears it. None for the game's own notices.
+    pub radio: Option<Radio>,
+}
+
+/// Who is talking on a transmission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Talker {
+    /// A pilot, by callsign.
+    Pilot(String),
+    /// The player.
+    Controller,
+    /// An automated controller, on the radio or the landline.
+    Facility(positions::Position),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Radio {
+    pub talker: Talker,
+    /// On a frequency or a landline the player is on.
+    pub heard: bool,
 }
 
 /// What the radar saw on the last sweep. The scope only ever draws these.
@@ -382,7 +404,47 @@ impl World {
     }
 
     fn say(&mut self, speaker: Speaker, text: String) {
-        self.log.push(LogEntry { time: self.time, speaker, text });
+        self.log_line(speaker, text, None);
+    }
+
+    /// A pilot on the radio, heard if it's on a frequency the player works.
+    /// A line the game says for it (no radio) is just a notice.
+    fn pilot_say(&mut self, speaker: Speaker, callsign: String, text: String) {
+        let frequency = self.aircraft.iter().find(|a| a.callsign == callsign).map(|a| a.frequency());
+        let heard = frequency.is_none_or(|f| self.config.staffing.works(f));
+        self.pilot_line(speaker, callsign, text, heard);
+    }
+
+    /// A pilot answering on a known frequency.
+    fn pilot_say_on(&mut self, speaker: Speaker, callsign: String, text: String, frequency: positions::Position) {
+        let heard = self.config.staffing.works(frequency);
+        self.pilot_line(speaker, callsign, text, heard);
+    }
+
+    fn pilot_line(&mut self, speaker: Speaker, callsign: String, text: String, heard: bool) {
+        let radio = (speaker != Speaker::System).then_some(Radio { talker: Talker::Pilot(callsign), heard });
+        self.log_line(speaker, text, radio);
+    }
+
+    /// A controller's transmission: the player's, or an automated one's.
+    fn controller_say(&mut self, text: String, automated: Option<positions::Position>) {
+        let radio = match automated {
+            None => Radio { talker: Talker::Controller, heard: true },
+            Some(p) => Radio { talker: Talker::Facility(p), heard: false },
+        };
+        self.log_line(Speaker::Controller, text, Some(radio));
+    }
+
+    /// A landline call, heard if the player is at either end.
+    fn landline_say(&mut self, from: positions::Position, to: positions::Position, text: String) {
+        let staffing = self.config.staffing;
+        let talker = if staffing.works(from) { Talker::Controller } else { Talker::Facility(from) };
+        let heard = staffing.works(from) || staffing.works(to);
+        self.log_line(Speaker::Landline, text, Some(Radio { talker, heard }));
+    }
+
+    fn log_line(&mut self, speaker: Speaker, text: String, radio: Option<Radio>) {
+        self.log.push(LogEntry { time: self.time, speaker, text, radio });
         self.said += 1;
         if self.log.len() > MAX_LOG {
             self.log.remove(0);
