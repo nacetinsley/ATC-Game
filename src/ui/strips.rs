@@ -18,6 +18,7 @@
 use super::camera::PANEL_WIDTH;
 use super::input::UiState;
 use crate::sim::World;
+use crate::sim::positions::Seat;
 use crate::sim::aircraft::{Aircraft, Flow, Phase, VfrIntent};
 use crate::sim::clearance::{Clearance, spoken_runway};
 use crate::sim::delivery;
@@ -382,6 +383,7 @@ fn strike_all_but_last(pens: &mut [Pen]) {
 /// - 18 what it's waiting for from you (`World::awaiting`).
 pub fn marks(
     world: &World,
+    seat: Seat,
     ac: &Aircraft,
     printed: &Printed,
     runways: &[String],
@@ -634,7 +636,7 @@ pub fn marks(
         let taken = ac.frequency() == to;
         m.grid[7] = vec![pen.struck(taken)];
     }
-    if let Some(w) = world.awaiting(ac) {
+    if let Some(w) = world.awaiting_for(seat, ac) {
         m.grid[8] = vec![if w.urgent() {
             Pen::red(w.word())
         } else {
@@ -709,13 +711,13 @@ impl Bay {
     }
 }
 
-/// Where the strip sits for this position, if it has one at all.
-pub fn bay(world: &World, ac: &Aircraft) -> Option<Bay> {
+/// Where the strip sits for the player in `seat`, if it has one at all.
+pub fn bay(world: &World, seat: Seat, ac: &Aircraft) -> Option<Bay> {
     // With an airline's ramp tower or parking at the FBO: off ATC's board.
     if ac.on_ground && ac.frequency() == Position::Ramp {
         return None;
     }
-    let staffing = world.staffing();
+    let staffing = world.staffing().of_seat(seat);
     let tower = staffing.tower();
     let radar = staffing.approach;
     let vfr_inbound = ac.vfr.as_ref().is_some_and(|v| {
@@ -781,17 +783,17 @@ pub fn bay(world: &World, ac: &Aircraft) -> Option<Bay> {
 /// The strips in bay order; within a bay, emergencies first. Arrivals then
 /// go in landing sequence; elsewhere, strips waiting for you come next, then
 /// first come first served.
-pub fn ordered(world: &World) -> Vec<(Bay, &Aircraft)> {
+pub fn ordered(world: &World, seat: Seat) -> Vec<(Bay, &Aircraft)> {
     let mut rows: Vec<(Bay, &Aircraft)> = world
         .aircraft
         .iter()
-        .filter_map(|a| bay(world, a).map(|b| (b, a)))
+        .filter_map(|a| bay(world, seat, a).map(|b| (b, a)))
         .collect();
     let to_go = |a: &Aircraft| match a.approach_runway.or(a.vfr.as_ref().map(|v| v.end)) {
         Some(end) => world.airport.runways[end].threshold().distance(a.pos),
         None => 0.0,
     };
-    let waiting = |a: &Aircraft| world.awaiting(a).is_some();
+    let waiting = |a: &Aircraft| world.awaiting_for(seat, a).is_some();
     rows.sort_by(|(ba, a), (bb, b)| {
         ba.cmp(bb)
             .then(b.in_emergency().cmp(&a.in_emergency()))
@@ -953,8 +955,8 @@ fn blink_on() -> bool {
 
 /// The holder, blinking while the strip waits for you, and a frame round an
 /// urgent one.
-fn draw_holder(world: &World, ac: &Aircraft, x: f32, y: f32, w: f32, h: f32) {
-    let waiting = world.awaiting(ac);
+fn draw_holder(world: &World, seat: Seat, ac: &Aircraft, x: f32, y: f32, w: f32, h: f32) {
+    let waiting = world.awaiting_for(seat, ac);
     let color = if waiting.is_some() && blink_on() {
         WHITE
     } else {
@@ -998,8 +1000,8 @@ fn draw_strip(world: &World, ui: &mut UiState, ac: &Aircraft, x: f32, y: f32) {
         .board
         .runway_history(ac, current_runway(world, ac))
         .to_vec();
-    let m = marks(world, ac, &printed, &runways, clock);
-    let mine = world.is_players(ac) || ac.phase == Phase::Offered;
+    let m = marks(world, ui.seat, ac, &printed, &runways, clock);
+    let mine = world.is_seats(ui.seat, ac) || ac.phase == Phase::Offered;
     let faded = !mine;
     let width = PANEL_WIDTH - MARGIN * 2.0;
     let Columns { px, pw, c1, c2, c3, c4, grid, c9w } = columns(x);
@@ -1010,7 +1012,7 @@ fn draw_strip(world: &World, ui: &mut UiState, ac: &Aircraft, x: f32, y: f32) {
         STRIP_HEIGHT,
         if mine { PAPER } else { PAPER_OTHER },
     );
-    draw_holder(world, ac, x, y, width, STRIP_HEIGHT);
+    draw_holder(world, ui.seat, ac, x, y, width, STRIP_HEIGHT);
     for edge in [c2, c3, c4, grid, grid + GRID_CELL, grid + GRID_CELL * 2.0] {
         draw_line(edge, y, edge, y + STRIP_HEIGHT, 1.0, RULE);
     }
@@ -1119,8 +1121,8 @@ fn draw_compact(world: &World, ui: &mut UiState, ac: &Aircraft, x: f32, y: f32) 
         .board
         .runway_history(ac, current_runway(world, ac))
         .to_vec();
-    let m = marks(world, ac, &printed, &runways, clock);
-    let mine = world.is_players(ac) || ac.phase == Phase::Offered;
+    let m = marks(world, ui.seat, ac, &printed, &runways, clock);
+    let mine = world.is_seats(ui.seat, ac) || ac.phase == Phase::Offered;
     let faded = !mine;
     let width = PANEL_WIDTH - MARGIN * 2.0;
     let px = x + HOLDER;
@@ -1132,7 +1134,7 @@ fn draw_compact(world: &World, ui: &mut UiState, ac: &Aircraft, x: f32, y: f32) 
         COMPACT_HEIGHT,
         if mine { PAPER } else { PAPER_OTHER },
     );
-    draw_holder(world, ac, x, y, width, COMPACT_HEIGHT);
+    draw_holder(world, ui.seat, ac, x, y, width, COMPACT_HEIGHT);
 
     let base = y + 14.0;
     let ink = if faded {
@@ -1292,7 +1294,7 @@ fn awaiting_text(w: crate::sim::awaiting::Awaiting) -> &'static str {
 
 /// The tooltip for one block: its number and name, what it says now, and
 /// how to read it.
-fn field_tip(world: &World, ac: &Aircraft, printed: &Printed, m: &Marks, field: Field) -> Vec<String> {
+fn field_tip(world: &World, seat: Seat, ac: &Aircraft, printed: &Printed, m: &Marks, field: Field) -> Vec<String> {
     let departure = printed.form == Form::Departure;
     let vfr = ac.vfr.is_some();
     let (title, now, help): (&str, String, &str) = match field {
@@ -1412,7 +1414,7 @@ fn field_tip(world: &World, ac: &Aircraft, printed: &Printed, m: &Marks, field: 
                 _ => (
                     "Block 18: waiting for you",
                     now,
-                    world.awaiting(ac).map_or("Blank while it needs nothing from you. Red when it's about to cost points.", awaiting_text),
+                    world.awaiting_for(seat, ac).map_or("Blank while it needs nothing from you. Red when it's about to cost points.", awaiting_text),
                 ),
             }
         }
@@ -1458,8 +1460,8 @@ impl Item<'_> {
 
 /// Lay the bay out: other positions' strips fold to one row when everything
 /// won't fit.
-fn layout<'a>(world: &'a World, available: f32) -> Vec<Item<'a>> {
-    let rows = ordered(world);
+fn layout<'a>(world: &'a World, seat: Seat, available: f32) -> Vec<Item<'a>> {
+    let rows = ordered(world, seat);
     let mut counts: HashMap<Bay, usize> = HashMap::new();
     for (b, _) in &rows {
         *counts.entry(*b).or_default() += 1;
@@ -1472,7 +1474,7 @@ fn layout<'a>(world: &'a World, available: f32) -> Vec<Item<'a>> {
                 current = Some(bay);
                 items.push(Item::Header(bay, counts[&bay]));
             }
-            let mine = world.is_players(ac) || ac.phase == Phase::Offered;
+            let mine = world.is_seats(seat, ac) || ac.phase == Phase::Offered;
             // A clearance given folds up until it goes to Ground.
             let cleared = bay == Bay::Clearance && ac.flight_plan.as_ref().is_some_and(|p| p.is_cleared());
             items.push(Item::Strip(ac, (fold && !mine) || cleared));
@@ -1497,7 +1499,7 @@ pub fn draw(world: &World, ui: &mut UiState, panel_x: f32, top: f32, bottom: f32
     let width = PANEL_WIDTH - MARGIN * 2.0;
     let area = Rect::new(panel_x, top, PANEL_WIDTH, bottom - top);
     let available = bottom - top - 8.0;
-    let items = layout(world, available);
+    let items = layout(world, ui.seat, available);
     let total: f32 = items.iter().map(Item::height).sum();
 
     let max_scroll = (total - available).max(0.0);
@@ -1566,8 +1568,8 @@ pub fn draw(world: &World, ui: &mut UiState, panel_x: f32, top: f32, bottom: f32
         ui.hovered = Some(ac.id);
         let printed = ui.board.strip(world, ac, ui.clock_start).clone();
         let runways = ui.board.runway_history(ac, current_runway(world, ac)).to_vec();
-        let m = marks(world, ac, &printed, &runways, ui.clock_start);
-        draw_tip(world, ac, field.map(|f| field_tip(world, ac, &printed, &m, f)), panel_x, mouse.y);
+        let m = marks(world, ui.seat, ac, &printed, &runways, ui.clock_start);
+        draw_tip(world, ac, field.map(|f| field_tip(world, ui.seat, ac, &printed, &m, f)), panel_x, mouse.y);
     }
 }
 
@@ -1604,6 +1606,7 @@ fn draw_tip(world: &World, ac: &Aircraft, block: Option<Vec<String>>, panel_x: f
 mod tests {
     use super::*;
     use crate::sim::aircraft::StripMark;
+    use crate::sim::positions::SOLO;
     use crate::sim::airspace::{Airport, DEFAULT_AIRPORT};
     use crate::sim::performance::aircraft_type;
     use crate::sim::{World, WorldConfig};
@@ -1718,10 +1721,10 @@ mod tests {
         let w = world();
         let mut ac = arrival(&w);
         let p = print(&w, &ac, 0.0);
-        assert!(marks(&w, &ac, &p, &[], 0.0).b9c.is_empty());
+        assert!(marks(&w, SOLO, &ac, &p, &[], 0.0).b9c.is_empty());
         ac.parking = Some(0);
         let name = w.airport.surface.as_ref().unwrap().parking[0].name.clone();
-        assert_eq!(marks(&w, &ac, &p, &[], 0.0).b9c, vec![Pen::hand(name)]);
+        assert_eq!(marks(&w, SOLO, &ac, &p, &[], 0.0).b9c, vec![Pen::hand(name)]);
     }
 
     #[test]
@@ -1733,7 +1736,7 @@ mod tests {
         ac.vfr = Some(vfr);
         let p = print(&w, &ac, 0.0);
         assert_eq!(p.b9, "CLOSED TFC");
-        let last = |ac: &Aircraft| marks(&w, ac, &p, &[], 0.0).b9.last().unwrap().text.clone();
+        let last = |ac: &Aircraft| marks(&w, SOLO, ac, &p, &[], 0.0).b9.last().unwrap().text.clone();
         assert_eq!(last(&ac), "2 TG");
         ac.vfr.as_mut().unwrap().circuits = 0;
         assert_eq!(last(&ac), "FS");
@@ -1758,13 +1761,13 @@ mod tests {
         let w = world();
         let ac = arrival(&w);
         let p = print(&w, &ac, 0.0);
-        let m = marks(&w, &ac, &p, &[], 0.0);
+        let m = marks(&w, SOLO, &ac, &p, &[], 0.0);
         let fields = [
             Field::Id, Field::Revision, Field::Originator, Field::Type, Field::Cid, Field::Beacon,
             Field::B6, Field::B7, Field::B8, Field::B9, Field::B9a, Field::B9b, Field::B9c,
         ];
         for f in fields.into_iter().chain((0..9).map(Field::Grid)) {
-            let tip = field_tip(&w, &ac, &p, &m, f);
+            let tip = field_tip(&w, SOLO, &ac, &p, &m, f);
             assert!(tip[0].starts_with("Block "), "{f:?}: {tip:?}");
             assert!(tip.iter().all(|l| !l.is_empty()), "{f:?}: {tip:?}");
         }
@@ -1783,7 +1786,7 @@ mod tests {
         mark(&mut ac, Position::Approach, Clearance::Altitude(5000.0));
         mark(&mut ac, Position::Approach, Clearance::Altitude(4000.0));
         let p = print(&w, &ac, 0.0);
-        let m = marks(&w, &ac, &p, &[], 0.0);
+        let m = marks(&w, SOLO, &ac, &p, &[], 0.0);
         let b9: Vec<(&str, bool)> = m.b9.iter().map(|p| (p.text.as_str(), p.struck)).collect();
         assert_eq!(b9[..3], [("130", true), ("↓050", true), ("↓040", false)]);
         assert_eq!(m.revision, None, "an altitude isn't a route amendment");
@@ -1796,7 +1799,7 @@ mod tests {
         mark(&mut ac, Position::Approach, Clearance::Speed(170.0));
         mark(&mut ac, Position::Approach, Clearance::ClearedIls(0));
         let p = print(&w, &ac, 0.0);
-        let m = marks(&w, &ac, &p, &[], 0.0);
+        let m = marks(&w, SOLO, &ac, &p, &[], 0.0);
         let speeds: Vec<(&str, bool)> =
             m.b9a.iter().filter(|p| p.text.starts_with('S')).map(|p| (p.text.as_str(), p.struck)).collect();
         assert_eq!(speeds, [("S170", true)]);
@@ -1809,7 +1812,7 @@ mod tests {
         ac.strip.push(StripMark { time: 60.0, by: Position::Approach, clearance: Clearance::Speed(170.0) });
         ac.strip.push(StripMark { time: 60.0, by: Position::Approach, clearance: Clearance::ClearedIls(0) });
         let p = print(&w, &ac, 0.0);
-        let m = marks(&w, &ac, &p, &[], 0.0);
+        let m = marks(&w, SOLO, &ac, &p, &[], 0.0);
         let speeds: Vec<(&str, bool)> =
             m.b9a.iter().filter(|p| p.text.starts_with('S')).map(|p| (p.text.as_str(), p.struck)).collect();
         assert_eq!(speeds, [("S170", false)]);
@@ -1825,7 +1828,7 @@ mod tests {
         spec.efc_hhmm = 1435;
         mark(&mut ac, Position::Approach, Clearance::Hold(spec));
         let p = print(&w, &ac, 0.0);
-        let m = marks(&w, &ac, &p, &[], 0.0);
+        let m = marks(&w, SOLO, &ac, &p, &[], 0.0);
         assert_eq!(m.b9b[0].text, "H ALDER 35");
         assert!(m.b9a[0].struck, "the vector is superseded");
     }
@@ -1850,7 +1853,7 @@ mod tests {
         assert!(p.b9.starts_with("JUNIP SEGUN"), "{}", p.b9);
         let route = ac.route.clone();
         mark(&mut ac, Position::Delivery, Clearance::Ifr { route, altitude: 37000.0, squawk: 0o452 });
-        let m = marks(&w, &ac, &p, &[], 0.0);
+        let m = marks(&w, SOLO, &ac, &p, &[], 0.0);
         let texts = |pens: &[Pen]| pens.iter().map(|p| (p.text.clone(), p.struck)).collect::<Vec<_>>();
         assert_eq!(texts(&m.b7), [("360".to_string(), true), ("370".to_string(), false)]);
         assert!(m.b9[0].struck && m.b9[1].text == "IVORY TOPAZ", "{:?}", m.b9);
@@ -1867,7 +1870,7 @@ mod tests {
         let alder = ac.route[1];
         mark(&mut ac, Position::Approach, Clearance::DirectFix(alder));
         let p = print(&w, &ac, 0.0);
-        let m = marks(&w, &ac, &p, &[], 0.0);
+        let m = marks(&w, SOLO, &ac, &p, &[], 0.0);
         assert_eq!(m.revision, Some(1));
         assert!(m.b9a[0].struck, "the vector is superseded");
         assert_eq!(m.b9b[0].text, "D ALDER");
@@ -1880,7 +1883,7 @@ mod tests {
         mark(&mut ac, Position::Local, Clearance::LineUpAndWait(0));
         mark(&mut ac, Position::Local, Clearance::ClearedForTakeoff(0));
         let p = print(&w, &ac, 0.0);
-        let m = marks(&w, &ac, &p, &["27R".into()], 0.0);
+        let m = marks(&w, SOLO, &ac, &p, &["27R".into()], 0.0);
         let local: Vec<(&str, bool)> = m.grid[4]
             .iter()
             .map(|p| (p.text.as_str(), p.struck))
@@ -1897,7 +1900,7 @@ mod tests {
         mark(&mut ac, Position::Approach, Clearance::HandoffTower);
         ac.phase = Phase::TowerHandedOff;
         let p = print(&w, &ac, 0.0);
-        let m = marks(&w, &ac, &p, &[], 0.0);
+        let m = marks(&w, SOLO, &ac, &p, &[], 0.0);
         assert_eq!(m.grid[7][0].text, "TWR");
         assert!(m.grid[7][0].struck, "Tower has it");
     }

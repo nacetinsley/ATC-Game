@@ -697,7 +697,7 @@ fn draw_block(world: &World, ui: &UiState, ac: &Aircraft, alerts: &[SafetyAlert]
         return;
     }
     let full = selected || alerting || alerts.is_empty();
-    let color = if world.is_players(ac) || selected { BLOCK_OWNED } else { BLOCK_OTHER };
+    let color = if world.is_seats(ui.seat, ac) || selected { BLOCK_OWNED } else { BLOCK_OTHER };
 
     let mut lines: Vec<(String, Color)> = Vec::new();
     if full {
@@ -794,7 +794,7 @@ fn draw_status(world: &World, ui: &UiState) {
             utc / 60 % 60,
             utc % 60,
             world.airport.code,
-            world.staffing().label().to_uppercase()
+            ui.staffing.label().to_uppercase()
         ),
         STATUS,
     );

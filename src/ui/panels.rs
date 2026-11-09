@@ -8,6 +8,7 @@ use crate::sim::units::{format_heading, heading_diff};
 use crate::sim::clearance::{Clearance, phrase};
 use crate::sim::delivery;
 use crate::sim::positions::Position;
+use crate::sim::replay::Action;
 use crate::sim::{Speaker, World};
 use macroquad::prelude::*;
 use super::gfx::{draw_line, draw_rectangle, draw_rectangle_lines, draw_text, measure_text, mouse_position, screen_height};
@@ -77,7 +78,7 @@ pub fn draw(world: &mut World, ui: &mut UiState) {
     draw_clearance(world, ui, x, clearance_top);
     divider(x, log_top);
     let landline = draw_landline(world, ui, x, log_top);
-    draw_log(world, x, log_top + landline);
+    draw_log(world, ui.seat, x, log_top + landline);
 }
 
 /// Requests from other controllers waiting on the player, each with Approve
@@ -86,7 +87,7 @@ fn draw_landline(world: &mut World, ui: &mut UiState, x: f32, top: f32) -> f32 {
     use crate::sim::coordination::{CoordKind, CoordState};
     let left = x + PADDING;
     let rows: Vec<(u32, String, bool)> = world
-        .incoming()
+        .incoming_for(ui.seat)
         .take(LANDLINE_ROWS)
         .map(|c| {
             let callsign = world.find(c.aircraft).map(|a| a.callsign.clone()).unwrap_or_default();
@@ -113,7 +114,7 @@ fn draw_landline(world: &mut World, ui: &mut UiState, x: f32, top: f32) -> f32 {
     let owed: Vec<(u32, String, bool)> = world
         .coordination
         .iter()
-        .filter(|c| c.state == CoordState::Owed)
+        .filter(|c| c.state == CoordState::Owed && world.staffing().seat_works(ui.seat, c.from))
         .filter_map(|c| {
             let ac = world.find(c.aircraft)?;
             let callsign = &ac.callsign;
@@ -131,23 +132,21 @@ fn draw_landline(world: &mut World, ui: &mut UiState, x: f32, top: f32) -> f32 {
             }
         })
         .collect();
-    let releases = release_line(world);
+    let releases = release_line(world, ui.staffing);
     if rows.is_empty() && owed.is_empty() && releases.is_none() {
         return 0.0;
     }
     let bw = 86.0;
     let mut y = top + 6.0;
     if let Some(text) = releases {
-        let staffing = world.staffing();
+        let staffing = ui.staffing;
         let right = x + PANEL_WIDTH - PADDING;
-        // Approach, with Tower automated, stops and restarts departures.
+        // Approach, with someone else on Tower, stops and restarts departures.
         if staffing.approach && !staffing.local {
             let on = world.call_for_release();
             let wide = bw * 1.4;
-            if button(if on { "Release all F" } else { "Stop deps F" }, right - wide, y, wide, LANDLINE_ROW - 4.0)
-                && !ui.replay
-            {
-                world.set_call_for_release(!on);
+            if button(if on { "Release all F" } else { "Stop deps F" }, right - wide, y, wide, LANDLINE_ROW - 4.0) {
+                ui.act(world, 0, Action::CallForRelease { on: !on });
             }
         }
         label(&text, left, y + 17.0, 17.0, LANDLINE);
@@ -157,12 +156,8 @@ fn draw_landline(world: &mut World, ui: &mut UiState, x: f32, top: f32) -> f32 {
         let selected = ui.selected == Some(id);
         label(&text, left, y + 17.0, 17.0, if selected { TEXT } else { LANDLINE });
         let right = x + PANEL_WIDTH - PADDING;
-        if button(if emergency { "Call T" } else { "Call G" }, right - bw, y, bw, LANDLINE_ROW - 4.0) && !ui.replay {
-            if emergency {
-                world.call_emergency(id);
-            } else {
-                world.call_go_around(id);
-            }
+        if button(if emergency { "Call T" } else { "Call G" }, right - bw, y, bw, LANDLINE_ROW - 4.0) {
+            ui.act(world, id, if emergency { Action::CallEmergency } else { Action::CallGoAround });
         }
         y += LANDLINE_ROW;
     }
@@ -170,11 +165,11 @@ fn draw_landline(world: &mut World, ui: &mut UiState, x: f32, top: f32) -> f32 {
         let selected = ui.selected == Some(id);
         label(&text, left, y + 17.0, 17.0, if selected { TEXT } else { LANDLINE });
         let right = x + PANEL_WIDTH - PADDING;
-        if button("Unable N", right - bw, y, bw, LANDLINE_ROW - 4.0) && pending && !ui.replay {
-            world.answer_coordination(id, false);
+        if button("Unable N", right - bw, y, bw, LANDLINE_ROW - 4.0) && pending {
+            ui.act(world, id, Action::Coordinate { approve: false });
         }
-        if button("Approve Y", right - bw * 2.0 - 6.0, y, bw, LANDLINE_ROW - 4.0) && !ui.replay {
-            world.answer_coordination(id, true);
+        if button("Approve Y", right - bw * 2.0 - 6.0, y, bw, LANDLINE_ROW - 4.0) {
+            ui.act(world, id, Action::Coordinate { approve: true });
         }
         y += LANDLINE_ROW;
     }
@@ -183,10 +178,10 @@ fn draw_landline(world: &mut World, ui: &mut UiState, x: f32, top: f32) -> f32 {
 }
 
 /// Departure releases, for a player on Local or Approach but not both: on
-/// call for release or not, and who's released.
-fn release_line(world: &World) -> Option<String> {
+/// call for release or not, and who's released. `staffing` is the player's
+/// own positions.
+fn release_line(world: &World, staffing: crate::sim::positions::Staffing) -> Option<String> {
     use crate::sim::coordination::{CoordKind, CoordState};
-    let staffing = world.staffing();
     if staffing.local == staffing.approach {
         return None;
     }
@@ -309,7 +304,7 @@ fn draw_clearance(world: &mut World, ui: &mut UiState, x: f32, top: f32) {
         return;
     }
     let tower = ac.on_ground
-        || (world.staffing().tower() && matches!(ac.frequency(), Position::Local | Position::Ground));
+        || (ui.staffing.tower() && matches!(ac.frequency(), Position::Local | Position::Ground));
     if tower {
         draw_tower_buttons(world, ui, left, top);
         return;
@@ -350,7 +345,7 @@ fn draw_clearance(world: &mut World, ui: &mut UiState, x: f32, top: f32) {
     let action_w = (PANEL_WIDTH - PADDING * 2.0 - 18.0) / 4.0;
     let handoff = if ac.phase == Phase::Offered {
         "Accept T"
-    } else if world.owed_emergency_call(ac.id).is_some() {
+    } else if world.owed_emergency_call_for(ui.seat, ac.id).is_some() {
         "Call T"
     } else {
         "Handoff T"
@@ -586,11 +581,11 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-fn draw_log(world: &World, x: f32, top: f32) {
+fn draw_log(world: &World, seat: crate::sim::positions::Seat, x: f32, top: f32) {
     let width = ((PANEL_WIDTH - PADDING * 2.0) / LOG_CHAR_WIDTH) as usize;
     let mut y = screen_height() - 8.0;
     // Newest at the bottom, working up until the panel is full.
-    'entries: for entry in world.log.iter().rev().filter(|e| e.shown()) {
+    'entries: for entry in world.log.iter().rev().filter(|e| e.shown_to(seat)) {
         let color = match entry.speaker {
             Speaker::Controller => TEXT,
             // A pilot refusing an instruction stands out.

@@ -225,6 +225,8 @@ impl Staffing {
             (false, false, false, true) => "Clearance Delivery",
             (false, false, true, true) => "Ground + Delivery",
             (false, true, true, false) => "Local + Ground",
+            // Not a solo choice, but a co-op seat when Approach is another player's.
+            (false, true, true, true) => "Tower cab",
             (true, true, true, true) => "All combined",
             _ => "Custom",
         }

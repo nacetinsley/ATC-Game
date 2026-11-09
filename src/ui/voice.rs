@@ -13,6 +13,7 @@
 
 use super::audio::{SAMPLE_RATE, wav};
 use crate::sim::speech::{self, PAUSE, STOP};
+use crate::sim::positions::{SOLO, Seat};
 use crate::sim::{LogEntry, Speaker, Talker};
 use macroquad::audio::{PlaySoundParams, Sound, load_sound_from_bytes, play_sound, stop_sound};
 use std::collections::{HashMap, VecDeque};
@@ -205,11 +206,12 @@ fn hash(text: &str) -> u32 {
     text.bytes().fold(0x811c_9dc5u32, |h, b| (h ^ b as u32).wrapping_mul(0x0100_0193))
 }
 
-/// Which voice says a line.
-fn voice_for(talker: &Talker) -> Voice {
+/// Which voice says a line, to the player in seat `me`: their own voice,
+/// or another controller's.
+fn voice_for(talker: &Talker, me: Seat) -> Voice {
     match talker {
-        Talker::Controller(_) => CONTROLLER,
-        Talker::Facility(_) => FACILITY,
+        Talker::Controller(seat) if *seat == me => CONTROLLER,
+        Talker::Controller(_) | Talker::Facility(_) => FACILITY,
         Talker::Pilot(callsign) => {
             let mut n = hash(callsign) as usize;
             let pack = PILOTS[n % PILOTS.len()];
@@ -223,10 +225,11 @@ fn voice_for(talker: &Talker) -> Voice {
 
 /// What a line comes through: `range_nm` is the aircraft's distance from
 /// the field, if known, and `count` how many transmissions came before.
-fn set_for(talker: &Talker, range_nm: Option<f32>, count: u32) -> Set {
+fn set_for(talker: &Talker, me: Seat, range_nm: Option<f32>, count: u32) -> Set {
     match talker {
-        Talker::Controller(_) => Set::Sidetone,
-        Talker::Facility(_) => Set::Landline,
+        Talker::Controller(seat) if *seat == me => Set::Sidetone,
+        // Another player only ever reaches you on the landline.
+        Talker::Controller(_) | Talker::Facility(_) => Set::Landline,
         Talker::Pilot(callsign) => {
             let seed = hash(callsign);
             let late = count > 0 && (seed ^ count.wrapping_mul(0x9e37_79b9)).wrapping_mul(0x0100_0193) >> 8 & 0xff
@@ -562,13 +565,15 @@ pub struct Voices {
     pub own: bool,
     /// Transmissions heard so far, which vary from one to the next.
     count: u32,
+    /// The player listening: their own transmissions are in their voice.
+    pub seat: Seat,
 }
 
 impl Voices {
     pub fn load() -> Voices {
         let packs = PACKS.iter().filter_map(|b| Pack::read(b)).collect::<Vec<_>>();
         let packs = if packs.len() == PACKS.len() { packs } else { Vec::new() };
-        Voices { packs, queue: VecDeque::new(), playing: None, busy_until: 0.0, enabled: true, own: true, count: 0 }
+        Voices { packs, queue: VecDeque::new(), playing: None, busy_until: 0.0, enabled: true, own: true, count: 0, seat: SOLO }
     }
 
     /// Queue a line from the log, if it's a transmission the player hears,
@@ -576,7 +581,7 @@ impl Voices {
     /// True if a voice will say it: false for the player's own with their
     /// voice off, though it still holds the frequency.
     pub fn hear(&mut self, line: &LogEntry, callsigns: &[&str], range_nm: Option<f32>, now: f64) -> bool {
-        let Some(radio) = line.radio.as_ref().filter(|r| r.heard()) else { return false };
+        let Some(radio) = line.radio.as_ref().filter(|r| r.heard_by.has(self.seat)) else { return false };
         if !self.enabled || self.packs.is_empty() {
             return false;
         }
@@ -584,10 +589,11 @@ impl Voices {
         if words.is_empty() {
             return false;
         }
-        let silent = !self.own && matches!(radio.talker, Talker::Controller(_));
+        let silent = !self.own && radio.talker == Talker::Controller(self.seat);
         self.count = self.count.wrapping_add(1);
-        let set = set_for(&radio.talker, range_nm, self.count);
-        self.queue.push_back(Waiting { since: now, words, voice: voice_for(&radio.talker), set, silent });
+        let set = set_for(&radio.talker, self.seat, range_nm, self.count);
+        let voice = voice_for(&radio.talker, self.seat);
+        self.queue.push_back(Waiting { since: now, words, voice, set, silent });
         !silent
     }
 
@@ -596,9 +602,9 @@ impl Voices {
     pub fn render(&self, speaker: Speaker, talker: &Talker, text: &str, callsigns: &[&str]) -> Option<(Vec<i16>, usize)> {
         let words = speech::spoken(speech_text(speaker, text), callsigns);
         let said = words.iter().filter(|w| *w != PAUSE && *w != STOP).count();
-        let voice = voice_for(talker);
+        let voice = voice_for(talker, SOLO);
         let pack = self.packs.get(voice.pack)?;
-        (said > 0).then(|| (transmission(&clip_keys(&words, pack), pack, voice, set_for(talker, None, 0)), said))
+        (said > 0).then(|| (transmission(&clip_keys(&words, pack), pack, voice, set_for(talker, SOLO, None, 0)), said))
     }
 
     /// One clip on its own, in a voice by its index in `VOICE_NAMES`, for
@@ -743,9 +749,9 @@ mod tests {
     #[test]
     fn some_pilot_transmissions_are_keyed_late() {
         let talker = Talker::Pilot("NVA101".into());
-        let late = (1..=600).filter(|&n| matches!(set_for(&talker, None, n), Set::Air { late: true, .. })).count();
+        let late = (1..=600).filter(|&n| matches!(set_for(&talker, SOLO, None, n), Set::Air { late: true, .. })).count();
         assert!((20..=90).contains(&late), "{late} in 600");
-        assert_eq!(set_for(&Talker::Controller(0), Some(3.0), 5), Set::Sidetone);
+        assert_eq!(set_for(&Talker::Controller(0), SOLO, Some(3.0), 5), Set::Sidetone);
     }
 
     fn voices() -> Voices {
@@ -810,10 +816,10 @@ mod tests {
 
     #[test]
     fn each_aircraft_keeps_its_voice() {
-        let a = voice_for(&Talker::Pilot("NVA101".into()));
-        assert_eq!(a, voice_for(&Talker::Pilot("NVA101".into())));
+        let a = voice_for(&Talker::Pilot("NVA101".into()), SOLO);
+        assert_eq!(a, voice_for(&Talker::Pilot("NVA101".into()), SOLO));
         let voices: std::collections::HashSet<(usize, u32, u32)> = (0..200)
-            .map(|n| voice_for(&Talker::Pilot(format!("TRL{n}"))))
+            .map(|n| voice_for(&Talker::Pilot(format!("TRL{n}")), SOLO))
             .map(|v| (v.pack, (v.pitch * 100.0) as u32, (v.pace * 100.0) as u32))
             .collect();
         assert!(voices.len() >= 24, "a spread of voices: {voices:?}");

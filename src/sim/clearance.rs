@@ -399,9 +399,15 @@ impl World {
         true
     }
 
-    /// Is this aircraft talking to a position the player works?
+    /// Is this aircraft talking to a position a player works? Whichever
+    /// player: the sim scores and runs every player's traffic alike.
     pub fn is_players(&self, ac: &Aircraft) -> bool {
         self.config.staffing.works(ac.frequency())
+    }
+
+    /// Is this aircraft talking to a position the player in `seat` works?
+    pub fn is_seats(&self, seat: Seat, ac: &Aircraft) -> bool {
+        self.config.staffing.seat_works(seat, ac.frequency())
     }
 
     /// Send a radio call as the player. The pilot responds after a short random delay.
@@ -514,8 +520,7 @@ impl World {
             .map(|(c, issuer)| match c {
                 Clearance::CrossRunway(r) => {
                     *issuer == Some(Position::Ground)
-                        && staffing.ground
-                        && !staffing.local
+                        && !staffing.same_seat(Position::Ground, Position::Local)
                         && !self.crossing_approved(call.aircraft, *r)
                 }
                 _ => false,

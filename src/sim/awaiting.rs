@@ -5,7 +5,7 @@
 
 use super::World;
 use super::aircraft::{Aircraft, Flow, Lateral, Leg, Phase, VfrIntent};
-use super::positions::Position;
+use super::positions::{Position, SOLO, Seat};
 use super::delivery::CLEARANCE_WAIT_S;
 use super::tower::TOWER_HANDOFF_GATE_NM;
 
@@ -84,20 +84,26 @@ impl Awaiting {
 }
 
 impl World {
-    /// What this aircraft is waiting for from the player, most pressing first.
-    /// `None` for aircraft the player doesn't work.
+    /// What this aircraft is waiting for from the single player.
     pub fn awaiting(&self, ac: &Aircraft) -> Option<Awaiting> {
+        self.awaiting_for(SOLO, ac)
+    }
+
+    /// What this aircraft is waiting for from the player in `seat`, most
+    /// pressing first. `None` for aircraft they don't work.
+    pub fn awaiting_for(&self, seat: Seat, ac: &Aircraft) -> Option<Awaiting> {
         let staffing = self.config.staffing;
+        let mine = |p: Position| staffing.seat_works(seat, p);
         if ac.phase == Phase::Offered {
-            return staffing.approach.then_some(Awaiting::Accept);
+            return mine(Position::Approach).then_some(Awaiting::Accept);
         }
         // Asked about on the landline, even if it's on someone else's frequency.
-        if self.incoming().any(|c| c.aircraft == ac.id && c.state == super::coordination::CoordState::Pending)
-            || self.owes_go_around_call(ac.id)
+        if self.incoming_for(seat).any(|c| c.aircraft == ac.id && c.state == super::coordination::CoordState::Pending)
+            || self.owes_go_around_call_for(seat, ac.id)
         {
             return Some(Awaiting::Coordination);
         }
-        if !self.is_players(ac) {
+        if !self.is_seats(seat, ac) {
             return None;
         }
         let freq = ac.frequency();
@@ -132,11 +138,11 @@ impl World {
         }
 
         // An emergency to tell the next position about before handing it off.
-        if self.owed_emergency_call(ac.id).is_some() {
+        if self.owed_emergency_call_for(seat, ac.id).is_some() {
             return Some(Awaiting::Coordination);
         }
 
-        if self.handoff_due(ac) {
+        if self.handoff_due(seat, ac) {
             return Some(Awaiting::HandoffDue);
         }
 
@@ -164,7 +170,7 @@ impl World {
             // On a combined position it stays on one frequency throughout, so
             // what matters is which positions the player works.
             let lined_up = ac.phase == Phase::LinedUp && !ac.cleared_takeoff;
-            if staffing.local && (lined_up || self.at_departure_hold(ac)) {
+            if mine(Position::Local) && (lined_up || self.at_departure_hold(ac)) {
                 return Some(Awaiting::ReadyForTakeoff);
             }
             let stopped = ac.taxi.as_ref().is_none_or(|t| t.done());
@@ -186,7 +192,7 @@ impl World {
                     .is_none_or(|goal| ac.taxi.as_ref().is_some_and(|t| t.node != goal));
             // Stopped short of the runway, off its route: a wrong turn.
             let lost_departure = super::mistakes::lost(ac) && clear_of_runway && !self.at_departure_hold(ac);
-            if staffing.ground && (parked_departure || arrival_waiting || lost_departure) {
+            if mine(Position::Ground) && (parked_departure || arrival_waiting || lost_departure) {
                 return Some(Awaiting::ReadyToTaxi);
             }
         }
@@ -217,9 +223,10 @@ impl World {
         None
     }
 
-    /// Due to go to the next controller, who isn't the player.
-    fn handoff_due(&self, ac: &Aircraft) -> bool {
+    /// Due to go to the next controller, who isn't this player.
+    fn handoff_due(&self, seat: Seat, ac: &Aircraft) -> bool {
         let staffing = self.config.staffing;
+        let mine = |p: Position| staffing.seat_works(seat, p);
         // On the surface, between separate Ground and Local: the same wait the
         // missed-handoff check times.
         if ac.on_ground {
@@ -227,14 +234,14 @@ impl World {
         }
         match (ac.phase, ac.flow) {
             // Approach to Tower before the gate.
-            (Phase::Localizer | Phase::Glideslope, Flow::Arrival) if !staffing.local => {
+            (Phase::Localizer | Phase::Glideslope, Flow::Arrival) if !mine(Position::Local) => {
                 ac.approach_runway.is_some_and(|r| {
                     self.airport.runways[r].along(ac.pos)
                         < TOWER_HANDOFF_GATE_NM + TOWER_HANDOFF_WARNING_NM
                 })
             }
             // Approach to Center near the exit or at its altitude.
-            (Phase::Controlled, Flow::Departure) if staffing.approach && ac.vfr.is_none() => {
+            (Phase::Controlled, Flow::Departure) if mine(Position::Approach) && ac.vfr.is_none() => {
                 let near_exit = ac.exit_fix.is_some_and(|f| {
                     self.airport.fixes[f].pos().distance(ac.pos) < CENTER_HANDOFF_NM
                 });
@@ -242,7 +249,7 @@ impl World {
                 near_exit || high
             }
             // Tower to Departure once it's airborne.
-            (Phase::TowerRelease, Flow::Departure) => ac.vfr.is_none() && !staffing.approach,
+            (Phase::TowerRelease, Flow::Departure) => ac.vfr.is_none() && !mine(Position::Approach),
             _ => false,
         }
     }

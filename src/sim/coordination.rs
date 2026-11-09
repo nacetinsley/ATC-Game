@@ -7,8 +7,9 @@
 //! about every IFR go-around. Before an aircraft in an emergency moves to
 //! the next position, the one handing it off tells the next one about the
 //! emergency. The landline only
-//! matters between a position the player works and one that's automated. On
-//! a combined position the player is both ends, and two automated positions
+//! matters between two controllers when a player is at least one of them:
+//! a player and an automated position, or two players in co-op. On a
+//! combined position the player is both ends, and two automated positions
 //! agree silently, as they always have.
 
 use super::aircraft::{Aircraft, Flow, Lateral, Phase};
@@ -108,15 +109,27 @@ impl World {
         self.coordination.iter().find(|c| c.aircraft == id)
     }
 
-    /// Requests the player has to answer: asked of a position they work, by
-    /// one they don't, and not yet approved.
+    /// Requests the single player has to answer.
     pub fn incoming(&self) -> impl Iterator<Item = &Coordination> {
+        self.incoming_for(SOLO)
+    }
+
+    /// Requests the player in `seat` has to answer: asked of a position they
+    /// work, by another controller, and not yet approved.
+    pub fn incoming_for(&self, seat: Seat) -> impl Iterator<Item = &Coordination> {
+        self.coordination.iter().filter(move |c| self.is_incoming(seat, c))
+    }
+
+    fn is_incoming(&self, seat: Seat, c: &Coordination) -> bool {
         let staffing = self.config.staffing;
-        self.coordination.iter().filter(move |c| {
-            staffing.works(c.to)
-                && !staffing.works(c.from)
-                && matches!(c.state, CoordState::Pending | CoordState::Unable { .. })
-        })
+        staffing.seat_works(seat, c.to)
+            && !staffing.same_seat(c.from, c.to)
+            && matches!(c.state, CoordState::Pending | CoordState::Unable { .. })
+    }
+
+    /// Where the request about this aircraft for `seat` to answer is kept.
+    fn incoming_index(&self, seat: Seat, id: u32) -> Option<usize> {
+        self.coordination.iter().position(|c| c.aircraft == id && self.is_incoming(seat, c))
     }
 
     /// Local has agreed to this aircraft crossing this runway.
@@ -131,12 +144,12 @@ impl World {
         self.coordination.iter().any(|c| c.kind == CoordKind::Crossing { runway } && c.live())
     }
 
-    /// Does the player, working Ground but not Local, need Local's approval
-    /// before crossing this aircraft over this runway?
+    /// Does the player on Ground, with someone else on Local, need Local's
+    /// approval before crossing this aircraft over this runway?
     pub fn needs_crossing_approval(&self, id: u32, runway: usize) -> bool {
         let staffing = self.config.staffing;
         staffing.ground
-            && !staffing.local
+            && !staffing.same_seat(Position::Ground, Position::Local)
             && self.find(id).is_some_and(|a| a.frequency() == Position::Ground)
             && !self.crossing_approved(id, runway)
     }
@@ -163,11 +176,11 @@ impl World {
         None
     }
 
-    /// Releases are coordinated only when the player works exactly one of
-    /// Local and Approach.
-    fn releases_coordinated(&self) -> bool {
+    /// Releases are coordinated when Local and Approach are different
+    /// controllers and a player is one of them.
+    pub fn releases_coordinated(&self) -> bool {
         let staffing = self.config.staffing;
-        staffing.local != staffing.approach
+        (staffing.local || staffing.approach) && !staffing.same_controller(Position::Local, Position::Approach)
     }
 
     /// Departures are on call for release.
@@ -240,24 +253,31 @@ impl World {
         format!("go-around {callsign}, runway {}, {heading}, {altitude}.", runway.id)
     }
 
-    /// The player, on Local, still has to tell Approach about this go-around.
+    /// The single player, on Local, still has to tell Approach about this
+    /// go-around.
     pub fn owes_go_around_call(&self, id: u32) -> bool {
-        self.coordination
-            .iter()
-            .any(|c| c.aircraft == id && matches!(c.kind, CoordKind::GoAround { .. }) && c.state == CoordState::Owed)
+        self.owes_go_around_call_for(SOLO, id)
     }
 
-    /// An IFR aircraft has gone around off `end`. With the player on Local
-    /// and Approach automated, the player owes Approach a call (made at once
-    /// when the player `ordered` it). With the player on Approach and Local
-    /// automated, Tower calls the player.
+    /// The player in `seat`, on Local, still has to tell Approach.
+    pub fn owes_go_around_call_for(&self, seat: Seat, id: u32) -> bool {
+        self.config.staffing.seat_works(seat, Position::Local)
+            && self.coordination.iter().any(|c| {
+                c.aircraft == id && matches!(c.kind, CoordKind::GoAround { .. }) && c.state == CoordState::Owed
+            })
+    }
+
+    /// An IFR aircraft has gone around off `end`. With a player on Local and
+    /// someone else on Approach, the player owes Approach a call (made at
+    /// once when the player `ordered` it). With the player on Approach and
+    /// Local automated, Tower calls the player.
     pub(super) fn go_around_started(&mut self, id: u32, end: usize, ordered: bool) {
         if self.find(id).is_none_or(|a| a.vfr.is_some()) {
             return;
         }
         let staffing = self.config.staffing;
         let kind = CoordKind::GoAround { end };
-        if staffing.local && !staffing.approach {
+        if staffing.local && !staffing.same_seat(Position::Local, Position::Approach) {
             if ordered {
                 self.ask(kind, id, Position::Local, Position::Approach);
             } else {
@@ -301,12 +321,23 @@ impl World {
         true
     }
 
-    /// The player still has to tell the next position about this aircraft's
-    /// emergency before handing it off: the position to call, if so.
+    /// The single player still has to tell the next position about this
+    /// aircraft's emergency before handing it off: the position to call, if so.
     pub fn owed_emergency_call(&self, id: u32) -> Option<Position> {
+        self.owed_emergency_call_for(SOLO, id)
+    }
+
+    /// The same, for the player in `seat`.
+    pub fn owed_emergency_call_for(&self, seat: Seat, id: u32) -> Option<Position> {
+        let staffing = self.config.staffing;
         self.coordination
             .iter()
-            .find(|c| c.aircraft == id && c.kind == CoordKind::Emergency && c.state == CoordState::Owed)
+            .find(|c| {
+                c.aircraft == id
+                    && c.kind == CoordKind::Emergency
+                    && c.state == CoordState::Owed
+                    && staffing.seat_works(seat, c.from)
+            })
             .map(|c| c.to)
     }
 
@@ -548,15 +579,18 @@ impl World {
         true
     }
 
-    /// The player, on Approach with Tower automated, stops departures (each
-    /// then needs a release) or lets them go again.
+    /// The player, on Approach with someone else on Tower, stops departures
+    /// (each then needs a release) or lets them go again.
     pub fn set_call_for_release(&mut self, on: bool) -> bool {
         self.set_call_for_release_as(SOLO, on)
     }
 
     pub(super) fn set_call_for_release_as(&mut self, seat: Seat, on: bool) -> bool {
         let staffing = self.config.staffing;
-        if !staffing.seat_works(seat, Position::Approach) || staffing.local || on == self.call_for_release() {
+        if !staffing.seat_works(seat, Position::Approach)
+            || !self.releases_coordinated()
+            || on == self.call_for_release()
+        {
             return false;
         }
         if on {
@@ -611,15 +645,9 @@ impl World {
         self.answer_coordination_as(SOLO, id, approve)
     }
 
-    /// The player in `seat` answers a request from an automated position.
+    /// The player in `seat` answers a request from another controller.
     pub(super) fn answer_coordination_as(&mut self, seat: Seat, id: u32, approve: bool) -> bool {
-        let staffing = self.config.staffing;
-        let Some(index) = self.coordination.iter().position(|c| {
-            c.aircraft == id
-                && staffing.seat_works(seat, c.to)
-                && !staffing.works(c.from)
-                && matches!(c.state, CoordState::Pending | CoordState::Unable { .. })
-        }) else {
+        let Some(index) = self.incoming_index(seat, id) else {
             return false;
         };
         let was = self.coordination[index].state;

@@ -17,7 +17,7 @@ pub mod tutorial;
 pub mod voice;
 
 use crate::sim::airspace::{Airport, CATALOG};
-use crate::sim::positions::Staffing;
+use crate::sim::positions::{Position, Staffing};
 use crate::sim::replay::{Recording, ShiftCode};
 use crate::sim::scoring::ShiftEnd;
 use crate::sim::traffic::Busyness;
@@ -252,6 +252,20 @@ pub struct App {
     replay_list: Vec<(PathBuf, replays::ReplayFile)>,
     /// The saved replay being rebuilt, to check against.
     rebuilding: Option<replays::ReplayFile>,
+    /// Started with `--hot-seat`: a test of co-op on one machine. Shifts
+    /// split the positions between two seats, and F9 swaps between them.
+    hot_seat: bool,
+    /// In hot-seat play, the other seats' screens, waiting their turn.
+    other_seats: Vec<UiState>,
+}
+
+/// Hot-seat play's split: Approach in seat 0, the tower cab in seat 1.
+fn hot_seat_staffing() -> Staffing {
+    Staffing::NONE
+        .with_seat(Position::Approach, 0)
+        .with_seat(Position::Local, 1)
+        .with_seat(Position::Ground, 1)
+        .with_seat(Position::Delivery, 1)
 }
 
 /// What the menu chose for a new shift.
@@ -337,6 +351,8 @@ impl App {
                 }),
             ),
             ui: UiState::new(&airports[0], Staffing::default()),
+            hot_seat: std::env::args().any(|a| a == "--hot-seat"),
+            other_seats: Vec::new(),
             sounds,
             accumulator: 0.0,
             airports,
@@ -431,15 +447,30 @@ impl App {
     }
 
     /// Start a shift at the airport at `index`, recording it.
-    fn start_world(&mut self, index: usize, config: WorldConfig) {
+    fn start_world(&mut self, index: usize, mut config: WorldConfig) {
         let airport = &self.airports[index];
+        if self.hot_seat {
+            config.staffing = hot_seat_staffing();
+        }
         self.world = World::new(airport.clone(), config);
         let scale = gfx::effective_scale(self.ui_scale, gfx::GAME_ROOM);
-        self.ui = gfx::laid_out_at(scale, || UiState::new(airport, config.staffing));
+        self.ui = gfx::laid_out_at(scale, || UiState::for_seat(airport, config.staffing, 0));
+        self.other_seats = config
+            .staffing
+            .players()
+            .iter()
+            .skip(1)
+            .map(|seat| gfx::laid_out_at(scale, || UiState::for_seat(airport, config.staffing, seat)))
+            .collect();
+        for ui in &mut self.other_seats {
+            ui.clock_start = self.ui.clock_start;
+        }
         // The sim's clock, for EFC times, reads the same as the strips'.
         self.world.set_clock_start(self.ui.clock_start);
-        self.code = Some(ShiftCode::of(&config, &airport.code));
-        self.recording = Some(Recording::new(&self.world));
+        // Shift codes and replays don't hold a co-op split yet.
+        let solo = !self.hot_seat;
+        self.code = solo.then(|| ShiftCode::of(&config, &airport.code));
+        self.recording = solo.then(|| Recording::new(&self.world));
         self.replay_path = None;
         self.note = None;
         self.sounds.reset(&self.world);
@@ -608,6 +639,7 @@ impl App {
         world.set_clock_start(file.clock_start);
         let scale = gfx::effective_scale(self.ui_scale, gfx::GAME_ROOM);
         self.ui = gfx::laid_out_at(scale, || UiState::new(&self.airports[index], code.staffing));
+        self.other_seats.clear();
         self.ui.clock_start = file.clock_start;
         self.recording = Some(Recording::from_start(world, file.command.clone()));
         self.code = Some(code);
@@ -775,6 +807,7 @@ impl App {
         self.world = tutorial.world();
         let scale = gfx::effective_scale(self.ui_scale, gfx::GAME_ROOM);
         self.ui = gfx::laid_out_at(scale, || UiState::new(&self.world.airport, kind.staffing()));
+        self.other_seats.clear();
         self.ui.lesson = true;
         self.world.set_clock_start(self.ui.clock_start);
         self.recording = None;
@@ -927,7 +960,7 @@ impl App {
             choice = (choice + 1) % count;
         }
         let labels: Vec<String> = PAUSE_ITEMS.iter().map(|&item| self.item_label(item, show_controls)).collect();
-        let (hovered, clicked) = draw_pause(choice, &labels, show_controls, self.world.staffing());
+        let (hovered, clicked) = draw_pause(choice, &labels, show_controls, self.ui.staffing);
         if let Some(code) = self.code.as_ref().filter(|_| !show_controls) {
             let text = format!("Shift code  {}", code.text());
             let width = measure_text(&text, None, 18, 1.0).width;
@@ -1058,6 +1091,15 @@ impl App {
             draw_views(&self.world, &mut self.ui);
             return;
         }
+        // Hot seat: hand the screen to the next seat.
+        if is_key_pressed(KeyCode::F9) && !self.other_seats.is_empty() {
+            let next = self.other_seats.remove(0);
+            let mut done = std::mem::replace(&mut self.ui, next);
+            done.drag = input::Drag::None;
+            self.ui.paused = done.paused;
+            self.ui.rate = done.rate;
+            self.other_seats.push(done);
+        }
         self.ui.layout();
         if let Some(tutorial) = &mut self.tutorial {
             if tutorial.finished() {
@@ -1098,6 +1140,10 @@ impl App {
         panels::draw(&mut self.world, &mut self.ui);
         if let Some(tutorial) = &self.tutorial {
             tutorial::draw(tutorial, &self.world, &self.ui);
+        }
+        if !self.other_seats.is_empty() {
+            let text = format!("HOT SEAT: seat {}, {}. F9 for the next seat", self.ui.seat, self.ui.staffing.label());
+            draw_text(&text, 12.0, screen_height() - 12.0, 20.0, YELLOW);
         }
 
         if let Some(recording) = &mut self.recording {

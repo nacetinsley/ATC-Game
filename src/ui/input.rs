@@ -8,7 +8,8 @@ use crate::sim::airspace::Airport;
 use crate::sim::approach::ApproachKind;
 use crate::sim::aircraft::{Flow, Landing, Leg, Phase};
 use crate::sim::clearance::{Clearance, PendingClearance};
-use crate::sim::positions::{Position, Staffing};
+use crate::sim::positions::{Position, SOLO, Seat, Staffing};
+use crate::sim::replay::Action;
 use crate::sim::units::vec_heading;
 use macroquad::prelude::*;
 use super::gfx::{mouse_position};
@@ -45,6 +46,11 @@ pub struct UiState {
     pub surface: Camera,
     /// Which view fills the screen; the other, if any, is an inset.
     pub main_view: View,
+    /// The player at this screen: everything they say goes out from this
+    /// seat. Always `SOLO` in single player.
+    pub seat: Seat,
+    /// The positions this player works. In co-op, only theirs: the world's
+    /// staffing has everyone's.
     pub staffing: Staffing,
     /// Taxiways picked for the next taxi instruction, in order.
     pub via: Vec<String>,
@@ -86,6 +92,7 @@ impl UiState {
             camera: Camera::fit_sector(airport),
             surface: Camera::fit_surface(airport),
             main_view,
+            seat: SOLO,
             staffing,
             via: Vec::new(),
             selected: None,
@@ -108,6 +115,19 @@ impl UiState {
         };
         ui.frame_views(airport);
         ui
+    }
+
+    /// The screen of the player in `seat`, with the world's `staffing` of
+    /// every player.
+    pub fn for_seat(airport: &Airport, staffing: Staffing, seat: Seat) -> UiState {
+        let mut ui = UiState::new(airport, staffing.of_seat(seat));
+        ui.seat = seat;
+        ui
+    }
+
+    /// Do something as this player. False if it can't be done.
+    pub fn act(&self, world: &mut World, id: u32, action: Action) -> bool {
+        !self.replay && world.act(self.seat, id, action)
     }
 
     /// Tower positions see both pictures: one full size, one inset.
@@ -172,7 +192,7 @@ impl UiState {
             return;
         }
         if let Some(id) = self.selected
-            && world.transmit(id, self.pending.to_clearances()) {
+            && self.act(world, id, Action::Transmit(self.pending.to_clearances())) {
                 self.pending = PendingClearance::default();
             }
     }
@@ -183,13 +203,13 @@ impl UiState {
         let Some(id) = self.selected.filter(|_| !self.replay) else { return };
         let Some(ac) = world.find(id) else { return };
         // An emergency: tell the next position on the landline first.
-        if world.owed_emergency_call(id).is_some() {
-            world.call_emergency(id);
+        if world.owed_emergency_call_for(self.seat, id).is_some() {
+            self.act(world, id, Action::CallEmergency);
             return;
         }
         match (ac.phase, ac.flow) {
             (Phase::Offered, _) => {
-                world.accept_handoff(id);
+                self.act(world, id, Action::AcceptHandoff);
             }
             _ if ac.on_ground => match ac.frequency() {
                 Position::Ground => self.pending.add_tower(Clearance::ContactTower),
@@ -253,7 +273,7 @@ impl UiState {
         }
         let Some(ac) = self.selected.and_then(|id| world.find(id)).filter(|a| !a.on_ground) else { return };
         // Airborne: say again what it was given, to put a wrong readback right.
-        if ac.vfr.is_none() && world.is_players(ac) && ac.phase == Phase::Controlled {
+        if ac.vfr.is_none() && world.is_seats(self.seat, ac) && ac.phase == Phase::Controlled {
             self.pending.altitude = Some(ac.assigned_altitude());
             if let Some(h) = ac.assigned_heading() {
                 self.pending.set_heading(h);
@@ -294,9 +314,7 @@ impl UiState {
         let Some(id) = self.selected else { return };
         let Some(runway) = world.find(id).and_then(|ac| crossing_ahead(world, ac)) else { return };
         if self.needs_request(world, id, runway) {
-            if !self.replay {
-                world.request_crossing(id, runway);
-            }
+            self.act(world, id, Action::RequestCrossing(runway));
             return;
         }
         self.pending.add_tower(Clearance::CrossRunway(runway));
@@ -326,9 +344,9 @@ impl UiState {
         if self.replay {
             return;
         }
-        let selected = self.selected.filter(|&id| world.incoming().any(|c| c.aircraft == id));
-        if let Some(id) = selected.or_else(|| world.incoming().next().map(|c| c.aircraft)) {
-            world.answer_coordination(id, approve);
+        let selected = self.selected.filter(|&id| world.incoming_for(self.seat).any(|c| c.aircraft == id));
+        if let Some(id) = selected.or_else(|| world.incoming_for(self.seat).next().map(|c| c.aircraft)) {
+            self.act(world, id, Action::Coordinate { approve });
         }
     }
 
@@ -341,7 +359,7 @@ impl UiState {
                 matches!(c.kind, CoordKind::Release { .. })
                     && matches!(c.state, CoordState::Pending | CoordState::Unable { callback: true })
             });
-            world.staffing().local && world.needs_release(id) && !asked
+            self.staffing.local && world.needs_release(id) && !asked
         })
     }
 
@@ -354,15 +372,16 @@ impl UiState {
     /// hasn't been told about, the landline call to Approach. With nothing
     /// selected, the oldest call owed.
     pub fn go_around(&mut self, world: &mut World) {
-        let owed = world.coordination.iter().find(|c| world.owes_go_around_call(c.aircraft)).map(|c| c.aircraft);
+        let owed =
+            world.coordination.iter().find(|c| world.owes_go_around_call_for(self.seat, c.aircraft)).map(|c| c.aircraft);
         let target = match self.selected {
-            Some(id) if world.owes_go_around_call(id) => Some(id),
+            Some(id) if world.owes_go_around_call_for(self.seat, id) => Some(id),
             Some(_) => None,
             None => owed,
         };
         match target {
             Some(id) if !self.replay => {
-                world.call_go_around(id);
+                self.act(world, id, Action::CallGoAround);
             }
             Some(_) => {}
             None if self.selected.is_some() => self.pending.go_around = true,
@@ -372,21 +391,20 @@ impl UiState {
 
     /// The G button's label: the call to Approach while one is owed.
     pub fn go_around_label(&self, world: &World) -> &'static str {
-        if self.selected.is_some_and(|id| world.owes_go_around_call(id)) { "Call G/A G" } else { "G/A G" }
+        if self.selected.is_some_and(|id| world.owes_go_around_call_for(self.seat, id)) { "Call G/A G" } else { "G/A G" }
     }
 
     /// F on Approach with Tower automated: stop departures, or release them.
     pub fn toggle_call_for_release(&mut self, world: &mut World) {
-        if !self.replay {
-            world.set_call_for_release(!world.call_for_release());
-        }
+        let on = !world.call_for_release();
+        self.act(world, 0, Action::CallForRelease { on });
     }
 
     /// Line up and wait, or cleared for takeoff, on the aircraft's departure runway.
     pub fn departure(&mut self, world: &mut World, takeoff: bool) {
         if takeoff && self.needs_release_request(world) {
-            if let Some(id) = self.selected.filter(|_| !self.replay) {
-                world.request_release(id);
+            if let Some(id) = self.selected {
+                self.act(world, id, Action::RequestRelease);
             }
             return;
         }
@@ -541,7 +559,7 @@ impl UiState {
         let ids: Vec<u32> = world
             .aircraft
             .iter()
-            .filter(|a| world.is_players(a) || a.phase == Phase::Offered)
+            .filter(|a| world.is_seats(self.seat, a) || a.phase == Phase::Offered)
             .map(|a| a.id)
             .collect();
         if ids.is_empty() {

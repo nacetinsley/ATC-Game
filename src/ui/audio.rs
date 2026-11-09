@@ -664,7 +664,7 @@ impl Sounds {
             self.said = world.said;
             return;
         }
-        let mine = |id: u32| world.find(id).is_some_and(|a| world.is_players(a));
+        let mine = |id: u32| world.find(id).is_some_and(|a| world.is_seats(ui.seat, a));
 
         // STARS alarms.
         let alerts = &world.alerts;
@@ -698,7 +698,7 @@ impl Sounds {
         self.set_alarm(alarm);
 
         // ASDE-X, in the tower.
-        if world.staffing().tower() {
+        if ui.staffing.tower() {
             for (runway, departure) in asdex_hazards(world, events, ui.selected) {
                 self.asdex(runway, departure, now);
             }
@@ -714,6 +714,7 @@ impl Sounds {
         // A jump (a replay seek, a takeover) brings many lines at once: they
         // aren't said, as no one hears them as they happened.
         let jumped = new_lines > MAX_LINES_SAID;
+        self.voices.seat = ui.seat;
         for line in &world.log[world.log.len() - new_lines..] {
             // A pilot sounds further off the further the aircraft is.
             let range_nm = line.radio.as_ref().and_then(|r| match &r.talker {
@@ -727,7 +728,7 @@ impl Sounds {
             // A voiced transmission makes its own key-up and squelch. With
             // voices on, a pilot on a frequency the player doesn't work isn't
             // heard at all.
-            let heard = !self.voices.enabled || line.radio.as_ref().is_none_or(|r| r.heard());
+            let heard = !self.voices.enabled || line.radio.as_ref().is_none_or(|r| r.heard_by.has(ui.seat));
             radio_cue |= !voiced && heard && matches!(line.speaker, Speaker::Pilot | Speaker::Emergency);
         }
         if radio_cue {
@@ -736,7 +737,15 @@ impl Sounds {
         self.voices.update(now, self.volume.level());
         for event in events {
             match event {
-                SimEvent::HandoffOffered { .. } | SimEvent::CoordinationRequest { .. } => cues.push(Cue::Handoff),
+                // Only the player who has to act on it hears the ding.
+                SimEvent::HandoffOffered { .. } if ui.staffing.approach => cues.push(Cue::Handoff),
+                SimEvent::CoordinationRequest { callsign }
+                    if world
+                        .incoming_for(ui.seat)
+                        .any(|c| world.find(c.aircraft).is_some_and(|a| &a.callsign == callsign)) =>
+                {
+                    cues.push(Cue::Handoff)
+                }
                 SimEvent::Landed { callsign, .. }
                 | SimEvent::Parked { callsign }
                 | SimEvent::Exited { callsign }
@@ -750,7 +759,7 @@ impl Sounds {
         let urgent: HashSet<u32> = world
             .aircraft
             .iter()
-            .filter(|a| world.awaiting(a).is_some_and(|w| w.urgent()))
+            .filter(|a| world.awaiting_for(ui.seat, a).is_some_and(|w| w.urgent()))
             .map(|a| a.id)
             .collect();
         if urgent.iter().any(|id| !self.urgent.contains(id)) {
@@ -760,7 +769,7 @@ impl Sounds {
         self.owned = world
             .aircraft
             .iter()
-            .filter(|a| world.is_players(a))
+            .filter(|a| world.is_seats(ui.seat, a))
             .map(|a| a.callsign.clone())
             .collect();
         self.one_shot(&mut cues, now);

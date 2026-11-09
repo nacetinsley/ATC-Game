@@ -488,18 +488,18 @@ enum Block {
 }
 
 fn block_kind(world: &World, ui: &UiState, ac: &Aircraft, alerting: bool) -> Block {
-    let full = world.is_players(ac)
+    let full = world.is_seats(ui.seat, ac)
         || ac.phase == Phase::Offered
         || ui.selected == Some(ac.id)
         || alerting
         // A tower cab quick-looks the radar positions: their tracks show in full.
-        || !world.staffing().approach;
+        || !ui.staffing.approach;
     if full { Block::Full } else { Block::Partial }
 }
 
 fn draw_target(world: &World, ui: &UiState, ac: &Aircraft, track: &RadarTrack, atpa: Option<&Atpa>) {
     let selected = ui.selected == Some(ac.id);
-    let owned = world.is_players(ac);
+    let owned = world.is_seats(ui.seat, ac);
     let color = if selected {
         SELECTED
     } else if owned {
@@ -637,7 +637,7 @@ fn draw_target(world: &World, ui: &UiState, ac: &Aircraft, track: &RadarTrack, a
 fn draw_atpa_cones(world: &World, ui: &UiState, atpa: &[Atpa]) {
     for a in atpa {
         let (Some(follower), Some(leader)) = (world.track(a.follower), world.track(a.leader)) else { continue };
-        let shown = world.find(a.follower).is_some_and(|ac| world.is_players(ac) || !world.staffing().approach);
+        let shown = world.find(a.follower).is_some_and(|ac| world.is_seats(ui.seat, ac) || !ui.staffing.approach);
         if !shown {
             continue;
         }

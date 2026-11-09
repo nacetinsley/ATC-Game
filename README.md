@@ -902,6 +902,18 @@ You need a recent stable [Rust toolchain](https://rustup.rs) (edition 2024).
 cargo run --release
 ```
 
+### Hot seat (co-op test)
+
+Co-op isn't networked yet. To try it on one machine:
+
+```sh
+cargo run --release -- --hot-seat
+```
+
+Every shift is split between two players: Approach in seat 0, and Local,
+Ground and Delivery in seat 1. Press F9 to hand the screen to the other
+seat. Shift codes and replays are off in hot seat.
+
 ### macOS app
 
 To build a double-clickable `Air Traffic Control.app` on a Mac:

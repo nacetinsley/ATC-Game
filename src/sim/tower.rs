@@ -197,7 +197,7 @@ impl World {
                 return;
             }
             let staffing = self.config.staffing;
-            if staffing.approach && staffing.local {
+            if staffing.same_seat(Position::Approach, Position::Local) {
                 // One controller works both: there's nobody to hand off to.
                 self.aircraft[index].phase = Phase::TowerHandedOff;
             } else {
@@ -885,7 +885,8 @@ impl World {
         }
     }
 
-    /// Handoffs between separate tower positions the player forgot.
+    /// Handoffs between separate tower positions a player forgot: to an
+    /// automated position, or to another player.
     pub(super) fn check_handoffs(&mut self) {
         let staffing = self.config.staffing;
         for index in 0..self.aircraft.len() {
@@ -894,14 +895,14 @@ impl World {
                 continue;
             }
             let freq = ac.frequency();
-            let (waiting, to, next) = if freq == Position::Local && !staffing.ground {
+            let (waiting, to, next) = if freq == Position::Local && !staffing.same_seat(freq, Position::Ground) {
                 let w = self.clear_of_runways(ac) && !self.bound_for_departure_hold(ac);
                 (w && staffing.tower(), "Ground", Position::Ground)
-            } else if freq == Position::Delivery && !staffing.ground {
+            } else if freq == Position::Delivery && !staffing.same_seat(freq, Position::Ground) {
                 // Cleared, and still on the player's Delivery frequency.
                 let cleared = ac.flight_plan.as_ref().is_some_and(|p| p.is_cleared());
                 (cleared && !self.call_pending(ac.id), "Ground", Position::Ground)
-            } else if freq == Position::Ground && !staffing.local {
+            } else if freq == Position::Ground && !staffing.same_seat(freq, Position::Local) {
                 // Holding short while Ground works the crossing out with
                 // Tower on the landline isn't a forgotten handoff.
                 let w = self.at_departure_hold(ac)
