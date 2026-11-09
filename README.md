@@ -996,7 +996,9 @@ git push origin v0.2.0
 Or run the workflow by hand from the Actions tab (Release, then Run workflow)
 and enter a version such as `v0.2.0`. It tags the latest commit on the branch
 you pick and publishes the release the same way. Untick "Publish a release"
-to only build, and download the zips from the run.
+to only build, and download the zips from the run. Each platform checks the
+pinned determinism checksums (below) before it builds, and stops the release
+if they differ.
 
 The macOS build is a universal app (Apple Silicon and Intel), signed ad hoc
 but not notarized.
@@ -1084,6 +1086,16 @@ of a set of busy shifts on one machine and check the other against them:
 cargo test --release --test determinism -- --ignored write_checksums
 cargo test --release --test determinism -- --ignored matches_the_pinned_checksums
 ```
+
+Co-op is tested headless: `net_lockstep` runs up to four players in
+lockstep over an in-memory link, with players joining late, dropping and
+coming back. `net_relay` runs them through a real relay, each connection
+behind a proxy that holds data back by a varying delay, and cuts
+connections to drop players and the host.
+
+Every push runs `.github/workflows/ci.yml` on GitHub Actions: all the tests
+on Windows, the pinned checksums on Windows and macOS (Apple Silicon, and
+Intel under Rosetta), and the relay's tests and Docker image on Linux.
 
 ## Updating the KSUS and KMEM data
 

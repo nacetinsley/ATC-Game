@@ -687,7 +687,8 @@ impl<L: ClientLink> Client<L> {
             self.acked = self.clock;
             self.link.send(&Msg::Ack { tick: 0 });
         }
-        for event in self.link.poll() {
+        let mut events = self.link.poll().into_iter();
+        while let Some(event) = events.next() {
             self.heard = self.clock;
             let msg = match event {
                 ClientEvent::Message(msg) => msg,
@@ -722,14 +723,20 @@ impl<L: ClientLink> Client<L> {
                     }
                     self.seat = seat;
                     self.setup = Some(setup);
+                    // The rest of this poll is the shift going on, often its
+                    // next ticks: keep it for `update`.
+                    for event in events {
+                        self.backlog.push_back(match event {
+                            ClientEvent::Message(msg) => msg,
+                            ClientEvent::Closed(why) => Msg::Bye { reason: format!("the connection closed: {why}") },
+                        });
+                    }
                     return Joining::Ready(Box::new(world), seat);
                 }
                 (ClientState::Playing, msg) => self.backlog.push_back(msg),
                 _ => {}
             }
         }
-        // Ticks that came in the same poll as the catch-up are kept for
-        // `update`: the loop above returns as soon as the world is ready.
         Joining::Waiting
     }
 

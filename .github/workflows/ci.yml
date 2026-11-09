@@ -1,0 +1,76 @@
+# Tests on every push and pull request.
+#
+# - The sim must come out the same on Windows and macOS (Apple Silicon and
+#   Intel), or co-op players and shared replays drift apart: each runs the
+#   pinned determinism checksums.
+# - Windows runs every test.
+# - The relay is meant for a Linux server: its tests run on Ubuntu, and its
+#   Docker image is built and started.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Tests
+        run: cargo test --release --locked
+      - name: The sim matches the pinned checksums
+        run: cargo test --release --locked --test determinism -- --ignored matches_the_pinned_checksums
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: The sim matches the pinned checksums (Apple Silicon)
+        run: cargo test --release --locked --test determinism -- --ignored matches_the_pinned_checksums
+      - name: The sim matches the pinned checksums (Intel, under Rosetta)
+        run: cargo test --release --locked --target x86_64-apple-darwin --test determinism -- --ignored matches_the_pinned_checksums
+
+  relay:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: relay
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: relay
+      - name: Tests
+        run: cargo test --release --locked
+      - name: Build the Docker image
+        run: docker build -t atc-relay .
+      - name: The image starts and takes connections
+        run: |
+          docker run -d --name relay -p 7341:7341 atc-relay
+          for i in $(seq 1 20); do
+            if timeout 1 bash -c '</dev/tcp/127.0.0.1/7341'; then
+              echo "The relay is listening."
+              docker logs relay
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "::error::The relay never started listening."
+          docker logs relay
+          exit 1

@@ -137,10 +137,11 @@ impl Table {
     /// Everyone still playing has the host's world.
     fn assert_in_step(&self) {
         for (i, p) in self.players.iter().enumerate() {
+            // A desync ends a player, so look before skipping those who ended.
+            assert!(!p.notices.iter().any(|n| matches!(n, Notice::Desync { .. })), "player {i}: {:?}", p.notices);
             if !p.client.playing() {
                 continue;
             }
-            assert!(!p.notices.iter().any(|n| matches!(n, Notice::Desync { .. })), "player {i}: {:?}", p.notices);
             assert_eq!(p.world.ticks(), self.world.ticks(), "player {i} ticks");
             assert_eq!(p.world.checksum(), self.world.checksum(), "player {i} checksum");
         }
@@ -166,6 +167,26 @@ fn three_players_stay_in_step() {
 }
 
 #[test]
+fn four_players_stay_in_step() {
+    let four_way = Staffing::NONE
+        .with_seat(Position::Approach, 0)
+        .with_seat(Position::Local, 1)
+        .with_seat(Position::Ground, 2)
+        .with_seat(Position::Delivery, 3);
+    let mut table = Table::new(four_way);
+    for name in ["local", "ground", "delivery"] {
+        table.join(name);
+    }
+    let seats: Vec<Seat> = table.players.iter().map(|p| p.client.seat()).collect();
+    assert_eq!(seats, [1, 2, 3]);
+    for _ in 0..10 {
+        table.run(MINUTE);
+        table.assert_in_step();
+    }
+    assert!(table.world.staffing() == four_way, "nobody dropped");
+}
+
+#[test]
 fn a_player_can_join_late() {
     let mut table = Table::new(three_way());
     table.join("local");
@@ -173,6 +194,31 @@ fn a_player_can_join_late() {
     table.join("ground");
     table.assert_in_step();
     table.run(3 * MINUTE);
+    table.assert_in_step();
+}
+
+#[test]
+fn ticks_that_come_with_the_catch_up_are_kept() {
+    // The host goes on ticking while the player joins, so the catch-up and
+    // the next ticks reach them in one go.
+    let mut table = Table::new(three_way());
+    table.run(MINUTE);
+    let mut client = Client::new(table.connector.connect(), "local");
+    let mut joined = None;
+    for _ in 0..20 {
+        table.step(true);
+        table.step(true);
+        if let Joining::Ready(world, _) = client.join(0.0, &airports()) {
+            joined = Some(*world);
+            break;
+        }
+    }
+    let world = joined.expect("joined");
+    assert!(world.ticks() < table.world.ticks(), "ticks were waiting behind the catch-up");
+    table.players.push(Player { client, world, notices: Vec::new() });
+    table.run(MINUTE);
+    let p = &table.players[0];
+    assert!(p.client.playing(), "{:?}", p.notices);
     table.assert_in_step();
 }
 

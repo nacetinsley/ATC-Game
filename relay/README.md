@@ -114,5 +114,8 @@ cloud provider's security group. Nothing else needs to be reachable.
 cargo test --release
 ```
 
-The game's own tests (`tests/net_lobby.rs`) also run whole co-op sessions
-through a relay started in the test.
+The game's own tests (`tests/net_lobby.rs` and `tests/net_relay.rs`) also
+run whole co-op sessions through a relay started in the test, the latter
+with delayed and cut connections. GitHub Actions runs this crate's tests on
+Linux and builds and starts the Docker image on every push
+(`.github/workflows/ci.yml`).
