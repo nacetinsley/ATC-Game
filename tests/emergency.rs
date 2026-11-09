@@ -5,7 +5,7 @@ use atcgame::sim::airspace::{Airport, KSUS_AIRPORT, KSUS_GROUND};
 use atcgame::sim::clearance::Clearance;
 use atcgame::sim::emergency::{DisabledCause, Emergency, EmergencyKind, EmergencyRate, Trigger};
 use atcgame::sim::performance::aircraft_type;
-use atcgame::sim::positions::Staffing;
+use atcgame::sim::positions::{Position, Staffing};
 use atcgame::sim::scoring::{GoAroundReason, SimEvent};
 use atcgame::sim::traffic::Busyness;
 use atcgame::sim::units::{Wind, heading_vec};
@@ -398,6 +398,9 @@ fn a_radio_failure_ignores_calls_and_flies_itself_onto_the_ils_to_land() {
     run(&mut world, 7.0, &mut events);
     assert!(last_line(&world, Speaker::System).contains("No reply from BRZ610"));
     assert_ne!(world.find(1).unwrap().lateral, Lateral::Heading(90.0));
+    // Tower is told before it takes it.
+    assert_eq!(world.owed_emergency_call(1), Some(Position::Local));
+    assert!(world.call_emergency(1));
     // Lost-comms procedure: base point, intercept, and the automated Tower's light gun.
     run_until(&mut world, 900.0, &mut events, |w| {
         w.find(1).is_none_or(|a| a.on_ground)
@@ -758,4 +761,130 @@ fn stress_six_hundred_intense_shifts() {
         }
     }
     println!("{kinds:?}");
+}
+
+// Coordinating an emergency with the next position.
+
+fn landline_lines(world: &World) -> Vec<&str> {
+    world.log.iter().filter(|l| l.speaker == Speaker::Landline).map(|l| l.text.as_str()).collect()
+}
+
+fn uncoordinated(events: &[SimEvent]) -> Vec<(&str, &str)> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            SimEvent::UncoordinatedEmergency { callsign, to } => Some((callsign.as_str(), to.as_str())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// On Approach with Tower automated: an emergency arrival on the localizer.
+fn approach_emergency() -> (World, Vec<SimEvent>) {
+    let mut world = harrowgate(Staffing::APPROACH);
+    let mut events = Vec::new();
+    let mut ac = final_arrival(&world, 1, "NVA101", "27L", 14.0);
+    ac.phase = Phase::Localizer;
+    ac.emergency = emergency(EmergencyKind::Medical, Trigger::OnCheckIn);
+    world.add_aircraft(ac);
+    run(&mut world, 1.0, &mut events);
+    assert!(declared(&world, 1));
+    (world, events)
+}
+
+#[test]
+fn the_player_calls_the_next_position_about_an_emergency_before_the_handoff() {
+    let (mut world, mut events) = approach_emergency();
+    assert_eq!(world.owed_emergency_call(1), Some(Position::Local));
+    assert!(world.call_emergency(1));
+    assert!(!world.call_emergency(1), "called once");
+    assert!(
+        landline_lines(&world)
+            .contains(&"Approach to Tower: emergency, NVA101, medical emergency, 120 souls, 1 hour 30 minutes of fuel, runway 27L."),
+        "{:?}",
+        landline_lines(&world)
+    );
+    run(&mut world, 8.0, &mut events);
+    assert!(landline_lines(&world).contains(&"Tower to Approach: NVA101, roger."), "{:?}", landline_lines(&world));
+    assert!(world.transmit(1, vec![Clearance::HandoffTower]));
+    run(&mut world, 10.0, &mut events);
+    assert_eq!(world.find(1).unwrap().frequency(), Position::Local);
+    assert!(uncoordinated(&events).is_empty(), "{events:?}");
+    // Tower and Ground are both automated: nothing more for the player.
+    assert_eq!(world.owed_emergency_call(1), None);
+}
+
+#[test]
+fn an_emergency_handed_off_without_a_call_is_scored() {
+    let (mut world, mut events) = approach_emergency();
+    assert!(world.transmit(1, vec![Clearance::HandoffTower]));
+    run(&mut world, 10.0, &mut events);
+    assert_eq!(uncoordinated(&events), [("NVA101", "Tower")]);
+    assert!(
+        world.score.incidents.iter().any(|i| i.text == "NVA101 handed to Tower without coordinating the emergency"),
+        "{:?}",
+        world.score.incidents
+    );
+}
+
+#[test]
+fn an_owed_emergency_call_shows_as_waiting_on_the_player() {
+    // The data block and strip show the aircraft waiting on a landline call.
+    let (world, _) = approach_emergency();
+    let ac = world.find(1).unwrap();
+    assert_eq!(world.awaiting(ac), Some(atcgame::sim::awaiting::Awaiting::Coordination));
+}
+
+#[test]
+fn an_automated_position_calls_the_player_before_handing_an_emergency_over() {
+    // On Local with Approach automated: Approach calls Tower.
+    let mut world = harrowgate(Staffing::LOCAL);
+    let mut events = Vec::new();
+    let mut ac = final_arrival(&world, 1, "NVA101", "27L", 14.0);
+    ac.phase = Phase::Localizer;
+    ac.emergency = emergency(EmergencyKind::LowFuel, Trigger::OnCheckIn);
+    world.add_aircraft(ac);
+    run(&mut world, 1.0, &mut events);
+    assert!(
+        landline_lines(&world).iter().any(|l| l.starts_with("Approach to Tower: emergency, NVA101, low fuel")),
+        "{:?}",
+        landline_lines(&world)
+    );
+    assert!(world.incoming().any(|c| c.aircraft == 1));
+    // Only acknowledged: there's nothing to refuse.
+    assert!(!world.answer_coordination(1, false));
+    assert!(world.answer_coordination(1, true));
+    assert!(landline_lines(&world).contains(&"Tower to Approach: NVA101, roger."), "{:?}", landline_lines(&world));
+    run(&mut world, 30.0, &mut events);
+    assert_eq!(landline_lines(&world).iter().filter(|l| l.contains("emergency, NVA101")).count(), 1, "called once");
+}
+
+#[test]
+fn local_calls_ground_about_an_emergency_before_contact_ground() {
+    let mut world = harrowgate(Staffing::LOCAL);
+    let mut events = Vec::new();
+    let mut ac = final_arrival(&world, 1, "NVA101", "27L", 4.0);
+    ac.emergency = emergency(EmergencyKind::Medical, Trigger::OnCheckIn);
+    world.add_aircraft(ac);
+    run(&mut world, 1.0, &mut events);
+    assert_eq!(world.owed_emergency_call(1), Some(Position::Ground));
+    assert!(world.call_emergency(1));
+    assert!(
+        landline_lines(&world).iter().any(|l| l.starts_with("Tower to Ground: emergency, NVA101, medical emergency")),
+        "{:?}",
+        landline_lines(&world)
+    );
+}
+
+#[test]
+fn no_call_between_two_positions_the_player_works() {
+    let mut world = harrowgate(Staffing::ALL);
+    let mut events = Vec::new();
+    let mut ac = final_arrival(&world, 1, "NVA101", "27L", 14.0);
+    ac.phase = Phase::Localizer;
+    ac.emergency = emergency(EmergencyKind::Medical, Trigger::OnCheckIn);
+    world.add_aircraft(ac);
+    run(&mut world, 5.0, &mut events);
+    assert_eq!(world.owed_emergency_call(1), None);
+    assert!(landline_lines(&world).is_empty(), "{:?}", landline_lines(&world));
 }

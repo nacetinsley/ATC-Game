@@ -44,6 +44,8 @@ pub enum Action {
     CallForRelease { on: bool },
     /// On Local, telling Approach about a go-around.
     CallGoAround,
+    /// Telling the next position about an emergency before the handoff.
+    CallEmergency,
     /// Quitting to the main menu: the shift ends here.
     Leave,
 }
@@ -73,6 +75,7 @@ impl World {
             Action::RequestRelease => self.request_release(command.id),
             Action::CallForRelease { on } => self.set_call_for_release(*on),
             Action::CallGoAround => self.call_go_around(command.id),
+            Action::CallEmergency => self.call_emergency(command.id),
             Action::Leave => {
                 self.end_shift(ShiftEnd::Left);
                 true

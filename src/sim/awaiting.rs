@@ -131,6 +131,11 @@ impl World {
             return Some(Awaiting::Deviation);
         }
 
+        // An emergency to tell the next position about before handing it off.
+        if self.owed_emergency_call(ac.id).is_some() {
+            return Some(Awaiting::Coordination);
+        }
+
         if self.handoff_due(ac) {
             return Some(Awaiting::HandoffDue);
         }

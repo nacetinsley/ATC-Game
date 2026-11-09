@@ -116,6 +116,17 @@ and an automated one. On a combined position you're both ends.
 - **Go-arounds, on Approach with Tower automated:**
   - Tower calls you about each go-around. Acknowledge with Y; leaving it 45
     seconds costs points.
+- **Emergencies, between any position you work and an automated one:**
+  - Before an aircraft in an emergency moves on to an automated position,
+    tell that position about it. The strip shows `LL`, a "Call" row appears
+    above the log, and T makes the call first ("Call T"): "Approach to
+    Tower: emergency, NVA101, medical emergency, 120 souls, 1 hour 30
+    minutes of fuel, runway 27L." T again hands it off.
+  - Handing it off without the call costs points. That includes a radio
+    failure that joins the ILS and goes to Tower by itself.
+  - An automated position calls you the same way before handing one to
+    you. Acknowledge with Y; leaving it 45 seconds costs points.
+  - A go-around call to Approach already covers the emergency.
 
 ### Line up and wait
 
@@ -895,7 +906,7 @@ but not notarized.
 | `+` / `-` | Speed +10 / -10 kt |
 | C | Step through the approaches: ILS, RNAV, visual, then the parallel's |
 | R | Resume the published route |
-| T | Accept a handoff, or hand off to the next controller |
+| T | Accept a handoff, or hand off to the next controller. For an emergency, first tell the next controller on the landline |
 | G | Go around. On a takeoff roll: stop immediately. On Local, for a go-around Approach hasn't been told about (or with nothing selected): call Approach |
 | Click a hold line, gate, ramp spot or junction | Taxi the selected aircraft there |
 | Ctrl-click a taxiway | Add it to the taxi route ("via") |

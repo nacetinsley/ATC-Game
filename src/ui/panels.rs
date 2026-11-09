@@ -98,21 +98,37 @@ fn draw_landline(world: &mut World, ui: &mut UiState, x: f32, top: f32) -> f32 {
                 }
                 CoordKind::Release { end } => format!("release {callsign} off {}?", world.airport.runways[end].id),
                 CoordKind::GoAround { end } => format!("go-around {callsign} off {}", world.airport.runways[end].id),
+                CoordKind::Emergency => match world.find(c.aircraft).and_then(|a| a.emergency.as_ref()) {
+                    Some(e) => format!("emergency {callsign}, {}", e.kind.describe()),
+                    None => format!("emergency {callsign}"),
+                },
             };
             let pending = c.state == CoordState::Pending;
             let text = if pending { format!("{}: {what}", c.from.name()) } else { format!("{}: {what} (unable)", c.from.name()) };
             (c.aircraft, text, pending)
         })
         .collect();
-    // Go-arounds the player still has to tell Approach about.
-    let owed: Vec<(u32, String)> = world
+    // Go-arounds and emergencies the player still has to tell another
+    // controller about: with the emergency, true.
+    let owed: Vec<(u32, String, bool)> = world
         .coordination
         .iter()
         .filter(|c| c.state == CoordState::Owed)
         .filter_map(|c| {
-            let callsign = &world.find(c.aircraft)?.callsign;
-            let CoordKind::GoAround { end } = c.kind else { return None };
-            Some((c.aircraft, format!("Call Approach: go-around {callsign} off {}", world.airport.runways[end].id)))
+            let ac = world.find(c.aircraft)?;
+            let callsign = &ac.callsign;
+            match c.kind {
+                CoordKind::GoAround { end } => Some((
+                    c.aircraft,
+                    format!("Call Approach: go-around {callsign} off {}", world.airport.runways[end].id),
+                    false,
+                )),
+                CoordKind::Emergency => {
+                    let what = ac.emergency.as_ref().map(|e| e.kind.describe()).unwrap_or("emergency");
+                    Some((c.aircraft, format!("Call {}: emergency {callsign}, {what}", c.to.name()), true))
+                }
+                _ => None,
+            }
         })
         .collect();
     let releases = release_line(world);
@@ -137,12 +153,16 @@ fn draw_landline(world: &mut World, ui: &mut UiState, x: f32, top: f32) -> f32 {
         label(&text, left, y + 17.0, 17.0, LANDLINE);
         y += LANDLINE_ROW;
     }
-    for (id, text) in owed.into_iter().take(LANDLINE_ROWS) {
+    for (id, text, emergency) in owed.into_iter().take(LANDLINE_ROWS) {
         let selected = ui.selected == Some(id);
         label(&text, left, y + 17.0, 17.0, if selected { TEXT } else { LANDLINE });
         let right = x + PANEL_WIDTH - PADDING;
-        if button("Call G", right - bw, y, bw, LANDLINE_ROW - 4.0) && !ui.replay {
-            world.call_go_around(id);
+        if button(if emergency { "Call T" } else { "Call G" }, right - bw, y, bw, LANDLINE_ROW - 4.0) && !ui.replay {
+            if emergency {
+                world.call_emergency(id);
+            } else {
+                world.call_go_around(id);
+            }
         }
         y += LANDLINE_ROW;
     }
@@ -328,7 +348,13 @@ fn draw_clearance(world: &mut World, ui: &mut UiState, x: f32, top: f32) {
     // Action rows.
     let y = y + 32.0;
     let action_w = (PANEL_WIDTH - PADDING * 2.0 - 18.0) / 4.0;
-    let handoff = if ac.phase == Phase::Offered { "Accept T" } else { "Handoff T" };
+    let handoff = if ac.phase == Phase::Offered {
+        "Accept T"
+    } else if world.owed_emergency_call(ac.id).is_some() {
+        "Call T"
+    } else {
+        "Handoff T"
+    };
     if button(handoff, left, y, action_w, bh) {
         ui.handoff(world);
     }
@@ -564,7 +590,7 @@ fn draw_log(world: &World, x: f32, top: f32) {
     let width = ((PANEL_WIDTH - PADDING * 2.0) / LOG_CHAR_WIDTH) as usize;
     let mut y = screen_height() - 8.0;
     // Newest at the bottom, working up until the panel is full.
-    'entries: for entry in world.log.iter().rev() {
+    'entries: for entry in world.log.iter().rev().filter(|e| e.shown()) {
         let color = match entry.speaker {
             Speaker::Controller => TEXT,
             // A pilot refusing an instruction stands out.

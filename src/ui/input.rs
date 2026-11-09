@@ -182,6 +182,11 @@ impl UiState {
     pub fn handoff(&mut self, world: &mut World) {
         let Some(id) = self.selected.filter(|_| !self.replay) else { return };
         let Some(ac) = world.find(id) else { return };
+        // An emergency: tell the next position on the landline first.
+        if world.owed_emergency_call(id).is_some() {
+            world.call_emergency(id);
+            return;
+        }
         match (ac.phase, ac.flow) {
             (Phase::Offered, _) => {
                 world.accept_handoff(id);

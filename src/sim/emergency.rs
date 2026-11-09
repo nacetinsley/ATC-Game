@@ -380,7 +380,7 @@ fn souls(rng: &mut fastrand::Rng, wake: WakeCategory) -> u32 {
 }
 
 /// "25 minutes", "2 hours 10 minutes".
-fn fuel_words(minutes: u32) -> String {
+pub(super) fn fuel_words(minutes: u32) -> String {
     let (h, m) = (minutes / 60, minutes % 60);
     match (h, m) {
         (0, m) => format!("{m} minutes"),

@@ -4,7 +4,9 @@
 //! runway, Local tells Ground about an arrival it has left holding short
 //! between runways, Local asks Approach to release a departure when
 //! Approach has put departures on call for release, and Local tells Approach
-//! about every IFR go-around. The landline only
+//! about every IFR go-around. Before an aircraft in an emergency moves to
+//! the next position, the one handing it off tells the next one about the
+//! emergency. The landline only
 //! matters between a position the player works and one that's automated. On
 //! a combined position the player is both ends, and two automated positions
 //! agree silently, as they always have.
@@ -47,6 +49,9 @@ pub enum CoordKind {
     Release { end: usize },
     /// Local telling Approach about an IFR go-around off this runway end.
     GoAround { end: usize },
+    /// Telling the next position about an aircraft in an emergency before
+    /// handing it off.
+    Emergency,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -60,8 +65,8 @@ pub enum CoordState {
     /// The crossing clearance has gone out: the runway is held for it until
     /// the aircraft is across.
     InUse,
-    /// Not yet made: the player, on Local, owes Approach a call about this
-    /// go-around.
+    /// Not yet made: the player owes the other controller a call about
+    /// this go-around or emergency.
     Owed,
 }
 
@@ -276,14 +281,138 @@ impl World {
 
     /// The player, on Local, tells Approach about a go-around.
     pub fn call_go_around(&mut self, id: u32) -> bool {
-        let Some(kind) =
-            self.coordination.iter().find(|c| c.aircraft == id && c.state == CoordState::Owed).map(|c| c.kind)
+        let Some(kind) = self
+            .coordination
+            .iter()
+            .find(|c| c.aircraft == id && matches!(c.kind, CoordKind::GoAround { .. }) && c.state == CoordState::Owed)
+            .map(|c| c.kind)
         else {
             return false;
         };
         self.ask(kind, id, Position::Local, Position::Approach);
         self.record(id, Action::CallGoAround);
         true
+    }
+
+    /// The player still has to tell the next position about this aircraft's
+    /// emergency before handing it off: the position to call, if so.
+    pub fn owed_emergency_call(&self, id: u32) -> Option<Position> {
+        self.coordination
+            .iter()
+            .find(|c| c.aircraft == id && c.kind == CoordKind::Emergency && c.state == CoordState::Owed)
+            .map(|c| c.to)
+    }
+
+    /// The player tells the next position about an emergency.
+    pub fn call_emergency(&mut self, id: u32) -> bool {
+        let Some(c) = self
+            .coordination
+            .iter()
+            .find(|c| c.aircraft == id && c.kind == CoordKind::Emergency && c.state == CoordState::Owed)
+        else {
+            return false;
+        };
+        let (from, to) = (c.from, c.to);
+        self.ask(CoordKind::Emergency, id, from, to);
+        self.record(id, Action::CallEmergency);
+        true
+    }
+
+    /// Where an aircraft goes after the position it's talking to now.
+    fn next_position(ac: &Aircraft) -> Option<Position> {
+        match ac.frequency() {
+            Position::Center if ac.phase == Phase::Offered => Some(Position::Approach),
+            Position::Approach if ac.flow == Flow::Arrival => Some(Position::Local),
+            Position::Local if !ac.on_ground && matches!(ac.phase, Phase::TowerRelease | Phase::GoAround) => {
+                Some(Position::Approach)
+            }
+            Position::Local if ac.flow == Flow::Arrival => Some(Position::Ground),
+            Position::Ground if ac.flow == Flow::Departure => Some(Position::Local),
+            _ => None,
+        }
+    }
+
+    /// What the landline says about an emergency.
+    fn emergency_text(&self, id: u32) -> String {
+        let Some(ac) = self.find(id) else { return String::new() };
+        let Some(e) = ac.emergency.as_ref() else { return String::new() };
+        let callsign = &ac.callsign;
+        let runway =
+            ac.approach_runway.map(|r| format!(", runway {}", self.airport.runways[r].id)).unwrap_or_default();
+        if e.nordo() {
+            return format!("emergency, {callsign}, radio failure, squawking 7600{runway}.");
+        }
+        let fuel = super::emergency::fuel_words(e.fuel_minutes);
+        format!("emergency, {callsign}, {}, {} souls, {fuel} of fuel{runway}.", e.kind.describe(), e.souls)
+    }
+
+    /// Each aircraft in an emergency is coordinated with the next position
+    /// before it gets there, when the player works one end of the handoff:
+    /// the player owes the call, or the automated controller makes it. A
+    /// handoff the player didn't call ahead is scored.
+    fn run_emergency_coordination(&mut self) {
+        let staffing = self.config.staffing;
+        let mut index = 0;
+        while index < self.coordination.len() {
+            let c = &self.coordination[index];
+            if c.kind != CoordKind::Emergency {
+                index += 1;
+                continue;
+            }
+            let ac = self.find(c.aircraft);
+            let here = ac.map(|a| a.frequency());
+            let handed = here == Some(c.to);
+            let stale = ac.is_none_or(|a| !a.in_emergency() || Self::next_position(a) != Some(c.to));
+            if handed || here != Some(c.from) || stale {
+                let c = self.coordination.remove(index);
+                if handed && c.state == CoordState::Owed {
+                    let callsign = self.callsign(c.aircraft);
+                    self.emit(SimEvent::UncoordinatedEmergency { callsign, to: c.to.name().to_string() });
+                }
+                continue;
+            }
+            index += 1;
+        }
+        let mut calls = Vec::new();
+        for ac in &self.aircraft {
+            let open = self.coordination.iter().any(|c| c.aircraft == ac.id && c.kind == CoordKind::Emergency);
+            if !ac.in_emergency() || open {
+                continue;
+            }
+            let from = ac.frequency();
+            let Some(to) = Self::next_position(ac) else { continue };
+            if staffing.works(from) == staffing.works(to) {
+                continue;
+            }
+            // The go-around call to Approach covers the emergency too.
+            let go_around =
+                self.coordination.iter().any(|c| c.aircraft == ac.id && matches!(c.kind, CoordKind::GoAround { .. }));
+            if go_around && to == Position::Approach {
+                continue;
+            }
+            // Center and Approach already announce a radio failure.
+            if ac.nordo() && !staffing.works(from) && matches!(from, Position::Center | Position::Approach) {
+                continue;
+            }
+            calls.push((ac.id, from, to));
+        }
+        let now = self.time;
+        for (id, from, to) in calls {
+            if staffing.works(from) {
+                self.coordination.push(Coordination {
+                    kind: CoordKind::Emergency,
+                    from,
+                    to,
+                    aircraft: id,
+                    asked: now,
+                    due: now,
+                    late: false,
+                    state: CoordState::Owed,
+                });
+            } else {
+                self.ask(CoordKind::Emergency, id, from, to);
+            }
+        }
     }
 
     fn landline(&mut self, from: Position, to: Position, text: String) {
@@ -307,6 +436,7 @@ impl World {
             }
             CoordKind::Release { .. } => format!("{callsign} released."),
             CoordKind::GoAround { .. } => format!("{callsign}, approved."),
+            CoordKind::Emergency => format!("{callsign}, roger."),
         }
     }
 
@@ -320,7 +450,7 @@ impl World {
                 format!("{callsign} hold for release, expect {HOLD_FOR_RELEASE_MIN} minute departure delay")
             }
             CoordKind::Release { .. } => format!("{callsign} hold for release"),
-            CoordKind::GoAround { .. } => callsign.to_string(),
+            CoordKind::GoAround { .. } | CoordKind::Emergency => callsign.to_string(),
         };
         match why {
             Some(why) => format!("{what}, {why}. I'll call you."),
@@ -352,6 +482,7 @@ impl World {
                 format!("request release {callsign}, runway {}.", self.airport.runways[end].id)
             }
             CoordKind::GoAround { end } => self.go_around_text(end, id),
+            CoordKind::Emergency => self.emergency_text(id),
         };
         self.landline(from, to, text);
         if self.config.staffing.works(to) {
@@ -459,13 +590,19 @@ impl World {
         };
         let was = self.coordination[index].state;
         let go_around = matches!(self.coordination[index].kind, CoordKind::GoAround { .. });
-        // A go-around is only acknowledged: there's nothing to refuse.
-        if !approve && (was != CoordState::Pending || go_around) {
+        let emergency = self.coordination[index].kind == CoordKind::Emergency;
+        // A go-around or an emergency is only acknowledged: there's nothing to refuse.
+        if !approve && (was != CoordState::Pending || go_around || emergency) {
             return false;
         }
         let now = self.time;
         let c = &mut self.coordination[index];
-        let lasts = if matches!(c.kind, CoordKind::Release { .. }) { RELEASE_VOID_S } else { APPROVAL_S };
+        let lasts = match c.kind {
+            CoordKind::Release { .. } => RELEASE_VOID_S,
+            // Kept until the handoff, so it isn't called about again.
+            CoordKind::Emergency => f32::MAX,
+            _ => APPROVAL_S,
+        };
         c.state = if approve {
             CoordState::Approved { until: now + lasts }
         } else {
@@ -493,6 +630,7 @@ impl World {
     /// Automated answers and callbacks, lapsed approvals, late answers.
     pub(super) fn run_coordination(&mut self) {
         self.run_releases();
+        self.run_emergency_coordination();
         if self.coordination.is_empty() {
             return;
         }
@@ -538,6 +676,8 @@ impl World {
                     };
                     (done, false, None)
                 }
+                // Ended by the handoff, in run_emergency_coordination.
+                CoordKind::Emergency => (false, false, None),
             };
             if done {
                 self.coordination.remove(index);
@@ -578,6 +718,7 @@ impl World {
                         }
                         CoordKind::Release { .. } => format!("{callsign} still waiting for release."),
                         CoordKind::GoAround { end } => self.go_around_text(end, c.aircraft),
+                        CoordKind::Emergency => self.emergency_text(c.aircraft),
                     };
                     let item = &mut self.coordination[index];
                     item.state = CoordState::Pending;
@@ -616,7 +757,7 @@ impl World {
             CoordKind::Crossing { .. } => APPROVAL_S,
             CoordKind::Release { .. } => RELEASE_VOID_S,
             // Approach has it in hand until the aircraft reaches it.
-            CoordKind::GoAround { .. } => f32::MAX,
+            CoordKind::GoAround { .. } | CoordKind::Emergency => f32::MAX,
         }
     }
 
@@ -637,7 +778,7 @@ impl World {
             CoordKind::Release { .. } => {
                 blocker.map(|why| (format!("cancel release {callsign}, {why}. I'll call you."), true))
             }
-            CoordKind::GoAround { .. } => None,
+            CoordKind::GoAround { .. } | CoordKind::Emergency => None,
         }
     }
 

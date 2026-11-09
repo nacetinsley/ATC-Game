@@ -73,6 +73,14 @@ pub struct LogEntry {
     pub radio: Option<Radio>,
 }
 
+impl LogEntry {
+    /// Shown in the log: the game's notices, radio on the positions the
+    /// player works, and landline calls with the player at one end.
+    pub fn shown(&self) -> bool {
+        self.radio.as_ref().is_none_or(|r| r.heard)
+    }
+}
+
 /// Who is talking on a transmission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Talker {

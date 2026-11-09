@@ -47,6 +47,8 @@ pub const PENALTY_LINE_UP: i32 = -100;
 pub const PENALTY_LONG_LINE_UP: i32 = -25;
 /// A go-around reached Approach without Tower's call.
 pub const PENALTY_UNCOORDINATED_GO_AROUND: i32 = -50;
+/// An aircraft in an emergency handed off without telling the next position.
+pub const PENALTY_UNCOORDINATED_EMERGENCY: i32 = -100;
 /// A pilot asked to go round weather and had to go without an answer.
 pub const PENALTY_DEVIATION_IGNORED: i32 = -50;
 pub const POINTS_TOUCH_AND_GO: i32 = 20;
@@ -159,6 +161,9 @@ pub enum SimEvent {
     LongLineUp { callsign: String },
     /// The player, on Local, let a go-around reach Approach without telling it.
     UncoordinatedGoAround { callsign: String },
+    /// The player handed an aircraft in an emergency to an automated
+    /// position without telling it first.
+    UncoordinatedEmergency { callsign: String, to: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -463,6 +468,13 @@ impl Score {
                     time,
                     format!("{callsign} held in position over 90 seconds"),
                     PENALTY_LONG_LINE_UP,
+                );
+            }
+            SimEvent::UncoordinatedEmergency { callsign, to } => {
+                self.incident(
+                    time,
+                    format!("{callsign} handed to {to} without coordinating the emergency"),
+                    PENALTY_UNCOORDINATED_EMERGENCY,
                 );
             }
             SimEvent::UncoordinatedGoAround { callsign } => {
