@@ -208,7 +208,7 @@ fn hash(text: &str) -> u32 {
 /// Which voice says a line.
 fn voice_for(talker: &Talker) -> Voice {
     match talker {
-        Talker::Controller => CONTROLLER,
+        Talker::Controller(_) => CONTROLLER,
         Talker::Facility(_) => FACILITY,
         Talker::Pilot(callsign) => {
             let mut n = hash(callsign) as usize;
@@ -225,7 +225,7 @@ fn voice_for(talker: &Talker) -> Voice {
 /// the field, if known, and `count` how many transmissions came before.
 fn set_for(talker: &Talker, range_nm: Option<f32>, count: u32) -> Set {
     match talker {
-        Talker::Controller => Set::Sidetone,
+        Talker::Controller(_) => Set::Sidetone,
         Talker::Facility(_) => Set::Landline,
         Talker::Pilot(callsign) => {
             let seed = hash(callsign);
@@ -465,7 +465,7 @@ pub struct Sample {
 /// longest ones, a mayday and a landline.
 pub fn samples() -> Vec<Sample> {
     use crate::sim::positions::Position;
-    let me = || Talker::Controller;
+    let me = || Talker::Controller(0);
     let pilot = |c: &str| Talker::Pilot(c.to_string());
     let s = |name, speaker, talker, text| Sample { name, speaker, talker, text };
     vec![
@@ -576,7 +576,7 @@ impl Voices {
     /// True if a voice will say it: false for the player's own with their
     /// voice off, though it still holds the frequency.
     pub fn hear(&mut self, line: &LogEntry, callsigns: &[&str], range_nm: Option<f32>, now: f64) -> bool {
-        let Some(radio) = line.radio.as_ref().filter(|r| r.heard) else { return false };
+        let Some(radio) = line.radio.as_ref().filter(|r| r.heard()) else { return false };
         if !self.enabled || self.packs.is_empty() {
             return false;
         }
@@ -584,7 +584,7 @@ impl Voices {
         if words.is_empty() {
             return false;
         }
-        let silent = !self.own && radio.talker == Talker::Controller;
+        let silent = !self.own && matches!(radio.talker, Talker::Controller(_));
         self.count = self.count.wrapping_add(1);
         let set = set_for(&radio.talker, range_nm, self.count);
         self.queue.push_back(Waiting { since: now, words, voice: voice_for(&radio.talker), set, silent });
@@ -745,7 +745,7 @@ mod tests {
         let talker = Talker::Pilot("NVA101".into());
         let late = (1..=600).filter(|&n| matches!(set_for(&talker, None, n), Set::Air { late: true, .. })).count();
         assert!((20..=90).contains(&late), "{late} in 600");
-        assert_eq!(set_for(&Talker::Controller, Some(3.0), 5), Set::Sidetone);
+        assert_eq!(set_for(&Talker::Controller(0), Some(3.0), 5), Set::Sidetone);
     }
 
     fn voices() -> Voices {
@@ -755,14 +755,14 @@ mod tests {
     }
 
     fn line(speaker: Speaker, talker: Talker, text: &str) -> LogEntry {
-        LogEntry { time: 0.0, speaker, text: text.into(), radio: Some(crate::sim::Radio { talker, heard: true }) }
+        LogEntry { time: 0.0, speaker, text: text.into(), radio: Some(crate::sim::Radio { talker, heard_by: crate::sim::positions::Seats::of(0) }) }
     }
 
     #[test]
     fn your_own_transmissions_can_be_left_unspoken_but_hold_the_frequency() {
         let mut v = voices();
         v.own = false;
-        assert!(!v.hear(&line(Speaker::Controller, Talker::Controller, "NVA101, turn left heading 240."), &[], None, 0.0));
+        assert!(!v.hear(&line(Speaker::Controller, Talker::Controller(0), "NVA101, turn left heading 240."), &[], None, 0.0));
         assert!(v.hear(&line(Speaker::Pilot, Talker::Pilot("NVA101".into()), "left heading 240, NVA101."), &[], None, 0.0));
         // The first goes "out" silently: the frequency is busy, the readback waits.
         v.update(0.0, 1.0);
@@ -785,7 +785,7 @@ mod tests {
     #[test]
     fn a_digit_group_has_no_gap_in_it() {
         let v = voices();
-        let (audio, words) = v.render(Speaker::Controller, &Talker::Controller, "NVA101", &[]).unwrap();
+        let (audio, words) = v.render(Speaker::Controller, &Talker::Controller(0), "NVA101", &[]).unwrap();
         let m = measure(&audio, words);
         assert!(m.longest_gap_s < 0.05, "{m:?}");
     }

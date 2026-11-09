@@ -505,7 +505,7 @@ impl Airport {
     /// Altitude of a path at `deg` to a runway's threshold crossing height.
     pub fn glidepath_altitude(&self, rwy: usize, along: f32, deg: f32) -> f32 {
         let runway = &self.runways[rwy];
-        let slope = deg.to_radians().tan();
+        let slope = super::math::tan(deg.to_radians());
         self.elevation + runway.threshold_crossing_height + along.max(0.0) * FT_PER_NM * slope
     }
 

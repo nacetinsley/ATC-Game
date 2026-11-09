@@ -6,7 +6,7 @@ use super::approach::{ApproachFacts, ApproachKind, VISUAL_MIN_NM};
 
 use super::ground_map::GroundMap;
 use super::holding::{HoldSpec, HoldState};
-use super::positions::{Position, Staffing};
+use super::positions::{Position, SOLO, Seat, Staffing};
 use super::scoring::{GoAroundReason, SimEvent};
 use super::units::{format_heading, heading_diff, normalize_heading};
 use super::vfr::{compass, landing_for, side_word};
@@ -132,18 +132,18 @@ impl Clearance {
 }
 
 /// Can `speaker` talk to an aircraft on `frequency`? Its own frequency, or any
-/// frequency the player also works: that's what a combined position is.
+/// frequency the same player also works: that's what a combined position is.
 pub fn can_speak(speaker: Position, frequency: Position, staffing: Staffing) -> bool {
-    speaker == frequency || (staffing.works(speaker) && staffing.works(frequency))
+    speaker == frequency || staffing.same_seat(speaker, frequency)
 }
 
-/// The position the player speaks as for this instruction, if any.
-pub fn issuer_for(clearance: &Clearance, frequency: Position, staffing: Staffing) -> Option<Position> {
+/// The position the player in `seat` speaks as for this instruction, if any.
+pub fn issuer_for(clearance: &Clearance, frequency: Position, staffing: Staffing, seat: Seat) -> Option<Position> {
     clearance
         .issuers()
         .iter()
         .copied()
-        .find(|&p| staffing.works(p) && can_speak(p, frequency, staffing))
+        .find(|&p| staffing.seat_works(seat, p) && can_speak(p, frequency, staffing))
 }
 
 /// A radio call waiting for the pilot to respond.
@@ -368,9 +368,24 @@ struct Context<'a> {
     player_approach: bool,
 }
 
+/// Who is sending a radio call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Sender {
+    Player(Seat),
+    Automated(Position),
+}
+
 impl World {
     /// Accept an aircraft Center is offering. Immediate: it's a landline, not the radio.
     pub fn accept_handoff(&mut self, id: u32) -> bool {
+        self.accept_handoff_as(SOLO, id)
+    }
+
+    /// The player in `seat`, on Approach, accepts Center's offer.
+    pub(super) fn accept_handoff_as(&mut self, seat: Seat, id: u32) -> bool {
+        if !self.config.staffing.seat_works(seat, Position::Approach) {
+            return false;
+        }
         let Some(ac) = self.aircraft.iter_mut().find(|a| a.id == id) else {
             return false;
         };
@@ -379,8 +394,8 @@ impl World {
         }
         ac.phase = Phase::Controlled;
         let line = format!("{}, radar contact.", ac.callsign);
-        self.controller_say(line, None);
-        self.record(id, super::replay::Action::AcceptHandoff);
+        self.player_say(line, seat, Position::Approach);
+        self.record(seat, id, super::replay::Action::AcceptHandoff);
         true
     }
 
@@ -391,6 +406,12 @@ impl World {
 
     /// Send a radio call as the player. The pilot responds after a short random delay.
     pub fn transmit(&mut self, id: u32, clearances: Vec<Clearance>) -> bool {
+        self.transmit_as(SOLO, id, clearances)
+    }
+
+    /// Send a radio call as the player in `seat`. An instruction only their
+    /// positions could give it goes unanswered ("not on your frequency").
+    pub(super) fn transmit_as(&mut self, seat: Seat, id: u32, clearances: Vec<Clearance>) -> bool {
         let staffing = self.config.staffing;
         let Some(ac) = self.aircraft.iter().find(|a| a.id == id) else {
             return false;
@@ -400,13 +421,13 @@ impl World {
             .iter()
             .cloned()
             .map(|c| {
-                let issuer = issuer_for(&c, frequency, staffing);
+                let issuer = issuer_for(&c, frequency, staffing, seat);
                 (c, issuer)
             })
             .collect();
-        let sent = self.send(id, calls, None);
+        let sent = self.send(id, calls, Sender::Player(seat));
         if sent {
-            self.record(id, super::replay::Action::Transmit(clearances));
+            self.record(seat, id, super::replay::Action::Transmit(clearances));
         }
         sent
     }
@@ -414,7 +435,7 @@ impl World {
     /// Send a radio call from an automated position.
     pub(super) fn issue(&mut self, id: u32, clearances: Vec<Clearance>, from: Position) {
         let calls = clearances.into_iter().map(|c| (c, Some(from))).collect();
-        self.send(id, calls, Some(from));
+        self.send(id, calls, Sender::Automated(from));
     }
 
     /// True while an instruction to this aircraft is waiting for the pilot.
@@ -422,12 +443,7 @@ impl World {
         self.radio.iter().any(|c| c.aircraft == id)
     }
 
-    fn send(
-        &mut self,
-        id: u32,
-        clearances: Vec<(Clearance, Option<Position>)>,
-        automated: Option<Position>,
-    ) -> bool {
+    fn send(&mut self, id: u32, clearances: Vec<(Clearance, Option<Position>)>, sender: Sender) -> bool {
         if clearances.is_empty() {
             return false;
         }
@@ -454,15 +470,19 @@ impl World {
             })
             .collect();
         // Automated controllers are only heard when the player works in the tower.
-        let logged = automated.is_none() || self.config.staffing.tower();
-        let line = match automated {
-            Some(from) => format!("{}: {}, {}.", from.name(), ac.callsign, words.join(", ")),
-            None => format!("{}, {}.", ac.callsign, words.join(", ")),
+        let logged = matches!(sender, Sender::Player(_)) || self.config.staffing.tower();
+        let line = match sender {
+            Sender::Automated(from) => format!("{}: {}, {}.", from.name(), ac.callsign, words.join(", ")),
+            Sender::Player(_) => format!("{}, {}.", ac.callsign, words.join(", ")),
         };
+        let frequency = ac.frequency();
         let delay = PILOT_DELAY.0 + self.rng.f32() * (PILOT_DELAY.1 - PILOT_DELAY.0);
         self.radio.push(RadioCall { due: self.time + delay, aircraft: id, clearances, logged });
         if logged {
-            self.controller_say(line, automated);
+            match sender {
+                Sender::Player(seat) => self.player_say(line, seat, frequency),
+                Sender::Automated(from) => self.automated_say(line, from),
+            }
         }
         true
     }
@@ -600,10 +620,11 @@ impl World {
                         rolled = true;
                     }
                     let after = ac.frequency();
-                    // Checking in on a new frequency the player works, from one they don't.
+                    // Checking in on a new frequency a player works, from a
+                    // controller who isn't them.
                     if after != before
                         && staffing.works(after)
-                        && !issuer.is_some_and(|p| staffing.works(p))
+                        && !issuer.is_some_and(|p| staffing.same_seat(p, after))
                     {
                         new_frequency = Some(after);
                     }
@@ -1185,7 +1206,7 @@ fn check_final(ac: &Aircraft, rwy: usize, kind: ApproachKind, airport: &Airport)
     }
     // Joining the course less than 2 miles outside the approach gate: 20 degrees.
     let cross = runway.cross(ac.pos);
-    let joins_at = along - cross.abs() / intercept.abs().to_radians().tan().max(1e-3);
+    let joins_at = along - cross.abs() / super::math::tan(intercept.abs().to_radians()).max(1e-3);
     if intercept.abs() > MAX_INTERCEPT_NEAR_GATE_DEG && joins_at - airport.approach_gate_nm(rwy) < 2.0 {
         return Err("intercept angle too steep".into());
     }
@@ -1391,15 +1412,15 @@ mod tests {
     fn combined_positions_speak_on_each_others_frequencies() {
         use Position::*;
         let land = Clearance::ClearedToLand(0);
-        assert_eq!(issuer_for(&land, Local, Staffing::LOCAL), Some(Local));
-        assert_eq!(issuer_for(&land, Local, Staffing::APPROACH), None);
+        assert_eq!(issuer_for(&land, Local, Staffing::LOCAL, SOLO), Some(Local));
+        assert_eq!(issuer_for(&land, Local, Staffing::APPROACH, SOLO), None);
         let taxi = Clearance::Taxi { to: 0, via: vec![] };
         // Local+Ground: Tower can taxi an aircraft still on Ground, and Ground one on Tower.
-        assert!(issuer_for(&taxi, Ground, Staffing::LOCAL_GROUND).is_some());
-        assert_eq!(issuer_for(&Clearance::CrossRunway(0), Ground, Staffing::LOCAL_GROUND), Some(Local));
+        assert!(issuer_for(&taxi, Ground, Staffing::LOCAL_GROUND, SOLO).is_some());
+        assert_eq!(issuer_for(&Clearance::CrossRunway(0), Ground, Staffing::LOCAL_GROUND, SOLO), Some(Local));
         // Split: Tower can't clear an aircraft still talking to Ground.
-        assert_eq!(issuer_for(&Clearance::CrossRunway(0), Ground, Staffing::LOCAL), None);
-        assert_eq!(issuer_for(&Clearance::Heading(90.0), Approach, Staffing::ALL), Some(Approach));
+        assert_eq!(issuer_for(&Clearance::CrossRunway(0), Ground, Staffing::LOCAL, SOLO), None);
+        assert_eq!(issuer_for(&Clearance::Heading(90.0), Approach, Staffing::ALL, SOLO), Some(Approach));
     }
 
     #[test]

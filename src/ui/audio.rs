@@ -727,7 +727,7 @@ impl Sounds {
             // A voiced transmission makes its own key-up and squelch. With
             // voices on, a pilot on a frequency the player doesn't work isn't
             // heard at all.
-            let heard = !self.voices.enabled || line.radio.as_ref().is_none_or(|r| r.heard);
+            let heard = !self.voices.enabled || line.radio.as_ref().is_none_or(|r| r.heard());
             radio_cue |= !voiced && heard && matches!(line.speaker, Speaker::Pilot | Speaker::Emergency);
         }
         if radio_cue {

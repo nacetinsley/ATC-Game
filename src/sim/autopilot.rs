@@ -86,6 +86,6 @@ pub fn should_capture_localizer(ac: &Aircraft, runway: &Runway) -> bool {
     }
     let turn_radius = ac.tas() / 3600.0 / super::aircraft::STANDARD_TURN_RATE.to_radians();
     let angle = heading_diff(ac.heading, runway.heading).abs().to_radians();
-    let lead = turn_radius * (1.0 - angle.cos()) + 0.1;
+    let lead = turn_radius * (1.0 - super::math::cos(angle)) + 0.1;
     runway.cross(ac.pos).abs() <= lead
 }

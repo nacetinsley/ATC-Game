@@ -12,6 +12,7 @@ pub mod delivery;
 pub mod emergency;
 pub mod ground;
 pub mod holding;
+pub mod math;
 pub mod mistakes;
 pub mod performance;
 pub mod positions;
@@ -68,16 +69,21 @@ pub struct LogEntry {
     pub time: f32,
     pub speaker: Speaker,
     pub text: String,
-    /// A radio or landline transmission: who keyed the mike, and whether the
-    /// player hears it. None for the game's own notices.
+    /// A radio or landline transmission: who keyed the mike, and which
+    /// players hear it. None for the game's own notices.
     pub radio: Option<Radio>,
 }
 
 impl LogEntry {
-    /// Shown in the log: the game's notices, radio on the positions the
-    /// player works, and landline calls with the player at one end.
+    /// Shown in the log of the player in this seat: the game's notices, radio
+    /// on the positions they work, and landline calls with them at one end.
+    pub fn shown_to(&self, seat: positions::Seat) -> bool {
+        self.radio.as_ref().is_none_or(|r| r.heard_by.has(seat))
+    }
+
+    /// Shown to a single player.
     pub fn shown(&self) -> bool {
-        self.radio.as_ref().is_none_or(|r| r.heard)
+        self.shown_to(positions::SOLO)
     }
 }
 
@@ -86,8 +92,8 @@ impl LogEntry {
 pub enum Talker {
     /// A pilot, by callsign.
     Pilot(String),
-    /// The player.
-    Controller,
+    /// A player, by seat.
+    Controller(positions::Seat),
     /// An automated controller, on the radio or the landline.
     Facility(positions::Position),
 }
@@ -95,8 +101,15 @@ pub enum Talker {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Radio {
     pub talker: Talker,
-    /// On a frequency or a landline the player is on.
-    pub heard: bool,
+    /// The players on the frequency or the landline.
+    pub heard_by: positions::Seats,
+}
+
+impl Radio {
+    /// Heard by a single player.
+    pub fn heard(&self) -> bool {
+        self.heard_by.has(positions::SOLO)
+    }
 }
 
 /// What the radar saw on the last sweep. The scope only ever draws these.
@@ -415,40 +428,50 @@ impl World {
         self.log_line(speaker, text, None);
     }
 
-    /// A pilot on the radio, heard if it's on a frequency the player works.
-    /// A line the game says for it (no radio) is just a notice.
+    /// A pilot on the radio, heard by the player working its frequency. One
+    /// for an aircraft no longer about is heard by everyone. A line the game
+    /// says for it (no radio) is just a notice.
     fn pilot_say(&mut self, speaker: Speaker, callsign: String, text: String) {
         let frequency = self.aircraft.iter().find(|a| a.callsign == callsign).map(|a| a.frequency());
-        let heard = frequency.is_none_or(|f| self.config.staffing.works(f));
-        self.pilot_line(speaker, callsign, text, heard);
+        let staffing = self.config.staffing;
+        let heard_by = frequency.map_or(staffing.players(), |f| staffing.ears(f));
+        self.pilot_line(speaker, callsign, text, heard_by);
     }
 
     /// A pilot answering on a known frequency.
     fn pilot_say_on(&mut self, speaker: Speaker, callsign: String, text: String, frequency: positions::Position) {
-        let heard = self.config.staffing.works(frequency);
-        self.pilot_line(speaker, callsign, text, heard);
+        let heard_by = self.config.staffing.ears(frequency);
+        self.pilot_line(speaker, callsign, text, heard_by);
     }
 
-    fn pilot_line(&mut self, speaker: Speaker, callsign: String, text: String, heard: bool) {
-        let radio = (speaker != Speaker::System).then_some(Radio { talker: Talker::Pilot(callsign), heard });
+    fn pilot_line(&mut self, speaker: Speaker, callsign: String, text: String, heard_by: positions::Seats) {
+        let radio = (speaker != Speaker::System).then_some(Radio { talker: Talker::Pilot(callsign), heard_by });
         self.log_line(speaker, text, radio);
     }
 
-    /// A controller's transmission: the player's, or an automated one's.
-    fn controller_say(&mut self, text: String, automated: Option<positions::Position>) {
-        let radio = match automated {
-            None => Radio { talker: Talker::Controller, heard: true },
-            Some(p) => Radio { talker: Talker::Facility(p), heard: false },
-        };
+    /// A player's transmission, heard by them and anyone else on the
+    /// frequency.
+    fn player_say(&mut self, text: String, seat: positions::Seat, frequency: positions::Position) {
+        let heard_by = positions::Seats::of(seat).union(self.config.staffing.ears(frequency));
+        self.log_line(Speaker::Controller, text, Some(Radio { talker: Talker::Controller(seat), heard_by }));
+    }
+
+    /// An automated controller's transmission. Players don't hear them: they
+    /// aren't on its frequency.
+    fn automated_say(&mut self, text: String, from: positions::Position) {
+        let radio = Radio { talker: Talker::Facility(from), heard_by: positions::Seats::NONE };
         self.log_line(Speaker::Controller, text, Some(radio));
     }
 
-    /// A landline call, heard if the player is at either end.
+    /// A landline call, heard by the players at either end.
     fn landline_say(&mut self, from: positions::Position, to: positions::Position, text: String) {
         let staffing = self.config.staffing;
-        let talker = if staffing.works(from) { Talker::Controller } else { Talker::Facility(from) };
-        let heard = staffing.works(from) || staffing.works(to);
-        self.log_line(Speaker::Landline, text, Some(Radio { talker, heard }));
+        let talker = match staffing.seat(from) {
+            Some(seat) => Talker::Controller(seat),
+            None => Talker::Facility(from),
+        };
+        let heard_by = staffing.ears(from).union(staffing.ears(to));
+        self.log_line(Speaker::Landline, text, Some(Radio { talker, heard_by }));
     }
 
     fn log_line(&mut self, speaker: Speaker, text: String, radio: Option<Radio>) {
@@ -469,6 +492,43 @@ impl World {
             self.ended = Some(end);
             self.emit(SimEvent::ShiftEnded { end });
         }
+    }
+
+    /// A hash of the shift's state: the aircraft, the departures waiting, the
+    /// score, the landlines, emergencies, the wind and the random number
+    /// generator. Two worlds that agree on it have played the same shift, so
+    /// it shows when two machines running one shift have drifted apart.
+    pub fn checksum(&self) -> u64 {
+        use std::fmt::Write as _;
+        /// FNV-1a over text written into it.
+        struct Fnv(u64);
+        impl std::fmt::Write for Fnv {
+            fn write_str(&mut self, s: &str) -> std::fmt::Result {
+                for b in s.bytes() {
+                    self.0 = (self.0 ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+                }
+                Ok(())
+            }
+        }
+        let mut hash = Fnv(0xcbf2_9ce4_8422_2325);
+        // Debug writes each f32 exactly (the shortest text that reads back
+        // as the same bits), so this is as exact as hashing the bits.
+        let _ = write!(
+            hash,
+            "{} {:?} {} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}",
+            self.ticks,
+            self.time,
+            self.said,
+            self.wind,
+            self.rng,
+            self.aircraft,
+            self.departure_queue,
+            self.score,
+            self.coordination,
+            self.releases,
+            self.emergencies,
+        );
+        hash.0
     }
 
     /// Advance the world one fixed step. Does nothing once the shift has ended.

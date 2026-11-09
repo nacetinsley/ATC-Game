@@ -279,7 +279,7 @@ const ENDING_MIN: usize = 30;
 
 /// The words of every heard transmission.
 fn heard_words(lines: &'static [Line]) -> Vec<&'static [String]> {
-    lines.iter().filter(|(_, r, _, _)| r.heard).map(|(_, _, _, w)| w.as_slice()).collect()
+    lines.iter().filter(|(_, r, _, _)| r.heard()).map(|(_, _, _, w)| w.as_slice()).collect()
 }
 
 /// A digit or letter of the phonetic alphabet: part of a number, callsign,
@@ -455,18 +455,18 @@ fn who_is_heard() {
     let mut unheard_pilot = false;
     for (text, radio, speaker, _) in lines {
         match (&radio.talker, speaker) {
-            (Talker::Controller, Speaker::Controller) => assert!(radio.heard, "{text}"),
-            (Talker::Facility(_), Speaker::Controller) => assert!(!radio.heard, "{text}"),
+            (Talker::Controller(_), Speaker::Controller) => assert!(radio.heard(), "{text}"),
+            (Talker::Facility(_), Speaker::Controller) => assert!(!radio.heard(), "{text}"),
             (Talker::Pilot(_), _) => {
-                heard_pilot |= radio.heard;
-                unheard_pilot |= !radio.heard;
+                heard_pilot |= radio.heard();
+                unheard_pilot |= !radio.heard();
             }
             _ => {}
         }
     }
     assert!(heard_pilot && unheard_pilot);
     // An automated Ground taxi instruction, and its readback, from a Local shift.
-    let readback = lines.iter().find(|(t, r, s, _)| *s == Speaker::Pilot && t.contains(", taxi via ") && !r.heard);
+    let readback = lines.iter().find(|(t, r, s, _)| *s == Speaker::Pilot && t.contains(", taxi via ") && !r.heard());
     assert!(readback.is_some(), "a readback to the automated Ground");
 }
 
@@ -481,7 +481,7 @@ fn landlines() {
             let (from, _) = text.split_once(" to ").expect("Approach to Tower: ...");
             match &radio.talker {
                 Talker::Facility(p) => assert_eq!(p.name(), from, "{text}"),
-                Talker::Controller => assert!(radio.heard),
+                Talker::Controller(_) => assert!(radio.heard()),
                 Talker::Pilot(_) => panic!("{text}"),
             }
             assert_ne!(words.first().map(String::as_str), Some("approach"), "the heading is left out: {text}");

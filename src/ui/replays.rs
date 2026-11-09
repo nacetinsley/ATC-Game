@@ -156,7 +156,7 @@ mod tests {
             code: "KSUS-0000-0000-00000".into(),
             clock_start: 1_793_974_805.25,
             summary: Summary { ticks: 4800, points: -12, incidents: 3 },
-            command: vec![Command { tick: 3, id: 9, action: Action::Transmit(vec![Clearance::ClearedIls(2)]) }],
+            command: vec![Command { tick: 3, id: 9, action: Action::Transmit(vec![Clearance::ClearedIls(2)]), seat: 0 }],
         };
         let text = toml::to_string(&file).unwrap();
         assert_eq!(toml::from_str::<ReplayFile>(&text).unwrap(), file, "{text}");

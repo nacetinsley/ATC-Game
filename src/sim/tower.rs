@@ -8,7 +8,7 @@ use super::approach::ApproachKind;
 use super::autopilot::should_capture_localizer;
 use super::clearance::{AT_NODE_NM, Clearance, PILOT_DELAY, issuer_for};
 use super::ground_map::{GroundMap, Parking, StandUse};
-use super::positions::Position;
+use super::positions::{Position, SOLO, Seat};
 use super::scoring::{GoAroundReason, SimEvent};
 use super::traffic::airline_of;
 use super::{Speaker, World};
@@ -930,7 +930,12 @@ impl World {
 
     /// The position the player would speak as for this instruction, if any.
     pub fn issuer(&self, ac: &Aircraft, clearance: &Clearance) -> Option<Position> {
-        issuer_for(clearance, ac.frequency(), self.config.staffing)
+        self.issuer_as(SOLO, ac, clearance)
+    }
+
+    /// The position the player in `seat` would speak as, if any.
+    pub fn issuer_as(&self, seat: Seat, ac: &Aircraft, clearance: &Clearance) -> Option<Position> {
+        issuer_for(clearance, ac.frequency(), self.config.staffing, seat)
     }
 }
 

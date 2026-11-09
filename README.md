@@ -1008,6 +1008,17 @@ cargo test --release --test emergency -- --ignored
 Each of `delivery`, `mistakes` and `visibility` has an ignored long run too,
 of 100 shifts or more.
 
+The sim gives the same shift bit for bit on every machine, so replays and
+shift codes can be shared between Windows and macOS. Its trigonometry goes
+through `sim::math` (the `libm` crate) rather than each platform's maths
+library, and a test keeps it that way. Before a release, pin the checksums
+of a set of busy shifts on one machine and check the other against them:
+
+```sh
+cargo test --release --test determinism -- --ignored write_checksums
+cargo test --release --test determinism -- --ignored matches_the_pinned_checksums
+```
+
 ## Updating the KSUS and KMEM data
 
 `assets/airports/ksus.toml` and `kmem.toml` are generated; don't edit them by

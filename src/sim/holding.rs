@@ -195,7 +195,7 @@ impl HoldSpec {
             for i in 0..=12 {
                 let a = (start + 180.0 * i as f32 / 12.0).to_radians();
                 // Angle measured in the (u, v) frame.
-                out.push(centre + (u * a.cos() + v * a.sin()) * radius);
+                out.push(centre + (u * super::math::cos(a) + v * super::math::sin(a)) * radius);
             }
         };
         // Turn at the fix onto the outbound side, then the far turn back.

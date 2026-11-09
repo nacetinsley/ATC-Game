@@ -1,6 +1,7 @@
 //! Unit helpers. The sim works in nautical miles, feet, knots and degrees.
 //! Positions use x = east, y = north; headings are clockwise from north.
 
+use super::math;
 use glam::Vec2;
 
 pub const FT_PER_NM: f32 = 6076.12;
@@ -9,12 +10,12 @@ pub const SECONDS_PER_HOUR: f32 = 3600.0;
 /// Unit vector pointing along a heading.
 pub fn heading_vec(heading: f32) -> Vec2 {
     let r = heading.to_radians();
-    Vec2::new(r.sin(), r.cos())
+    Vec2::new(math::sin(r), math::cos(r))
 }
 
 /// Heading of a vector, in `[0, 360)`.
 pub fn vec_heading(v: Vec2) -> f32 {
-    normalize_heading(v.x.atan2(v.y).to_degrees())
+    normalize_heading(math::atan2(v.x, v.y).to_degrees())
 }
 
 pub fn normalize_heading(heading: f32) -> f32 {
@@ -63,7 +64,7 @@ pub fn heading_for_track(track: f32, tas: f32, wind: Vec2) -> f32 {
     // Crosswind component, positive when blowing to the right of the track.
     let right = heading_vec(track + 90.0);
     let ratio = (wind.dot(right) / tas).clamp(-0.9, 0.9);
-    normalize_heading(track - ratio.asin().to_degrees())
+    normalize_heading(track - math::asin(ratio).to_degrees())
 }
 
 #[cfg(test)]

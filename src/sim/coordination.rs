@@ -13,7 +13,7 @@
 
 use super::aircraft::{Aircraft, Flow, Lateral, Phase};
 use super::clearance::spoken_runway;
-use super::positions::Position;
+use super::positions::{Position, SOLO, Seat};
 use super::replay::Action;
 use super::scoring::SimEvent;
 use super::units::{format_heading, heading_diff, vec_heading};
@@ -281,6 +281,13 @@ impl World {
 
     /// The player, on Local, tells Approach about a go-around.
     pub fn call_go_around(&mut self, id: u32) -> bool {
+        self.call_go_around_as(SOLO, id)
+    }
+
+    pub(super) fn call_go_around_as(&mut self, seat: Seat, id: u32) -> bool {
+        if !self.config.staffing.seat_works(seat, Position::Local) {
+            return false;
+        }
         let Some(kind) = self
             .coordination
             .iter()
@@ -290,7 +297,7 @@ impl World {
             return false;
         };
         self.ask(kind, id, Position::Local, Position::Approach);
-        self.record(id, Action::CallGoAround);
+        self.record(seat, id, Action::CallGoAround);
         true
     }
 
@@ -305,16 +312,22 @@ impl World {
 
     /// The player tells the next position about an emergency.
     pub fn call_emergency(&mut self, id: u32) -> bool {
-        let Some(c) = self
-            .coordination
-            .iter()
-            .find(|c| c.aircraft == id && c.kind == CoordKind::Emergency && c.state == CoordState::Owed)
-        else {
+        self.call_emergency_as(SOLO, id)
+    }
+
+    pub(super) fn call_emergency_as(&mut self, seat: Seat, id: u32) -> bool {
+        let staffing = self.config.staffing;
+        let Some(c) = self.coordination.iter().find(|c| {
+            c.aircraft == id
+                && c.kind == CoordKind::Emergency
+                && c.state == CoordState::Owed
+                && staffing.seat_works(seat, c.from)
+        }) else {
             return false;
         };
         let (from, to) = (c.from, c.to);
         self.ask(CoordKind::Emergency, id, from, to);
-        self.record(id, Action::CallEmergency);
+        self.record(seat, id, Action::CallEmergency);
         true
     }
 
@@ -381,7 +394,7 @@ impl World {
             }
             let from = ac.frequency();
             let Some(to) = Self::next_position(ac) else { continue };
-            if staffing.works(from) == staffing.works(to) {
+            if staffing.same_controller(from, to) {
                 continue;
             }
             // The go-around call to Approach covers the emergency too.
@@ -502,32 +515,48 @@ impl World {
     /// The player, on Ground, asks Local to let this aircraft cross. Immediate:
     /// it's a landline, not the radio.
     pub fn request_crossing(&mut self, id: u32, runway: usize) -> bool {
+        self.request_crossing_as(SOLO, id, runway)
+    }
+
+    pub(super) fn request_crossing_as(&mut self, seat: Seat, id: u32, runway: usize) -> bool {
         let kind = CoordKind::Crossing { runway };
-        if !self.needs_crossing_approval(id, runway) || self.already_asked(id, kind) {
+        if !self.config.staffing.seat_works(seat, Position::Ground)
+            || !self.needs_crossing_approval(id, runway)
+            || self.already_asked(id, kind)
+        {
             return false;
         }
         self.ask(kind, id, Position::Ground, Position::Local);
-        self.record(id, Action::RequestCrossing(runway));
+        self.record(seat, id, Action::RequestCrossing(runway));
         true
     }
 
     /// The player, on Local, asks Approach to release this departure.
     pub fn request_release(&mut self, id: u32) -> bool {
+        self.request_release_as(SOLO, id)
+    }
+
+    pub(super) fn request_release_as(&mut self, seat: Seat, id: u32) -> bool {
         let Some(end) = self.find(id).and_then(|a| a.departure_end) else { return false };
         let kind = CoordKind::Release { end };
-        if !self.config.staffing.local || !self.needs_release(id) || self.already_asked(id, kind) {
+        if !self.config.staffing.seat_works(seat, Position::Local) || !self.needs_release(id) || self.already_asked(id, kind)
+        {
             return false;
         }
         self.ask(kind, id, Position::Local, Position::Approach);
-        self.record(id, Action::RequestRelease);
+        self.record(seat, id, Action::RequestRelease);
         true
     }
 
     /// The player, on Approach with Tower automated, stops departures (each
     /// then needs a release) or lets them go again.
     pub fn set_call_for_release(&mut self, on: bool) -> bool {
+        self.set_call_for_release_as(SOLO, on)
+    }
+
+    pub(super) fn set_call_for_release_as(&mut self, seat: Seat, on: bool) -> bool {
         let staffing = self.config.staffing;
-        if !staffing.approach || staffing.local || on == self.call_for_release() {
+        if !staffing.seat_works(seat, Position::Approach) || staffing.local || on == self.call_for_release() {
             return false;
         }
         if on {
@@ -535,7 +564,7 @@ impl World {
         } else {
             self.end_call_for_release();
         }
-        self.record(0, Action::CallForRelease { on });
+        self.record(seat, 0, Action::CallForRelease { on });
         true
     }
 
@@ -579,10 +608,15 @@ impl World {
 
     /// The player answers a request about this aircraft.
     pub fn answer_coordination(&mut self, id: u32, approve: bool) -> bool {
+        self.answer_coordination_as(SOLO, id, approve)
+    }
+
+    /// The player in `seat` answers a request from an automated position.
+    pub(super) fn answer_coordination_as(&mut self, seat: Seat, id: u32, approve: bool) -> bool {
         let staffing = self.config.staffing;
         let Some(index) = self.coordination.iter().position(|c| {
             c.aircraft == id
-                && staffing.works(c.to)
+                && staffing.seat_works(seat, c.to)
                 && !staffing.works(c.from)
                 && matches!(c.state, CoordState::Pending | CoordState::Unable { .. })
         }) else {
@@ -620,7 +654,7 @@ impl World {
             self.unable_text(kind, &callsign, None)
         };
         self.landline(to, from, text);
-        self.record(id, Action::Coordinate { approve });
+        self.record(seat, id, Action::Coordinate { approve });
         if go_around {
             self.coordination.remove(index);
         }

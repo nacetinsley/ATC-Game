@@ -11,7 +11,7 @@
 use super::clearance::Clearance;
 use super::emergency::EmergencyRate;
 use super::mistakes::PilotMistakes;
-use super::positions::Staffing;
+use super::positions::{SOLO, Seat, Staffing};
 use super::scoring::ShiftEnd;
 use super::traffic::Busyness;
 use super::weather::WeatherKind;
@@ -21,13 +21,16 @@ use serde::{Deserialize, Serialize};
 /// Ticks between snapshots: a minute of sim time.
 pub const SNAPSHOT_TICKS: u32 = 240;
 
-/// Something the player said, and when.
+/// Something a player said, and when.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Command {
     /// Applied before this tick runs: the world's tick count when it was said.
     pub tick: u32,
     pub id: u32,
     pub action: Action,
+    /// Who said it. Replays from before co-op have none: the single player.
+    #[serde(default)]
+    pub seat: Seat,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -51,8 +54,8 @@ pub enum Action {
 }
 
 impl World {
-    pub(super) fn record(&mut self, id: u32, action: Action) {
-        self.commands.push(Command { tick: self.ticks, id, action });
+    pub(super) fn record(&mut self, seat: Seat, id: u32, action: Action) {
+        self.commands.push(Command { tick: self.ticks, id, action, seat });
     }
 
     /// Everything the player has said this shift.
@@ -67,29 +70,40 @@ impl World {
 
     /// Say a recorded command again.
     pub fn apply(&mut self, command: &Command) -> bool {
-        match &command.action {
-            Action::Transmit(clearances) => self.transmit(command.id, clearances.clone()),
-            Action::AcceptHandoff => self.accept_handoff(command.id),
-            Action::RequestCrossing(runway) => self.request_crossing(command.id, *runway),
-            Action::Coordinate { approve } => self.answer_coordination(command.id, *approve),
-            Action::RequestRelease => self.request_release(command.id),
-            Action::CallForRelease { on } => self.set_call_for_release(*on),
-            Action::CallGoAround => self.call_go_around(command.id),
-            Action::CallEmergency => self.call_emergency(command.id),
-            Action::Leave => {
-                self.end_shift(ShiftEnd::Left);
-                true
-            }
+        self.act(command.seat, command.id, command.action.clone())
+    }
+
+    /// The player in this seat does something, about this aircraft. False if
+    /// it can't be done: nothing changes and nothing is recorded. Every way a
+    /// player changes the world comes through here, so a replay, or another
+    /// machine in co-op, gets the same shift from the same commands.
+    pub fn act(&mut self, seat: Seat, id: u32, action: Action) -> bool {
+        match action {
+            Action::Transmit(clearances) => self.transmit_as(seat, id, clearances),
+            Action::AcceptHandoff => self.accept_handoff_as(seat, id),
+            Action::RequestCrossing(runway) => self.request_crossing_as(seat, id, runway),
+            Action::Coordinate { approve } => self.answer_coordination_as(seat, id, approve),
+            Action::RequestRelease => self.request_release_as(seat, id),
+            Action::CallForRelease { on } => self.set_call_for_release_as(seat, on),
+            Action::CallGoAround => self.call_go_around_as(seat, id),
+            Action::CallEmergency => self.call_emergency_as(seat, id),
+            Action::Leave => self.leave_shift_as(seat),
         }
     }
 
     /// The player quits before the shift is over: it ends here, and its
     /// replay stops here too.
     pub fn leave_shift(&mut self) {
-        if self.ended.is_none() {
-            self.record(0, Action::Leave);
-            self.end_shift(ShiftEnd::Left);
+        self.leave_shift_as(SOLO);
+    }
+
+    fn leave_shift_as(&mut self, seat: Seat) -> bool {
+        if self.ended.is_some() {
+            return false;
         }
+        self.record(seat, 0, Action::Leave);
+        self.end_shift(ShiftEnd::Left);
+        true
     }
 
     /// Apply the commands due now, then run one tick.
@@ -427,10 +441,11 @@ mod tests {
         };
         let file = File {
             command: vec![
-                Command { tick: 5, id: 1, action: Action::AcceptHandoff },
+                Command { tick: 5, id: 1, action: Action::AcceptHandoff, seat: 0 },
                 Command {
                     tick: 9,
                     id: 2,
+                    seat: 1,
                     action: Action::Transmit(vec![
                         Clearance::Heading(240.0),
                         Clearance::Altitude(5000.0),
