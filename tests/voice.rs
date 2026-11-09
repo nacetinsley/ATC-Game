@@ -89,16 +89,24 @@ type Line = (String, Radio, Speaker, Vec<String>);
 /// Every radio line from a set of busy shifts at each airport, worked out once.
 fn radio_lines() -> &'static [Line] {
     static LINES: std::sync::OnceLock<Vec<Line>> = std::sync::OnceLock::new();
-    LINES.get_or_init(play_shifts)
+    LINES.get_or_init(|| play_shifts(11))
 }
 
-fn play_shifts() -> Vec<Line> {
+/// The same from shifts with other seeds: other callsigns, other traffic.
+/// The vocabulary is judged on these, so it's judged on lines it wasn't
+/// chosen from.
+fn other_radio_lines() -> &'static [Line] {
+    static LINES: std::sync::OnceLock<Vec<Line>> = std::sync::OnceLock::new();
+    LINES.get_or_init(|| play_shifts(101))
+}
+
+fn play_shifts(first_seed: u64) -> Vec<Line> {
     let mut lines = Vec::new();
     for (airport, _) in airports() {
         let staffings = [Staffing::LOCAL, Staffing::LOCAL_GROUND, Staffing::APPROACH, Staffing::GROUND_DELIVERY, Staffing::ALL];
         for (n, staffing) in staffings.into_iter().enumerate() {
             let config = WorldConfig {
-                seed: 11 + n as u64,
+                seed: first_seed + n as u64,
                 staffing,
                 vfr: true,
                 emergencies: EmergencyRate::Frequent,
@@ -261,7 +269,105 @@ fn known_words() -> BTreeSet<&'static str> {
     WORDS.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect()
 }
 
-/// Writes `assets/sounds/voice/words.txt`: single words, then the phrases.
+/// A phrase becomes a clip when the lines would use it this often.
+const PHRASE_MIN: usize = 30;
+/// And at most this many phrases, the most useful first.
+const PHRASE_BUDGET: usize = 2500;
+/// A clip gets its own sentence-end or before-comma form when it comes
+/// there this often.
+const ENDING_MIN: usize = 30;
+
+/// The words of every heard transmission.
+fn heard_words(lines: &'static [Line]) -> Vec<&'static [String]> {
+    lines.iter().filter(|(_, r, _, _)| r.heard).map(|(_, _, _, w)| w.as_slice()).collect()
+}
+
+/// A digit or letter of the phonetic alphabet: part of a number, callsign,
+/// taxiway or code, which vary from one transmission to the next.
+fn spelling(word: &str) -> bool {
+    speech::DIGITS.contains(&word) || speech::PHONETIC.contains(&word)
+}
+
+/// Fit to be a phrase: no more than two digits or letters in a row, so no
+/// one callsign, code or heading becomes a clip of its own.
+fn general(run: &[String]) -> bool {
+    run.windows(3).all(|w| !w.iter().all(|x| spelling(x)))
+}
+
+/// Every two-digit run: numbers are said in pairs and threes.
+fn digit_pairs() -> Vec<String> {
+    speech::DIGITS.iter().flat_map(|a| speech::DIGITS.iter().map(move |b| format!("{a} {b}"))).collect()
+}
+
+/// How often each clip is used across the lines, with these clips known.
+fn usage(lines: &[&[String]], known: &BTreeSet<String>) -> std::collections::BTreeMap<String, usize> {
+    let mut used = std::collections::BTreeMap::new();
+    for words in lines {
+        for unit in speech::units(words, |k| known.contains(k)) {
+            *used.entry(unit).or_insert(0) += 1;
+        }
+    }
+    used
+}
+
+/// The phrases worth a clip: the stock ones, digit pairs, and every run of
+/// words the lines would use at least PHRASE_MIN times.
+fn phrases(words: &BTreeSet<String>) -> BTreeSet<String> {
+    let lines = heard_words(radio_lines());
+    let fixed: BTreeSet<String> = speech::PHRASES.iter().map(|p| p.to_string()).chain(digit_pairs()).collect();
+    // Candidates: every run that occurs often enough, inside one stretch
+    // between pauses.
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    for words in &lines {
+        for stretch in words.split(|w| w == PAUSE || w == STOP) {
+            for n in 2..=speech::LONGEST_PHRASE.min(stretch.len()) {
+                for run in stretch.windows(n).filter(|r| general(r)) {
+                    *counts.entry(run.join(" ")).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+    let mut chosen: BTreeSet<String> =
+        counts.into_iter().filter(|(_, c)| *c >= PHRASE_MIN).map(|(p, _)| p).chain(fixed.iter().cloned()).collect();
+    // Keep only those still used often once longer ones take their place.
+    for _ in 0..4 {
+        let known: BTreeSet<String> = words.union(&chosen).cloned().collect();
+        let used = usage(&lines, &known);
+        let mut kept: Vec<(usize, String)> = chosen
+            .iter()
+            .filter_map(|p| {
+                let n = used.get(p).copied().unwrap_or(0);
+                (fixed.contains(p) || n >= PHRASE_MIN).then(|| (n * (p.split(' ').count() - 1), p.clone()))
+            })
+            .collect();
+        kept.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        kept.truncate(PHRASE_BUDGET.max(fixed.len()));
+        chosen = kept.into_iter().map(|(_, p)| p).chain(fixed.iter().cloned()).collect();
+    }
+    chosen
+}
+
+/// The clips said often enough at a sentence's end or before a comma to
+/// have their own form there.
+fn endings(known: &BTreeSet<String>) -> BTreeSet<String> {
+    let lines = heard_words(radio_lines());
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    let every = |k: &str| {
+        known.contains(k) || k.strip_suffix(speech::AT_END).or_else(|| k.strip_suffix(speech::BEFORE_COMMA)).is_some_and(|b| known.contains(b))
+    };
+    for words in &lines {
+        let units = speech::units(words, |k| known.contains(k));
+        for key in speech::with_endings(units, every) {
+            if key.ends_with(speech::AT_END) || key.ends_with(speech::BEFORE_COMMA) {
+                *counts.entry(key).or_insert(0) += 1;
+            }
+        }
+    }
+    counts.into_iter().filter(|(_, c)| *c >= ENDING_MIN).map(|(k, _)| k).collect()
+}
+
+/// Writes `assets/sounds/voice/words.txt`: single words, then the phrases,
+/// then the sentence-end and before-comma forms.
 #[test]
 #[ignore]
 fn write_vocabulary() {
@@ -272,19 +378,42 @@ fn write_vocabulary() {
         words.extend(spoken.iter().cloned());
     }
     words.retain(|w| w != PAUSE && w != STOP && !w.is_empty());
+    let phrases = phrases(&words);
+    let known: BTreeSet<String> = words.union(&phrases).cloned().collect();
+    let endings = endings(&known);
     let mut text = String::from(
         "# The radio voice vocabulary: one clip per line. Written by\n# `cargo test --release --test voice -- --ignored write_vocabulary`.\n",
     );
-    for w in &words {
-        text.push_str(w);
-        text.push('\n');
-    }
-    for phrase in speech::PHRASES {
-        text.push_str(phrase);
+    for line in words.iter().chain(phrases.iter()).chain(endings.iter()) {
+        text.push_str(line);
         text.push('\n');
     }
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/sounds/voice/words.txt");
     std::fs::write(path, text).unwrap();
+    println!("{} words, {} phrases, {} endings", words.len(), phrases.len(), endings.len());
+}
+
+/// Most words are said inside a clip of several, not stitched one by one,
+/// in shifts other than those the phrases were chosen from.
+#[test]
+fn most_words_come_in_phrases() {
+    let known: BTreeSet<String> = known_words().into_iter().map(str::to_string).collect();
+    let (mut total, mut in_phrases) = (0usize, 0usize);
+    for words in heard_words(other_radio_lines()) {
+        for unit in speech::units(words, |k| known.contains(k)) {
+            if unit == PAUSE || unit == STOP {
+                continue;
+            }
+            let n = unit.split(' ').count();
+            total += n;
+            if n > 1 {
+                in_phrases += n;
+            }
+        }
+    }
+    let share = in_phrases as f32 / total as f32;
+    println!("{:.0}% of words in phrases", share * 100.0);
+    assert!(share >= 0.6, "{:.0}% of words in phrases", share * 100.0);
 }
 
 #[test]
@@ -306,8 +435,12 @@ fn every_phrase_is_made_of_known_words() {
     let known = known_words();
     for phrase in speech::PHRASES {
         assert!(known.contains(phrase), "{phrase:?} isn't in words.txt");
-        for w in phrase.split(' ') {
-            assert!(known.contains(w), "{w:?} of {phrase:?} isn't in words.txt");
+    }
+    for key in known.iter().filter(|k| k.contains(' ')) {
+        let words = speech::key_words(key);
+        assert!(known.contains(words), "{key:?}'s words aren't a clip of their own");
+        for w in words.split(' ') {
+            assert!(known.contains(w), "{w:?} of {key:?} isn't in words.txt");
         }
     }
 }

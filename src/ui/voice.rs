@@ -1,35 +1,44 @@
 //! Radio voices: transmissions spoken from pre-rendered clips.
 //!
 //! `tools/make_voice.py` renders a clip for every word and stock phrase in
-//! `assets/sounds/voice/words.txt` in four public-domain Piper voices, packed
+//! `assets/sounds/voice/words.txt` in five public-domain Piper voices, packed
 //! one file per voice: 8 kHz, µ-law, already band-limited the way VHF is. A
 //! transmission is the clips of its words (`sim::speech`), stock phrases
-//! taken whole where they fit, between a key-up and a squelch tail.
+//! taken whole where they fit, through a radio: a pilot's with a key-up,
+//! hiss that grows with distance and a squelch tail; the player's own as a
+//! clean sidetone; a landline as a telephone.
 //!
 //! One transmission plays at a time, as on a real frequency. Ones that wait
 //! too long are dropped, so the voices keep up at x2 and x4.
 
-use super::audio::{Note, SAMPLE_RATE, band_limit, synth, wav};
+use super::audio::{SAMPLE_RATE, wav};
 use crate::sim::speech::{self, PAUSE, STOP};
 use crate::sim::{LogEntry, Speaker, Talker};
 use macroquad::audio::{PlaySoundParams, Sound, load_sound_from_bytes, play_sound, stop_sound};
 use std::collections::{HashMap, VecDeque};
 
 /// The packs, one per voice.
-const PACKS: [&[u8]; 4] = [
+const PACKS: [&[u8]; 5] = [
     include_bytes!("../../assets/sounds/voice/norman.pack"),
     include_bytes!("../../assets/sounds/voice/john.pack"),
     include_bytes!("../../assets/sounds/voice/kristin.pack"),
     include_bytes!("../../assets/sounds/voice/ljspeech.pack"),
+    include_bytes!("../../assets/sounds/voice/cori.pack"),
 ];
-const CONTROLLER: usize = 0;
-const PILOTS: [usize; 3] = [1, 2, 3];
-/// Pitch shifts that make three pilot voices into nine.
-const PILOT_PITCHES: [f32; 3] = [0.94, 1.0, 1.06];
+/// The voices' names, in pack order.
+pub const VOICE_NAMES: [&str; 5] = ["norman", "john", "kristin", "ljspeech", "cori"];
+const CONTROLLER: Voice = Voice { pack: 0, pitch: 1.0, pace: 1.0 };
+const PILOTS: [usize; 4] = [1, 2, 3, 4];
+/// Pitches and paces (a transmission's length, against the voice's own)
+/// that make four pilot voices into 36. Pitch changes keep the pace.
+const PILOT_PITCHES: [f32; 3] = [0.93, 1.0, 1.07];
+const PILOT_PACES: [f32; 3] = [0.84, 0.91, 0.98];
 /// The other controller on a landline.
-const FACILITY: (usize, f32) = (1, 0.9);
-/// The longest stock phrase, in words.
-const LONGEST_PHRASE: usize = 6;
+const FACILITY: Voice = Voice { pack: 1, pitch: 0.9, pace: 1.0 };
+/// One pilot transmission in this many is keyed late, losing the start of
+/// its first word.
+const LATE_KEY_ONE_IN: u32 = 12;
+const LATE_KEY_S: f32 = 0.09;
 /// Silence between words, after a comma, and after a full stop, seconds.
 /// Digits and letters in a group run together with none.
 const WORD_GAP_S: f32 = 0.02;
@@ -99,28 +108,19 @@ fn from_mu_law(byte: u8) -> f32 {
     y.signum() * ((1.0 + 255.0f32).powf(y.abs()) - 1.0) / 255.0
 }
 
-/// The clip keys for a line's words: stock phrases where they fit, and a
-/// word with no clip spelled out.
+/// The clip keys for a line's words: stock phrases where they fit, said
+/// as at a sentence's end or before a comma where they are, and a word with
+/// no clip spelled out.
 pub fn clip_keys(words: &[String], pack: &Pack) -> Vec<String> {
     let mut keys = Vec::new();
-    let mut i = 0;
-    while i < words.len() {
-        let longest = (words.len() - i).min(LONGEST_PHRASE);
-        let phrase = (2..=longest).rev().map(|n| words[i..i + n].join(" ")).zip((2..=longest).rev()).find(|(p, _)| pack.has(p));
-        if let Some((phrase, n)) = phrase {
-            keys.push(phrase);
-            i += n;
-            continue;
-        }
-        let word = &words[i];
-        if word == PAUSE || word == STOP || pack.has(word) {
-            keys.push(word.clone());
+    for unit in speech::units(words, |k| pack.has(k)) {
+        if unit == PAUSE || unit == STOP || pack.has(&unit) {
+            keys.push(unit);
         } else {
-            keys.extend(speech::spelled(word).into_iter().filter(|w| pack.has(w)));
+            keys.extend(speech::spelled(&unit).into_iter().filter(|w| pack.has(w)));
         }
-        i += 1;
     }
-    keys
+    speech::with_endings(keys, |k| pack.has(k))
 }
 
 /// A clip without the quiet a voice leaves at its edges, or the pauses it
@@ -157,6 +157,15 @@ fn runs_on(before: &str, after: &str) -> bool {
     spelling(before) && (spelling(after) || matches!(after, "thousand" | "hundred" | "left" | "right" | "center"))
 }
 
+/// The first and last words of a clip key.
+fn first_word(key: &str) -> &str {
+    speech::key_words(key).split(' ').next().unwrap_or(key)
+}
+
+fn last_word(key: &str) -> &str {
+    speech::key_words(key).rsplit(' ').next().unwrap_or(key)
+}
+
 /// Add a word, overlapping the end of the one before by a short crossfade.
 fn join(speech: &mut Vec<f32>, word: &[f32], overlap: usize) {
     let overlap = overlap.min(word.len()).min(speech.len());
@@ -168,13 +177,179 @@ fn join(speech: &mut Vec<f32>, word: &[f32], overlap: usize) {
     speech.extend_from_slice(&word[overlap..]);
 }
 
-/// A whole transmission through a radio: key-up, the words at this pitch,
-/// a squelch tail, all band-limited.
-fn transmission(keys: &[String], pack: &Pack, pitch: f32) -> Vec<i16> {
-    let gap = |secs: f32| vec![0.0f32; (secs * SAMPLE_RATE as f32) as usize];
-    let mut speech: Vec<f32> = gap(0.06);
-    let step = pack.rate as f32 / SAMPLE_RATE as f32 * pitch;
-    let overlap = (CROSSFADE_S * SAMPLE_RATE as f32) as usize;
+/// Who says a transmission: a voice's pack, at a pitch and pace.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Voice {
+    pack: usize,
+    /// Above 1, higher.
+    pitch: f32,
+    /// The transmission's length against the voice's own: below 1, quicker.
+    pace: f32,
+}
+
+/// What a transmission comes through.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Set {
+    /// The player's own voice in their headset.
+    Sidetone,
+    /// A pilot's radio, so far from the field, nautical miles. `seed` makes
+    /// each aircraft's key-up and squelch its own; `late` keys up after the
+    /// first word has started.
+    Air { range_nm: f32, seed: u32, late: bool },
+    /// Another facility, on the landline.
+    Landline,
+}
+
+/// FNV-1a: the same callsign always sounds the same.
+fn hash(text: &str) -> u32 {
+    text.bytes().fold(0x811c_9dc5u32, |h, b| (h ^ b as u32).wrapping_mul(0x0100_0193))
+}
+
+/// Which voice says a line.
+fn voice_for(talker: &Talker) -> Voice {
+    match talker {
+        Talker::Controller => CONTROLLER,
+        Talker::Facility(_) => FACILITY,
+        Talker::Pilot(callsign) => {
+            let mut n = hash(callsign) as usize;
+            let pack = PILOTS[n % PILOTS.len()];
+            n /= PILOTS.len();
+            let pitch = PILOT_PITCHES[n % PILOT_PITCHES.len()];
+            n /= PILOT_PITCHES.len();
+            Voice { pack, pitch, pace: PILOT_PACES[n % PILOT_PACES.len()] }
+        }
+    }
+}
+
+/// What a line comes through: `range_nm` is the aircraft's distance from
+/// the field, if known, and `count` how many transmissions came before.
+fn set_for(talker: &Talker, range_nm: Option<f32>, count: u32) -> Set {
+    match talker {
+        Talker::Controller => Set::Sidetone,
+        Talker::Facility(_) => Set::Landline,
+        Talker::Pilot(callsign) => {
+            let seed = hash(callsign);
+            let late = count > 0 && (seed ^ count.wrapping_mul(0x9e37_79b9)).wrapping_mul(0x0100_0193) >> 8 & 0xff
+                < 256 / LATE_KEY_ONE_IN;
+            Set::Air { range_nm: range_nm.unwrap_or(8.0), seed, late }
+        }
+    }
+}
+
+/// A run of samples at `rate`, made `factor` times as long without changing
+/// pitch: windowed pieces of it overlapped, each placed where it best
+/// continues the one before (WSOLA).
+fn stretched(x: &[f32], factor: f32, rate: u32) -> Vec<f32> {
+    let n = ((rate as f32 * 0.03) as usize).max(8) & !1;
+    let hop = n / 2;
+    let tolerance = (rate as f32 * 0.008) as usize;
+    if (factor - 1.0).abs() < 0.005 || x.len() < 2 * n {
+        return x.to_vec();
+    }
+    let window: Vec<f32> =
+        (0..n).map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos()).collect();
+    let out_len = (x.len() as f32 * factor) as usize;
+    let mut out = vec![0.0f32; out_len + n];
+    let mut weight = vec![0.0f32; out_len + n];
+    let last = x.len() - n;
+    let mut previous = 0usize;
+    let mut at = 0usize;
+    while at < out_len {
+        let nominal = ((at as f32 / factor) as usize).min(last);
+        let start = if at == 0 {
+            0
+        } else {
+            // What would follow the last piece, had it gone on.
+            let natural = (previous + hop).min(last);
+            let target = &x[natural..natural + n];
+            let (low, high) = (nominal.saturating_sub(tolerance), (nominal + tolerance).min(last));
+            (low..=high)
+                .max_by(|&a, &b| {
+                    let score = |s: usize| x[s..s + n].iter().zip(target).map(|(p, q)| p * q).sum::<f32>();
+                    score(a).total_cmp(&score(b))
+                })
+                .unwrap_or(nominal)
+        };
+        for i in 0..n {
+            out[at + i] += x[start + i] * window[i];
+            weight[at + i] += window[i];
+        }
+        previous = start;
+        at += hop;
+    }
+    out.truncate(out_len);
+    for (o, w) in out.iter_mut().zip(&weight) {
+        if *w > 1e-3 {
+            *o /= w;
+        }
+    }
+    out
+}
+
+/// A second-order filter (RBJ's cookbook), run over the samples in place.
+fn biquad(x: &mut [f32], freq: f32, high_pass: bool) {
+    let w0 = std::f32::consts::TAU * freq / SAMPLE_RATE as f32;
+    let (sin, cos) = w0.sin_cos();
+    let alpha = sin / (2.0 * std::f32::consts::FRAC_1_SQRT_2);
+    let (b0, b1) = if high_pass { ((1.0 + cos) / 2.0, -(1.0 + cos)) } else { ((1.0 - cos) / 2.0, 1.0 - cos) };
+    let (a0, a1, a2) = (1.0 + alpha, -2.0 * cos, 1.0 - alpha);
+    let (b0, b1, b2, a1, a2) = (b0 / a0, b1 / a0, b0 / a0, a1 / a0, a2 / a0);
+    let (mut x1, mut x2, mut y1, mut y2) = (0.0f32, 0.0, 0.0, 0.0);
+    for s in x.iter_mut() {
+        let y = b0 * *s + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+        (x2, x1, y2, y1) = (x1, *s, y1, y);
+        *s = y;
+    }
+}
+
+/// Evens out loud and soft words, as a transmitter's AGC does.
+fn compressed(x: &mut [f32]) {
+    const THRESHOLD: f32 = 0.2;
+    const RATIO: f32 = 3.0;
+    const MAKEUP: f32 = 1.8;
+    let attack = 1.0 - (-1.0 / (0.005 * SAMPLE_RATE as f32)).exp();
+    let release = 1.0 - (-1.0 / (0.08 * SAMPLE_RATE as f32)).exp();
+    let mut envelope = 0.0f32;
+    for s in x.iter_mut() {
+        let level = s.abs();
+        envelope += (level - envelope) * if level > envelope { attack } else { release };
+        if envelope > THRESHOLD {
+            *s *= (THRESHOLD / envelope).powf(1.0 - 1.0 / RATIO);
+        }
+        // Made up, so the loudest words are about as loud as before.
+        *s *= MAKEUP;
+    }
+}
+
+/// White noise from a seed, -1 to 1.
+fn noise(len: usize, seed: u32) -> impl Iterator<Item = f32> {
+    let mut state = seed | 1;
+    (0..len).map(move |_| {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (state >> 8) as f32 / (1u32 << 23) as f32 - 1.0
+    })
+}
+
+/// A burst of noise, faded in and out, `rate` Hz flutter of `depth`.
+fn burst(secs: f32, gain: f32, seed: u32, flutter: (f32, f32)) -> Vec<f32> {
+    let len = (secs * SAMPLE_RATE as f32) as usize;
+    let fade = (len / 8).max(1);
+    noise(len, seed)
+        .enumerate()
+        .map(|(i, x)| {
+            let t = i as f32 / SAMPLE_RATE as f32;
+            let am = 1.0 - flutter.1 * 0.5 * (1.0 - (t * flutter.0 * std::f32::consts::TAU).cos());
+            x * gain * am * (i.min(len - i) as f32 / fade as f32).min(1.0)
+        })
+        .collect()
+}
+
+/// The words of a transmission joined, at the pack's own rate.
+fn spoken(keys: &[String], pack: &Pack) -> Vec<f32> {
+    let rate = pack.rate as f32;
+    let gap = |secs: f32| vec![0.0f32; (secs * rate) as usize];
+    let overlap = (CROSSFADE_S * rate) as usize;
+    let mut speech = Vec::new();
     // The word before, if nothing came between: a pause starts afresh.
     let mut previous: Option<&str> = None;
     for key in keys {
@@ -186,18 +361,9 @@ fn transmission(keys: &[String], pack: &Pack, pitch: f32) -> Vec<i16> {
             _ => {
                 let Some(clip) = pack.clips.get(key.as_str()) else { continue };
                 let decoded: Vec<f32> = clip.iter().map(|&b| from_mu_law(b)).collect();
-                let samples = trimmed(&decoded, pack.rate);
-                let samples = samples.as_slice();
-                let mut word = Vec::with_capacity((samples.len() as f32 / step) as usize + 1);
-                let mut t = 0.0f32;
-                while (t as usize) + 1 < samples.len() {
-                    let j = t as usize;
-                    let frac = t - j as f32;
-                    word.push(samples[j] + (samples[j + 1] - samples[j]) * frac);
-                    t += step;
-                }
+                let word = trimmed(&decoded, pack.rate);
                 match previous {
-                    Some(before) if runs_on(before, key) => join(&mut speech, &word, overlap),
+                    Some(before) if runs_on(last_word(before), first_word(key)) => join(&mut speech, &word, overlap),
                     Some(_) => {
                         speech.extend(gap(WORD_GAP_S));
                         join(&mut speech, &word, 0);
@@ -208,31 +374,71 @@ fn transmission(keys: &[String], pack: &Pack, pitch: f32) -> Vec<i16> {
             }
         }
     }
-    speech.extend(gap(0.05));
-    // A touch of drive, as a transmitter has, then the carrier's hiss under it.
-    let level = 0.55 * i16::MAX as f32;
-    let hiss = synth(&[Note::noise(speech.len() as f32 / SAMPLE_RATE as f32, 0.025)], false);
-    let mut out: Vec<i16> = synth(&[Note::noise(0.008, 0.45)], true);
-    out.extend(speech.iter().zip(hiss.iter().chain(std::iter::repeat(&0))).map(|(s, h)| {
-        let driven = (s * 1.6).tanh() * level;
-        (driven + *h as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16
-    }));
-    out.extend(synth(&[Note::noise(0.08, 0.2).modulated(14.0, 0.6)], true));
-    band_limit(&out)
+    speech
 }
 
-/// Which voice says a line, and at what pitch.
-fn voice_for(talker: &Talker) -> (usize, f32) {
-    match talker {
-        Talker::Controller => (CONTROLLER, 1.0),
-        Talker::Facility(_) => FACILITY,
-        Talker::Pilot(callsign) => {
-            // FNV-1a: the same callsign always sounds the same.
-            let hash = callsign.bytes().fold(0x811c_9dc5u32, |h, b| (h ^ b as u32).wrapping_mul(0x0100_0193));
-            let n = hash as usize % (PILOTS.len() * PILOT_PITCHES.len());
-            (PILOTS[n % PILOTS.len()], PILOT_PITCHES[n / PILOTS.len()])
+/// A whole transmission: the words in this voice, through this set.
+fn transmission(keys: &[String], pack: &Pack, voice: Voice, set: Set) -> Vec<i16> {
+    let speech = spoken(keys, pack);
+    // Stretched by the pitch as well as the pace, since resampling to the
+    // pitch then shortens it by as much.
+    let speech = stretched(&speech, voice.pitch * voice.pace, pack.rate);
+    let step = pack.rate as f32 / SAMPLE_RATE as f32 * voice.pitch;
+    let mut words = Vec::with_capacity((speech.len() as f32 / step) as usize + 1);
+    let mut t = 0.0f32;
+    while (t as usize) + 1 < speech.len() {
+        let j = t as usize;
+        words.push(speech[j] + (speech[j + 1] - speech[j]) * (t - j as f32));
+        t += step;
+    }
+    let secs = |s: f32| (s * SAMPLE_RATE as f32) as usize;
+    if let Set::Air { late: true, .. } = set {
+        // Keyed a moment after starting to talk: the first syllable is cut.
+        let cut = secs(LATE_KEY_S).min(words.len() / 3);
+        words.drain(..cut);
+        for (i, w) in words.iter_mut().take(secs(0.004)).enumerate() {
+            *w *= i as f32 / secs(0.004) as f32;
         }
     }
+    compressed(&mut words);
+    // Level, drive, hiss, key-up, squelch and band for each kind of set.
+    let (level, drive, hiss, band, seed) = match set {
+        Set::Sidetone => (0.5, 1.2, 0.003, (200.0, 3800.0), 7),
+        Set::Landline => (0.5, 1.4, 0.006, (300.0, 3400.0), 11),
+        Set::Air { range_nm, seed, .. } => {
+            let far = (range_nm / 50.0).clamp(0.0, 1.0);
+            (0.6 - 0.12 * far, 1.6, 0.012 + 0.04 * far, (300.0, 3000.0), seed)
+        }
+    };
+    let lead = secs(0.06);
+    let mut out = vec![0.0f32; lead];
+    out.extend(words.iter().map(|s| (s * drive).tanh() * level));
+    out.extend(std::iter::repeat_n(0.0, secs(0.05)));
+    for (o, h) in out.iter_mut().zip(noise(usize::MAX, seed ^ 0x5bd1_e995)) {
+        *o += h * hiss;
+    }
+    let pick = |shift: u32, low: f32, high: f32| low + (high - low) * ((seed >> shift) & 0xff) as f32 / 255.0;
+    match set {
+        Set::Air { .. } => {
+            // Key-up click over the lead-in, and a squelch tail.
+            let click = burst(pick(0, 0.006, 0.014), pick(8, 0.3, 0.5), seed, (0.0, 0.0));
+            for (o, c) in out.iter_mut().zip(&click) {
+                *o += c;
+            }
+            out.extend(burst(pick(16, 0.05, 0.12), pick(24, 0.15, 0.25), seed.rotate_left(7), (pick(4, 10.0, 18.0), 0.6)));
+        }
+        Set::Sidetone => {
+            let click = burst(0.004, 0.12, seed, (0.0, 0.0));
+            for (o, c) in out.iter_mut().zip(&click) {
+                *o += c;
+            }
+        }
+        Set::Landline => {}
+    }
+    biquad(&mut out, band.0, true);
+    biquad(&mut out, band.1, false);
+    let full = i16::MAX as f32 - 1.0;
+    out.iter().map(|s| (s * i16::MAX as f32).clamp(-full, full) as i16).collect()
 }
 
 /// The text a voice says: a landline without its "Approach to Tower:"
@@ -337,7 +543,8 @@ pub fn measure(samples: &[i16], words: usize) -> Measure {
 struct Waiting {
     since: f64,
     words: Vec<String>,
-    voice: (usize, f32),
+    voice: Voice,
+    set: Set,
     /// The player's own, with their voice off: it holds the frequency for
     /// as long as it takes to say, without a sound.
     silent: bool,
@@ -353,19 +560,22 @@ pub struct Voices {
     pub enabled: bool,
     /// The player's own transmissions are spoken too.
     pub own: bool,
+    /// Transmissions heard so far, which vary from one to the next.
+    count: u32,
 }
 
 impl Voices {
     pub fn load() -> Voices {
         let packs = PACKS.iter().filter_map(|b| Pack::read(b)).collect::<Vec<_>>();
         let packs = if packs.len() == PACKS.len() { packs } else { Vec::new() };
-        Voices { packs, queue: VecDeque::new(), playing: None, busy_until: 0.0, enabled: true, own: true }
+        Voices { packs, queue: VecDeque::new(), playing: None, busy_until: 0.0, enabled: true, own: true, count: 0 }
     }
 
-    /// Queue a line from the log, if it's a transmission the player hears.
+    /// Queue a line from the log, if it's a transmission the player hears,
+    /// from an aircraft `range_nm` from the field if it's a pilot's.
     /// True if a voice will say it: false for the player's own with their
     /// voice off, though it still holds the frequency.
-    pub fn hear(&mut self, line: &LogEntry, callsigns: &[&str], now: f64) -> bool {
+    pub fn hear(&mut self, line: &LogEntry, callsigns: &[&str], range_nm: Option<f32>, now: f64) -> bool {
         let Some(radio) = line.radio.as_ref().filter(|r| r.heard) else { return false };
         if !self.enabled || self.packs.is_empty() {
             return false;
@@ -375,7 +585,9 @@ impl Voices {
             return false;
         }
         let silent = !self.own && radio.talker == Talker::Controller;
-        self.queue.push_back(Waiting { since: now, words, voice: voice_for(&radio.talker), silent });
+        self.count = self.count.wrapping_add(1);
+        let set = set_for(&radio.talker, range_nm, self.count);
+        self.queue.push_back(Waiting { since: now, words, voice: voice_for(&radio.talker), set, silent });
         !silent
     }
 
@@ -384,9 +596,18 @@ impl Voices {
     pub fn render(&self, speaker: Speaker, talker: &Talker, text: &str, callsigns: &[&str]) -> Option<(Vec<i16>, usize)> {
         let words = speech::spoken(speech_text(speaker, text), callsigns);
         let said = words.iter().filter(|w| *w != PAUSE && *w != STOP).count();
-        let (index, pitch) = voice_for(talker);
-        let pack = self.packs.get(index)?;
-        (said > 0).then(|| (transmission(&clip_keys(&words, pack), pack, pitch), said))
+        let voice = voice_for(talker);
+        let pack = self.packs.get(voice.pack)?;
+        (said > 0).then(|| (transmission(&clip_keys(&words, pack), pack, voice, set_for(talker, None, 0)), said))
+    }
+
+    /// One clip on its own, in a voice by its index in `VOICE_NAMES`, for
+    /// listening through the vocabulary. None if there's no such clip.
+    pub fn clip(&self, voice: usize, key: &str) -> Option<Vec<i16>> {
+        let pack = self.packs.get(voice)?;
+        pack.has(key).then(|| {
+            transmission(&[key.to_string()], pack, Voice { pack: voice, pitch: 1.0, pace: 1.0 }, Set::Landline)
+        })
     }
 
     /// Put the next transmission on the air once the frequency is free.
@@ -399,8 +620,8 @@ impl Voices {
             if now - next.since > STALE_S || volume <= 0.0 {
                 continue;
             }
-            let pack = &self.packs[next.voice.0];
-            let samples = transmission(&clip_keys(&next.words, pack), pack, next.voice.1);
+            let pack = &self.packs[next.voice.pack];
+            let samples = transmission(&clip_keys(&next.words, pack), pack, next.voice, next.set);
             if !next.silent {
                 let Some(sound) = sound_now(&wav(&samples)) else { continue };
                 play_sound(&sound, PlaySoundParams { looped: false, volume });
@@ -456,16 +677,17 @@ mod tests {
 
     #[test]
     fn stock_phrases_are_used_whole() {
-        let pack = &packs()[CONTROLLER];
+        let pack = &packs()[CONTROLLER.pack];
         let words = speech::spoken("NVA101, runway 27L, cleared to land.", &[]);
         let keys = clip_keys(&words, pack);
-        assert!(keys.contains(&"cleared to land".to_string()), "{keys:?}");
-        assert_eq!(keys[..4], ["nova", "one", "zero", "one"]);
+        assert!(keys.iter().any(|k| speech::key_words(k) == "cleared to land"), "{keys:?}");
+        let said: Vec<&str> = keys.iter().map(|k| speech::key_words(k)).collect();
+        assert_eq!(said[..3].join(" "), "nova one zero one", "{keys:?}");
     }
 
     #[test]
     fn a_word_with_no_clip_is_spelled() {
-        let pack = &packs()[CONTROLLER];
+        let pack = &packs()[CONTROLLER.pack];
         let keys = clip_keys(&["zzqx".to_string()], pack);
         assert_eq!(keys, ["zulu", "zulu", "quebec", "x-ray"]);
     }
@@ -474,9 +696,56 @@ mod tests {
     fn a_transmission_is_sound() {
         let pack = &packs()[1];
         let keys = clip_keys(&speech::spoken("Tower, NVA101, holding short runway 27R.", &[]), pack);
-        let samples = transmission(&keys, pack, 1.06);
+        let voice = Voice { pack: 1, pitch: 1.07, pace: 1.0 };
+        let samples = transmission(&keys, pack, voice, Set::Air { range_nm: 5.0, seed: 1, late: false });
         assert!(samples.len() > SAMPLE_RATE as usize, "at least a second: {}", samples.len());
         assert!(samples.iter().any(|s| s.unsigned_abs() > 3000), "loud enough");
+    }
+
+    #[test]
+    fn a_pitch_change_keeps_the_pace() {
+        let pack = &packs()[1];
+        let keys = clip_keys(&speech::spoken("Tower, NVA101, holding short runway 27R.", &[]), pack);
+        let set = Set::Landline;
+        let len = |pitch, pace| transmission(&keys, pack, Voice { pack: 1, pitch, pace }, set).len() as f32;
+        let plain = len(1.0, 1.0);
+        for pitch in [0.9, 1.07] {
+            assert!((len(pitch, 1.0) / plain - 1.0).abs() < 0.03, "pitch {pitch}: {} against {plain}", len(pitch, 1.0));
+        }
+        assert!((len(1.0, 0.9) / plain - 0.9).abs() < 0.05, "quicker: {} against {plain}", len(1.0, 0.9));
+    }
+
+    #[test]
+    fn stretching_keeps_a_tone() {
+        let rate = 8000;
+        let tone: Vec<f32> = (0..8000).map(|i| (i as f32 * 0.3).sin() * 0.5).collect();
+        let long = stretched(&tone, 1.2, rate);
+        assert_eq!(long.len(), 9600);
+        // Same pitch: as many zero crossings a second.
+        let crossings = |x: &[f32]| x.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count() as f32 / x.len() as f32;
+        let (a, b) = (crossings(&tone), crossings(&long[400..9200]));
+        assert!((a / b - 1.0).abs() < 0.03, "{a} against {b}");
+    }
+
+    #[test]
+    fn a_far_aircraft_is_noisier() {
+        let pack = &packs()[1];
+        let voice = Voice { pack: 1, pitch: 1.0, pace: 1.0 };
+        let quiet_rms = |range_nm| {
+            let audio = transmission(&[], pack, voice, Set::Air { range_nm, seed: 3, late: false });
+            // The middle of the lead-in and tail: hiss alone.
+            let hiss = &audio[audio.len() / 2 - 200..audio.len() / 2 + 200];
+            (hiss.iter().map(|&s| (s as f32).powi(2)).sum::<f32>() / hiss.len() as f32).sqrt()
+        };
+        assert!(quiet_rms(45.0) > 2.0 * quiet_rms(2.0), "{} against {}", quiet_rms(45.0), quiet_rms(2.0));
+    }
+
+    #[test]
+    fn some_pilot_transmissions_are_keyed_late() {
+        let talker = Talker::Pilot("NVA101".into());
+        let late = (1..=600).filter(|&n| matches!(set_for(&talker, None, n), Set::Air { late: true, .. })).count();
+        assert!((20..=90).contains(&late), "{late} in 600");
+        assert_eq!(set_for(&Talker::Controller, Some(3.0), 5), Set::Sidetone);
     }
 
     fn voices() -> Voices {
@@ -493,8 +762,8 @@ mod tests {
     fn your_own_transmissions_can_be_left_unspoken_but_hold_the_frequency() {
         let mut v = voices();
         v.own = false;
-        assert!(!v.hear(&line(Speaker::Controller, Talker::Controller, "NVA101, turn left heading 240."), &[], 0.0));
-        assert!(v.hear(&line(Speaker::Pilot, Talker::Pilot("NVA101".into()), "left heading 240, NVA101."), &[], 0.0));
+        assert!(!v.hear(&line(Speaker::Controller, Talker::Controller, "NVA101, turn left heading 240."), &[], None, 0.0));
+        assert!(v.hear(&line(Speaker::Pilot, Talker::Pilot("NVA101".into()), "left heading 240, NVA101."), &[], None, 0.0));
         // The first goes "out" silently: the frequency is busy, the readback waits.
         v.update(0.0, 1.0);
         assert!(v.playing.is_none());
@@ -543,11 +812,12 @@ mod tests {
     fn each_aircraft_keeps_its_voice() {
         let a = voice_for(&Talker::Pilot("NVA101".into()));
         assert_eq!(a, voice_for(&Talker::Pilot("NVA101".into())));
-        let voices: std::collections::HashSet<(usize, u32)> = (0..60)
+        let voices: std::collections::HashSet<(usize, u32, u32)> = (0..200)
             .map(|n| voice_for(&Talker::Pilot(format!("TRL{n}"))))
-            .map(|(v, p)| (v, (p * 100.0) as u32))
+            .map(|v| (v.pack, (v.pitch * 100.0) as u32, (v.pace * 100.0) as u32))
             .collect();
-        assert!(voices.len() >= 6, "a spread of voices: {voices:?}");
-        assert!(voices.iter().all(|(v, _)| *v != CONTROLLER));
+        assert!(voices.len() >= 24, "a spread of voices: {voices:?}");
+        assert!(voices.iter().all(|(v, _, _)| *v != CONTROLLER.pack));
+        assert!(PILOTS.iter().all(|p| voices.iter().any(|(v, _, _)| v == p)), "every pilot voice is used");
     }
 }

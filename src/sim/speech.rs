@@ -188,6 +188,65 @@ pub const PHRASES: [&str; 44] = [
     "i say again",
 ];
 
+/// The most words one clip holds.
+pub const LONGEST_PHRASE: usize = 8;
+
+/// Clip key suffixes for a word or phrase said at the end of a sentence (a
+/// fall in pitch), or before a comma (held up, to go on): "cleared to land
+/// ." and "runway two seven left ,". Without one, the clip is from the middle
+/// of a sentence.
+pub const AT_END: &str = " .";
+pub const BEFORE_COMMA: &str = " ,";
+
+/// A line's words grouped into clips: the longest run that `has` a clip,
+/// up to LONGEST_PHRASE words and never across a pause, else the word on its
+/// own. Pauses are kept as they are.
+pub fn units(words: &[String], has: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        let run = words[i..].iter().take_while(|w| *w != PAUSE && *w != STOP).count();
+        let longest = run.min(LONGEST_PHRASE);
+        let phrase = (2..=longest).rev().map(|n| (words[i..i + n].join(" "), n)).find(|(p, _)| has(p));
+        match phrase {
+            Some((phrase, n)) => {
+                out.push(phrase);
+                i += n;
+            }
+            None => {
+                out.push(words[i].clone());
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Each clip before a comma, or at the end of a sentence, as said there,
+/// where `has` a clip for it.
+pub fn with_endings(units: Vec<String>, has: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut out = Vec::with_capacity(units.len());
+    for (i, unit) in units.iter().enumerate() {
+        if unit == PAUSE || unit == STOP {
+            out.push(unit.clone());
+            continue;
+        }
+        let suffix = match units.get(i + 1).map(String::as_str) {
+            Some(PAUSE) => BEFORE_COMMA,
+            Some(STOP) | None => AT_END,
+            Some(_) => "",
+        };
+        let ended = format!("{unit}{suffix}");
+        out.push(if !suffix.is_empty() && has(&ended) { ended } else { unit.clone() });
+    }
+    out
+}
+
+/// The words of a clip key, without its ending.
+pub fn key_words(key: &str) -> &str {
+    key.strip_suffix(AT_END).or_else(|| key.strip_suffix(BEFORE_COMMA)).unwrap_or(key)
+}
+
 /// Words that come before a number read digit by digit, even a round one.
 const DIGIT_CONTEXT: [&str; 4] = ["squawk", "code", "heading", "runway"];
 
@@ -441,6 +500,25 @@ mod tests {
         assert_eq!(say("stop immediately, I say again"), "stop immediately , i say again");
         assert_eq!(say("cleared to KORD airport"), "cleared to o'hare airport");
         assert_eq!(say("traffic, A320, 5 mile final"), "traffic , alfa three two zero , five mile final");
+    }
+
+    #[test]
+    fn units_take_the_longest_phrase_and_never_cross_a_pause() {
+        let has = |k: &str| ["cleared to land", "two seven", "two seven left"].contains(&k);
+        let words = spoken("runway 27L, cleared to land.", &[]);
+        assert_eq!(units(&words, has), ["runway", "two seven left", ",", "cleared to land"]);
+        let words = spoken("27, left", &[]);
+        assert_eq!(units(&words, has), ["two seven", ",", "left"]);
+    }
+
+    #[test]
+    fn endings_go_before_a_comma_and_at_the_end() {
+        let has = |k: &str| ["runway ,", "land .", "taxi ."].contains(&k);
+        let u: Vec<String> = ["runway", ",", "cleared", "to", "land"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(with_endings(u, has), ["runway ,", ",", "cleared", "to", "land ."]);
+        assert_eq!(key_words("land ."), "land");
+        assert_eq!(key_words("runway ,"), "runway");
+        assert_eq!(key_words("runway"), "runway");
     }
 
     #[test]

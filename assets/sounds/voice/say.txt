@@ -1,0 +1,29 @@
+# How to say words whose spelling misleads the voice: fix names, mostly,
+# which come from the airport data without vowels. One per line:
+#     word = how to say it
+# Read by tools/make_voice.py. Lines starting # are comments.
+
+wlder = wilder
+bbkng = B B King
+stjud = saint jude
+slver = silver
+mmrsn = emerson
+fhlps = phelps
+crson = carson
+fnchr = fincher
+gmblr = gambler
+grriz = griz
+lrnce = lawrence
+mrcel = marcel
+thmus = thomas
+wstin = westin
+hston = houston
+chldr = childer
+chlmr = chalmer
+
+# Best guesses: the published name isn't known.
+grnnd = grand
+gmbud = gum bud
+twray = tway
+wrrtz = wurtz
+jfred = J fred

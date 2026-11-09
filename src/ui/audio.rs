@@ -28,7 +28,7 @@ use super::voice::Voices;
 use crate::sim::aircraft::{Aircraft, Phase};
 use crate::sim::clearance::spoken_runway;
 use crate::sim::scoring::SimEvent;
-use crate::sim::{Speaker, World};
+use crate::sim::{Speaker, Talker, World};
 use macroquad::audio::{
     PlaySoundParams, Sound, load_sound_from_bytes, play_sound, set_sound_volume, stop_sound,
 };
@@ -715,7 +715,12 @@ impl Sounds {
         // aren't said, as no one hears them as they happened.
         let jumped = new_lines > MAX_LINES_SAID;
         for line in &world.log[world.log.len() - new_lines..] {
-            let voiced = !jumped && self.voices.hear(line, &callsigns, now);
+            // A pilot sounds further off the further the aircraft is.
+            let range_nm = line.radio.as_ref().and_then(|r| match &r.talker {
+                Talker::Pilot(c) => world.aircraft.iter().find(|a| &a.callsign == c).map(|a| a.pos.length()),
+                _ => None,
+            });
+            let voiced = !jumped && self.voices.hear(line, &callsigns, range_nm, now);
             if voiced {
                 self.log(&format!("voice: {}", line.text));
             }

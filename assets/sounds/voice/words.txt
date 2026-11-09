@@ -748,6 +748,7 @@ rnav
 robye
 rocab
 rocks
+roger
 rolling
 romeo
 ronee
@@ -1006,47 +1007,849 @@ zero
 zokor
 zulu
 zumit
-cleared for takeoff
-cleared to land
-line up and wait
-continue holding
-cleared for the option
-cleared touch and go
-closed traffic
-departure approved
-until established on the localizer
+advise clear of weather
+alfa delta
+alfa one
+allegiant five one
+allegiant niner eight
+allegiant seven six
+allegiant six seven
+american seven eight
+american seven zero
 and maintain
-turn left heading
-turn right heading
-fly runway heading
-hold short of runway
-holding short runway
-hold position
-continue taxi
-cross runway
+at papa
+bravo papa
+bronze four niner
+bronze niner two
+bronze seven four
+bronze seven seven
+bronze six eight
+bronze six five
+bronze six two
+bronze three three
+caution wake turbulence
+center approach
+charlie four
+charlie two
+clear of the runway
+cleared for takeoff
+cleared for the option
+cleared ils runway one eight center approach
+cleared ils runway one eight left approach
+cleared ils runway one eight right approach
+cleared ils runway three six center approach
+cleared ils runway three six left approach
+cleared ils runway three six right approach
+cleared ils runway two seven approach
+cleared ils runway two seven left approach
+cleared ils runway two seven right approach
+cleared ils runway two six right approach
+cleared ils runway zero eight left approach
+cleared ils runway zero eight right approach
+cleared ils runway zero niner approach
+cleared ils runway zero niner left approach
+cleared ils runway zero niner right approach
+cleared rnav runway one eight left approach
+cleared rnav runway three six center approach
+cleared rnav runway two seven left approach
+cleared rnav runway two seven right approach
+cleared rnav runway zero niner approach
+cleared rnav runway zero niner left approach
+cleared rnav runway zero niner right approach
+cleared to land
+cleared touch and go
+cleared visual approach runway one eight center
+cleared visual approach runway one eight right
+cleared visual approach runway three six left
+cleared visual approach runway two seven left
+cleared visual approach runway two seven right
+cleared visual approach runway zero niner left
+cleared visual approach runway zero niner right
+climb and maintain three thousand
+climbing to
+closed traffic
+contact center
+contact departure
 contact ground
 contact tower
-contact departure
-contact center
+continue holding
+continue taxi
+course inbound
+cross runway
+cross runway one eight right
+cross runway three six center
+cross runway three six right
+cross runway two seven left
+cross runway two seven right
+cross runway two six left
+cross runway two six right
+cross runway zero niner
+crown eight five
+crown four niner
+crown four seven
+crown one two
+crown seven eight
+crown three one
+crown two four
+delta niner
+departure approved
+descend and maintain three thousand
+direct budee
+direct hazel
+direct jaywa
+direct larch
+direct monaa
+direct oaken
+direct ronee
+direct wlder
+eight eight
+eight five
+eight four
+eight niner
+eight one
+eight seven
+eight six
+eight three
+eight two
+eight zero
+endeavor eight five
+endeavor five one
+endeavor one eight
+endeavor one seven
+endeavor six zero
+endeavor three one
+endeavor three two
+endeavor two five
+endeavor two two
+enter left downwind runway one eight center
+enter left downwind runway three six left
+enter left downwind runway two seven
+enter left downwind runway two seven left
+enter left downwind runway zero niner left
+enter right downwind runway two seven right
+enter right downwind runway zero niner right
+envoy eight two
+envoy five one
+envoy niner niner
+envoy three seven
+expect further clearance
+expect further clearance zero zero
+extend downwind
+fedex eight eight
+fedex eight four
+fedex eight one
+fedex eight seven
+fedex eight three
+fedex eight zero
+fedex five five
+fedex five seven
+fedex five six
+fedex five two
+fedex five zero
+fedex four
+fedex four eight
+fedex four four
+fedex four two
+fedex four zero
+fedex niner one
+fedex niner six
+fedex one five
+fedex one four
+fedex seven niner
+fedex seven seven
+fedex seven six
+fedex seven three
+fedex six two
+fedex three eight
+fedex three niner
+fedex three three
+fedex two
+fedex two eight
+fedex two four
+fedex two seven
+fedex two three
+fedex two zero
+five course inbound
+five eight
+five five
+five four
+five niner
+five november
+five one
+five seven
+five six
+five three
+five two
+five zero
+fly runway heading
+for the
+four alfa
+four eight
+four five
+four four
+four niner
+four one
+four seven
+four six
+four three
+four two
+four zero
+foxtrot mike
 frequency change approved
-resume own navigation
+gateway five one
+gateway four two
+gateway one six
+gateway six seven
 go around
 going around
-caution wake turbulence
-traffic holding in position
-extend downwind
-i'll call your base
-turn base
-expect further clearance
-advise clear of weather
-radar contact
-ready to taxi
-ready to copy
-with information
-inbound for landing
-mile final runway
-request vectors
-proceeding direct
-climbing to
-stop immediately
+hold east of
+hold north of
+hold northeast of
+hold northeast of glade as published
+hold northwest of
+hold position
+hold short of runway
+hold short of runway one eight
+hold short of runway one eight right
+hold short of runway three six center
+hold short of runway two
+hold short of runway zero eight
+hold short of runway zero niner
+hold southwest of
+hold southwest of dover as published
+hold west of
+holding short runway
+hotel delta
+hundred until established on the localizer
 i say again
+i'll call your base
+ifr to
+inbound for landing
+jhaun on the
+left approach
+line up and wait
+maintain five thousand until established on the localizer
+maintain one niner
+maintain one thousand four hundred until established on
+maintain three thousand until established on the localizer
+maintain two two
+make left closed traffic
+make right closed traffic
+meridian eight eight
+meridian four six
+meridian niner eight
+meridian niner four
+meridian one three
+meridian seven five
+meridian six eight
+meridian three one
+meridian three seven
+meridian two niner
+mike four
+mike six
+mike two
+mile final
+mile final runway
+mountain eight one
+mountain five eight
+mountain five six
+mountain five three
+mountain four seven
+mountain one six
+mountain seven five
+mountain seven zero
+mountain three five
+mountain two five
+niner alfa
+niner course inbound
+niner eight
+niner five
+niner four
+niner hotel
+niner niner
+niner one
+niner seven
+niner six
+niner three
+niner two
+niner zero
+not a departure
+not departing
+not established
+not in the pattern
+not landing
+not on approach
+not on your frequency
+not ready
+not taxiing
+nova eight seven
+nova eight two
+nova seven five
+nova seven four
+nova seven three
+nova three three
+november eight
+november five
+november four
+november niner
+november one
+november seven
+november six
+november three
+november two
+on the one niner
+on the two
+on the zero
+on the zero niner
+one course inbound
+one eight
+one eight center
+one five
+one four
+one minute legs
+one niner
+one november
+one one
+one seven
+one six
+one three
+one two
+one zero
+one zero mile final runway
+orion eight niner
+orion eight zero
+orion five eight
+orion five three
+orion four five
+orion niner six
+orion niner three
+orion seven
+orion six four
+orion six zero
+orion three two
+papa one
+proceeding direct
+radar contact
+ready to copy
+ready to taxi
+request vectors
+resume own navigation
+right approach
+right turns
+romeo hotel
+runway one eight center
+runway one eight left
+runway one eight right
+runway three six center
+runway three six left
+runway three six right
+runway two seven
+runway two seven left
+runway two seven right
+runway two six left
+runway two six right
+runway zero eight left
+runway zero eight right
+runway zero niner
+runway zero niner left
+runway zero niner right
+servicios sup four eight
+servicios sup one four
+servicios sup three four
+servicios sup two two
+seven bravo
+seven eight
+seven five
+seven four
+seven mike
+seven niner
+seven one
+seven right
+seven seven
+seven six
+seven three
+seven two
+seven yankee
+seven zero
+six eight
+six five
+six four
+six niner
+six one
+six seven
+six six
+six three
+six two
+six zero
+skywest eight four
+southwest five niner
+southwest one zero
+southwest seven eight
+southwest seven four
+stop immediately
+taxi via
+taxi via alfa
+taxi via alfa one
+taxi via bravo
+taxi via bravo five
+taxi via charlie
+taxi via echo
+taxi via juliett
+taxi via winchester
+that runway isn't landing
+the localizer
+three delta
+three eight
+three five
+three four
+three niner
+three one
+three seven
+three six
+three six right
+three three
+three two
+three zero
+too far off runway
+traffic holding in position
+trail eight four
+trail eight niner
+trail five one
+trail four five
+trail four three
+trail niner three
+trail one eight
+trail one three
+trail six niner
+trail six one
+trail six three
+trail three niner
+turn base
+turn left heading
+turn left heading one five
+turn left heading one one
+turn left heading three one
+turn left heading two three
+turn left heading zero three
+turn right heading
+turn right heading one one
+turn right heading three one
+turn right heading two three
+turn right heading zero
+turn right heading zero three
+two course inbound
+two eight
+two five
+two four
+two niner
+two one
+two seven
+two seven right
+two six
+two three
+two two
+two yankee
+two zero
+unable cleared ils runway
+unable cleared rnav runway one eight
+unable cleared rnav runway three six
+unable cleared rnav runway two seven
+unable cleared rnav runway two six
+unable cleared rnav runway zero eight
+unable cleared rnav runway zero niner
+unable cleared rnav runway zero niner right approach
+unable cleared visual approach runway one eight
+unable cleared visual approach runway three six
+unable cleared visual approach runway two seven left
+unable cleared visual approach runway two seven right
+unable cleared visual approach runway two six
+unable cleared visual approach runway zero eight
+unable cleared visual approach runway zero niner
+unable cleared visual approach runway zero niner right
+unable climb and maintain three thousand
+unable contact center
+unable contact departure
+unable contact ground
+unable contact tower
+unable continue taxi
+unable cross runway one eight right
+unable cross runway three six
+unable cross runway two seven left
+unable cross runway two seven right
+unable cross runway two six
+unable cross runway zero niner
+unable direct
+unable enter left downwind runway
+unable enter left downwind runway two seven
+unable enter left downwind runway zero niner
+unable enter right downwind runway two
+unable enter right downwind runway zero
+unable extend downwind
+unable frequency change approved
+unable go around
+unable hold
+unable hold north of
+unable hold northeast of
+unable hold northwest of
+unable hold position
+unable hold southwest of
+unable maintain five thousand until established on the
+unable maintain one niner
+unable maintain one thousand
+unable maintain three thousand until established on the
+unable maintain two two
+unable resume own navigation
+unable runway one eight center
+unable runway one eight left
+unable runway one eight right
+unable runway three six center
+unable runway three six left
+unable runway three six right
+unable runway two seven
+unable runway two seven left
+unable runway two seven right
+unable runway two six left
+unable runway two six right
+unable runway zero eight left
+unable runway zero eight right
+unable runway zero niner
+unable runway zero niner left
+unable runway zero niner right
+unable taxi via
+unable taxi via bravo
+unable turn base
+unable turn left heading
+unable turn left heading one
+unable turn right heading
+unable turn right heading one
+uniform bravo
+until established on the localizer
+victor one
+victor two
+we don't cross that runway
+we don't have our ifr clearance yet
+we still need our clearance
+we're a departure
+we're airborne
+we're ifr
+we're in the pattern for
+we're on the ground
+we're staying with you
+we're vfr
+whiskey quebec
+whiskey whiskey
+with information
+zero course inbound
+zero eight
+zero five
+zero four
+zero kilo
+zero knots
+zero niner
+zero one
+zero seven
+zero six
+zero three
+zero two
+zero whiskey
+zero zero
+alfa ,
+alfa .
+alfa delta ,
+alfa delta .
+approach ,
+approach .
+bravo ,
+bravo .
+bravo papa ,
+center ,
+center approach ,
+charlie ,
+charlie .
+charlie four ,
+clear of the runway ,
+clearance ,
+cleared for takeoff ,
+cleared for takeoff .
+cleared for the option ,
+cleared for the option .
+cleared ils runway one eight center approach .
+cleared ils runway three six right approach .
+cleared ils runway two seven approach .
+cleared ils runway two seven left approach .
+cleared ils runway two seven right approach .
+cleared ils runway zero niner left approach .
+cleared ils runway zero niner right approach .
+cleared rnav runway one eight left approach .
+cleared rnav runway three six center approach .
+cleared rnav runway two seven left approach .
+cleared rnav runway two seven right approach .
+cleared rnav runway zero niner approach .
+cleared rnav runway zero niner left approach .
+cleared rnav runway zero niner right approach .
+cleared to land ,
+cleared to land .
+cleared touch and go ,
+cleared touch and go .
+cleared visual approach runway one eight center .
+cleared visual approach runway one eight right .
+cleared visual approach runway three six left .
+cleared visual approach runway two seven left .
+cleared visual approach runway two seven right .
+cleared visual approach runway zero niner left .
+cleared visual approach runway zero niner right .
+climb and maintain three thousand ,
+climb and maintain three thousand .
+contact center .
+contact departure .
+contact ground ,
+contact ground .
+contact tower ,
+contact tower .
+continue taxi ,
+continue taxi .
+course inbound ,
+cross runway one eight right .
+cross runway three six center .
+cross runway three six right .
+cross runway two seven left .
+cross runway two seven right .
+cross runway two six left .
+cross runway two six right .
+cross runway zero niner .
+delta ,
+delta .
+descend and maintain three thousand ,
+descend and maintain three thousand .
+direct hazel .
+direct larch .
+direct monaa .
+direct ronee .
+direct wlder .
+downwind ,
+echo ,
+echo .
+eight ,
+eight .
+enter left downwind runway one eight center .
+enter left downwind runway three six left .
+enter left downwind runway two seven .
+enter left downwind runway two seven left .
+enter left downwind runway zero niner left .
+enter right downwind runway two seven right .
+enter right downwind runway zero niner right .
+extend downwind ,
+five ,
+five .
+five course inbound ,
+four ,
+four .
+four alfa ,
+four two ,
+four two .
+foxtrot mike ,
+frequency change approved .
+germantown ,
+go around .
+ground ,
+hold northeast of glade as published ,
+hold position ,
+hold position .
+hold short of runway one eight right ,
+hold short of runway one eight right .
+hold short of runway zero niner ,
+hold short of runway zero niner .
+hold southwest of dover as published ,
+hotel delta ,
+hotel delta .
+hundred until established on the localizer ,
+i'll call your base ,
+i'll call your base .
+juliett ,
+kilo ,
+kilo .
+left ,
+left .
+left approach ,
+lima ,
+lima .
+line up and wait ,
+line up and wait .
+localizer ,
+maintain five thousand until established on the localizer ,
+maintain three thousand until established on the localizer ,
+make left closed traffic ,
+make right closed traffic ,
+mike ,
+mike four ,
+mike six ,
+mike two ,
+mile final .
+niner ,
+niner .
+niner course inbound ,
+niner hotel ,
+niner hotel .
+not a departure ,
+not departing ,
+not established ,
+not in the pattern ,
+not landing ,
+not on approach ,
+not on your frequency ,
+not ready ,
+not taxiing ,
+november ,
+one ,
+one .
+one course inbound ,
+one eight center ,
+one minute legs ,
+papa ,
+papa .
+papa one ,
+published ,
+quebec ,
+quebec .
+ready to copy ,
+ready to taxi .
+resume own navigation ,
+resume own navigation .
+right ,
+right .
+right approach ,
+right turns ,
+romeo ,
+romeo hotel ,
+romeo hotel .
+runway one eight center ,
+runway one eight left ,
+runway one eight left .
+runway one eight right ,
+runway three six center ,
+runway three six center .
+runway three six left ,
+runway three six right ,
+runway three six right .
+runway two seven ,
+runway two seven left ,
+runway two seven right ,
+runway two six left ,
+runway two six left .
+runway two six right ,
+runway two six right .
+runway zero eight left ,
+runway zero eight left .
+runway zero eight right ,
+runway zero eight right .
+runway zero niner ,
+runway zero niner .
+runway zero niner left ,
+runway zero niner right ,
+seven ,
+seven .
+seven bravo ,
+seven bravo .
+seven seven ,
+seven seven .
+sierra ,
+six ,
+six .
+six niner ,
+six niner .
+tango ,
+taxi via alfa ,
+taxi via alfa one ,
+taxi via bravo ,
+taxi via bravo five ,
+taxi via charlie ,
+taxi via echo ,
+taxi via juliett ,
+taxi via winchester ,
+that runway isn't landing ,
+the localizer ,
+thousand ,
+three ,
+three .
+three delta ,
+three delta .
+three four .
+three seven .
+three six right ,
+three two .
+tower ,
+traffic ,
+turn base .
+two ,
+two .
+two course inbound ,
+two yankee ,
+two yankee .
+two zero ,
+two zero .
+unable cleared rnav runway zero niner right approach ,
+unable cleared visual approach runway two seven left ,
+unable cleared visual approach runway two seven right ,
+unable cleared visual approach runway zero niner right ,
+unable climb and maintain three thousand ,
+unable contact center ,
+unable contact departure ,
+unable contact ground ,
+unable contact tower ,
+unable continue taxi ,
+unable cross runway one eight right ,
+unable cross runway two seven left ,
+unable cross runway two seven right ,
+unable cross runway zero niner ,
+unable extend downwind ,
+unable frequency change approved ,
+unable go around ,
+unable hold position ,
+unable resume own navigation ,
+unable runway one eight center ,
+unable runway one eight left ,
+unable runway one eight right ,
+unable runway three six center ,
+unable runway three six left ,
+unable runway three six right ,
+unable runway two seven ,
+unable runway two seven left ,
+unable runway two seven right ,
+unable runway two six left ,
+unable runway two six right ,
+unable runway zero eight left ,
+unable runway zero eight right ,
+unable runway zero niner ,
+unable runway zero niner left ,
+unable runway zero niner right ,
+unable turn base ,
+uniform bravo ,
+uniform bravo .
+until established on the localizer ,
+victor ,
+victor .
+victor one ,
+victor two ,
+we don't cross that runway ,
+we don't have our ifr clearance yet ,
+we still need our clearance ,
+we're a departure ,
+we're airborne ,
+we're ifr ,
+we're on the ground ,
+we're staying with you ,
+we're vfr ,
+whiskey quebec ,
+whiskey whiskey ,
+whiskey whiskey .
+yankee ,
+zero ,
+zero .
+zero course inbound ,
+zero knots ,
+zero knots .
+zero seven ,
+zero seven .
+zero two ,
+zero two .
+zulu ,

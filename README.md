@@ -707,14 +707,17 @@ Radio calls are spoken, as they'd sound on the frequency:
 
 - **Pilots:** readbacks, check-ins, requests and maydays, when they're on a
   frequency you work. A pilot reading back to an automated Ground isn't
-  heard. Each aircraft keeps its own voice: one of three, each pitched three
-  ways.
-- **You:** every instruction you send, in the controller's voice. With
+  heard. Each aircraft keeps its own voice: one of four (two of them
+  women's, one British), each pitched three ways and spoken at one of three
+  paces. A pilot further from the field sounds fainter, with more hiss, and
+  now and then keys the mike a moment late, losing the start of a word.
+- **You:** every instruction you send, in the controller's voice, as a
+  clean sidetone in your headset. With
   "Speak my transmissions" off in the settings, yours aren't said, but the
   frequency stays busy for as long as they'd take, so pilots don't answer
   over you.
-- **Landlines:** coordination calls you make or take. The other facility
-  has its own voice.
+- **Landlines:** coordination calls you make or take, on a telephone line
+  rather than the radio. The other facility has its own voice.
 
 Automated controllers stay silent, so only your frequencies are heard. One
 transmission plays at a time, as on a real frequency. Any that wait more
@@ -723,7 +726,10 @@ turn radio voices off.
 
 Words in a group (digits, letters, "two seven left", "three thousand")
 run together, and other words follow on with only a brief gap, faded
-across.
+across. The phrases heard most ("descend and maintain", "cleared to land",
+"runway two seven left") are said whole, and a word at the end of a
+sentence or before a comma has its own clip, with the fall or rise in pitch
+it has there.
 
 Each voice is built from word and phrase clips. Callsigns are said with their
 telephony ("Nova one zero one", "November three niner six niner uniform"),
@@ -744,19 +750,23 @@ are used:
 - the ASDE-X words, and one pilot voice: `en_US-ljspeech-high`, trained on the
   [LJ Speech](https://keithito.com/LJ-Speech-Dataset/) recordings;
 - the controller: `en_US-norman-medium`, trained on LibriVox recordings;
-- two more pilot voices: `en_US-john-medium` and `en_US-kristin-medium`,
-  also trained on LibriVox recordings.
+- three more pilot voices: `en_US-john-medium`, `en_US-kristin-medium` and
+  `en_GB-cori-medium`, also trained on LibriVox recordings.
 
 The radio clips are packed one file per voice (`<voice>.pack`): 8 kHz µ-law,
 which holds all of a VHF voice's band. The words come from
 `assets/sounds/voice/words.txt`, written by the game's tests from every
-radio line it can produce. To render them again:
+radio line it can produce: every word, the commonest phrases, and the
+words that end sentences and clauses. Words the voices would misread, fix
+names mostly, are respelled in `assets/sounds/voice/say.txt`. To render
+them again:
 
 ```sh
 python -m pip install piper-tts onnx
 cargo test --release --test voice -- --ignored write_vocabulary
-python tools/make_voice.py            # the radio voices
-python tools/make_voice.py --asdex    # the ASDE-X words
+python tools/make_voice.py                # the radio voices
+python tools/make_voice.py --voice cori   # just one of them
+python tools/make_voice.py --asdex        # the ASDE-X words
 ```
 
 To hear a change, render the listening set before and after it and compare:
@@ -769,6 +779,15 @@ cargo run --release --example radio_samples    # into target/radio_samples/curre
 Each transmission is written as a WAV file, with `busy.wav` holding them
 all in a row, and `report.txt` with each one's length, words a minute and
 longest gap.
+
+To listen through every clip for a word said wrong:
+
+```sh
+cargo run --release --example radio_samples -- --vocabulary
+```
+
+This writes one WAV per voice to `target/radio_samples/vocabulary`, with
+`vocabulary.txt` giving the time each word starts.
 
 ## Settings
 
