@@ -8,6 +8,7 @@ fastrand = "2"
 glam = "0.27"
 libm = "0.2.16"
 macroquad = { version = "0.4", features = ["audio"] }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 

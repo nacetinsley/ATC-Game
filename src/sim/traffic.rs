@@ -354,18 +354,33 @@ impl World {
         let Some((fix, altitude)) = self.automated_hold_slot() else { return false };
         let callsign = self.new_callsign(ty);
         let id = self.next_id();
+        let spawn_time = self.time;
+        self.place_in_hold(id, callsign, ty, spawn_time, fix, altitude);
+        true
+    }
+
+    /// Put an arrival in the automated Approach's hold at `fix`, near its
+    /// inbound end, at `altitude`.
+    pub(super) fn place_in_hold(
+        &mut self,
+        id: u32,
+        callsign: String,
+        ty: &'static AircraftType,
+        spawn_time: f32,
+        fix: usize,
+        altitude: f32,
+    ) {
         let spec = self.airport.published_hold(fix).expect("slots are published holds");
         let inbound = spec.inbound;
         let pos = self.airport.fixes[fix].pos() - heading_vec(inbound) * HOLD_SPAWN_NM;
         let speed = holding::max_speed(altitude).min(ty.max_speed);
         let mut ac = Aircraft::new(id, callsign, Flow::Arrival, ty, pos, inbound, altitude, speed);
-        ac.spawn_time = self.time;
+        ac.spawn_time = spawn_time;
         ac.entered_sector = true;
         ac.freq_since = self.time;
         let spec = self.hold_for(&ac, fix);
         ac.lateral = Lateral::Hold(HoldState::new(spec));
         self.add_aircraft(ac);
-        true
     }
 
     fn queue_departure(&mut self) {

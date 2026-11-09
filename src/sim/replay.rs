@@ -51,6 +51,11 @@ pub enum Action {
     CallEmergency,
     /// Quitting to the main menu: the shift ends here.
     Leave,
+    /// Co-op: this seat's player has gone, and its positions are automated
+    /// until they come back.
+    Vacate(Seat),
+    /// Co-op: this seat's player is back, and takes its positions again.
+    Take(Seat),
 }
 
 impl World {
@@ -88,6 +93,8 @@ impl World {
             Action::CallGoAround => self.call_go_around_as(seat, id),
             Action::CallEmergency => self.call_emergency_as(seat, id),
             Action::Leave => self.leave_shift_as(seat),
+            Action::Vacate(gone) => self.vacate(seat, gone),
+            Action::Take(back) => self.take(seat, back),
         }
     }
 

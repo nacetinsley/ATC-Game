@@ -1,5 +1,6 @@
 //! Selection, drag vectors, hotkeys and the pending clearance.
 
+use std::cell::RefCell;
 use super::camera::{Camera, inset_area, mouse_in_scope, scope_area, scope_width};
 use super::scope::{self, BLOCK_SIZE};
 use super::surface;
@@ -83,6 +84,10 @@ pub struct UiState {
     pub course_hint: bool,
     /// Watching a replay: everything can be looked at, nothing can be said.
     pub replay: bool,
+    /// Co-op over a connection: what this player says goes to the host, and
+    /// comes back in a tick, so it waits here for the session. `None` when
+    /// it's applied at once.
+    pub outbox: Option<RefCell<Vec<(u32, Action)>>>,
 }
 
 impl UiState {
@@ -112,6 +117,7 @@ impl UiState {
             hovered: None,
             course_hint: true,
             replay: false,
+            outbox: None,
         };
         ui.frame_views(airport);
         ui
@@ -126,8 +132,29 @@ impl UiState {
     }
 
     /// Do something as this player. False if it can't be done.
+    ///
+    /// In co-op over a connection it's tried on a copy of the world, so it's
+    /// turned down at once as it would be alone, and then sent: the world
+    /// changes when the host's tick brings it back.
     pub fn act(&self, world: &mut World, id: u32, action: Action) -> bool {
-        !self.replay && world.act(self.seat, id, action)
+        if self.replay {
+            return false;
+        }
+        match &self.outbox {
+            None => world.act(self.seat, id, action),
+            Some(outbox) => {
+                let ok = world.clone().act(self.seat, id, action.clone());
+                if ok {
+                    outbox.borrow_mut().push((id, action));
+                }
+                ok
+            }
+        }
+    }
+
+    /// What this player has said since the last call, for the session.
+    pub fn take_outbox(&self) -> Vec<(u32, Action)> {
+        self.outbox.as_ref().map(|o| std::mem::take(&mut *o.borrow_mut())).unwrap_or_default()
     }
 
     /// Tower positions see both pictures: one full size, one inset.
@@ -732,16 +759,18 @@ impl UiState {
         if is_key_pressed(KeyCode::F3) {
             self.board.expanded = !self.board.expanded;
         }
-        if is_key_pressed(KeyCode::Space) {
+        // Co-op over a connection runs in real time: no pause, no x2 or x4.
+        let own_clock = self.outbox.is_none();
+        if own_clock && is_key_pressed(KeyCode::Space) {
             self.paused = !self.paused;
         }
-        if is_key_pressed(KeyCode::Key1) {
+        if own_clock && is_key_pressed(KeyCode::Key1) {
             self.rate = 1.0;
         }
-        if is_key_pressed(KeyCode::Key2) {
+        if own_clock && is_key_pressed(KeyCode::Key2) {
             self.rate = 2.0;
         }
-        if is_key_pressed(KeyCode::Key4) {
+        if own_clock && is_key_pressed(KeyCode::Key4) {
             self.rate = 4.0;
         }
         if self.replay && is_key_pressed(KeyCode::Key8) {

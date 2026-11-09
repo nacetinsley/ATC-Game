@@ -73,7 +73,7 @@ impl Seats {
 
 /// The positions players work, and whose seat each is in. The rest are
 /// automated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Staffing {
     pub approach: bool,
     pub local: bool,

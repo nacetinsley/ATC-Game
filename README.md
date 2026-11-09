@@ -914,6 +914,27 @@ Every shift is split between two players: Approach in seat 0, and Local,
 Ground and Delivery in seat 1. Press F9 to hand the screen to the other
 seat. Shift codes and replays are off in hot seat.
 
+### Co-op over a network (early)
+
+Two machines on the same network, both running the same build:
+
+```sh
+cargo run --release -- --host --name Sam              # start a shift as usual
+cargo run --release -- --join 192.168.1.20 --name Alex
+```
+
+The host works Approach, and the player who joins works the tower cab. The
+default port is 7340: `--host 9000` and `--join 192.168.1.20:9000` change it.
+A player can join after the shift has started; their machine catches up.
+Co-op runs in real time, with no pause or speed-up.
+
+If a player's connection drops, their seat waits 30 seconds for them, then
+their positions are automated until they come back with the same name. If
+the host leaves, the shift ends for everyone. If a machine's sim ever drifts
+from the host's, it stops and writes a `desync-<tick>.txt` report next to
+the settings file. A lobby, a relay server for play over the internet, and
+co-op replays are still to come.
+
 ### macOS app
 
 To build a double-clickable `Air Traffic Control.app` on a Mac:

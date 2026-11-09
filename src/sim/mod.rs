@@ -18,6 +18,7 @@ pub mod performance;
 pub mod positions;
 pub mod ramp;
 pub mod scoring;
+pub mod seats;
 pub mod sky;
 pub mod speech;
 pub mod storms;
@@ -231,6 +232,9 @@ pub struct World {
     pub releases: coordination::Releases,
 
     config: WorldConfig,
+    /// Who works what as the shift was set up. `config.staffing` is who
+    /// works it now: a seat whose player has gone is automated meanwhile.
+    seated: positions::Staffing,
     config_index: usize,
     rng: fastrand::Rng,
     events: Vec<SimEvent>,
@@ -277,6 +281,7 @@ impl World {
             coordination: Vec::new(),
             releases: coordination::Releases::default(),
             config,
+            seated: config.staffing,
             config_index,
             rng,
             events: Vec::new(),
