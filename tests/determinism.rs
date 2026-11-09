@@ -178,3 +178,16 @@ fn matches_the_pinned_checksums() {
         assert_eq!(p, h, "this machine plays a shift differently");
     }
 }
+
+/// Every point goes to a position someone works, and they add up.
+#[test]
+fn the_split_by_position_adds_up() {
+    for (name, airport, config) in shifts() {
+        let (world, _) = play(airport, config);
+        let score = &world.score;
+        assert_eq!(score.by_position.iter().sum::<i32>(), score.points, "{name}");
+        for incident in &score.incidents {
+            assert!(config.staffing.works(incident.position), "{name}: {incident:?}");
+        }
+    }
+}

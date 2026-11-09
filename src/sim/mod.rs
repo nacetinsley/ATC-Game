@@ -488,7 +488,13 @@ impl World {
     }
 
     fn emit(&mut self, event: SimEvent) {
-        self.score.apply(self.time, &event);
+        let primary = event.position(|callsign| {
+            self.aircraft.iter().find(|a| a.callsign == callsign).map(|a| a.frequency())
+        });
+        // Put down to whoever was given the position at the start, even if
+        // they've dropped since.
+        let position = scoring::credited_to(primary, self.seated);
+        self.score.apply_as(self.time, &event, position);
         self.events.push(event);
     }
 

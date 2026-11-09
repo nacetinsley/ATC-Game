@@ -6,8 +6,10 @@ six-letter code. Players join with the code, and the relay passes the
 game's messages between them. It knows nothing about the game itself: it
 only forwards frames, so a new game version never needs a new relay.
 
-It uses only the Rust standard library and very little memory and CPU. A
-small VPS can carry hundreds of players.
+It's meant to run on a Linux server. It uses only the Rust standard
+library, with no system libraries beyond libc, and very little memory and
+CPU. A small VPS can carry hundreds of players. It runs on Windows and
+macOS too, which is handy for testing.
 
 ## Limits
 
@@ -40,6 +42,11 @@ RELAY_LISTEN=0.0.0.0:9000 cargo run --release
 It logs to stderr and runs until stopped. In the game, set **Co-op →
 Relay** to the server's address, such as `relay.example.com` or
 `203.0.113.5:7341`. The port defaults to 7341.
+
+Each connection holds three file handles. Linux shells often allow only
+1024 open files, so running it by hand that way caps it at about 340
+connections. Run `ulimit -n 4096` first to allow the full 512. The systemd
+unit below sets this, and Docker's default limit is already high enough.
 
 ## Deploying
 
@@ -74,6 +81,8 @@ After=network-online.target
 ExecStart=/usr/local/bin/atc-relay --listen 0.0.0.0:7341
 Restart=always
 DynamicUser=yes
+# Three file handles per connection, and 512 connections at most.
+LimitNOFILE=4096
 
 [Install]
 WantedBy=multi-user.target

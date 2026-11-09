@@ -101,8 +101,12 @@ fn players_pick_positions_and_the_host_starts() {
             client.update(TICK, w);
         }
     }
-    for (_, w, _) in &theirs {
+    for (client, w, _) in &theirs {
         assert_eq!(w.checksum(), world.checksum());
+        // Each player's replay: the shift from its start, and the commands.
+        let mut again = client.setup().unwrap().world(&airports()).unwrap();
+        again.run_to(w.ticks(), w.commands());
+        assert_eq!(again.checksum(), w.checksum());
     }
     // In the shift, names come in the roster.
     let names: Vec<String> = theirs[0].0.players().iter().map(|(_, n)| n.clone()).collect();

@@ -773,7 +773,7 @@ fn uncoordinated(events: &[SimEvent]) -> Vec<(&str, &str)> {
     events
         .iter()
         .filter_map(|e| match e {
-            SimEvent::UncoordinatedEmergency { callsign, to } => Some((callsign.as_str(), to.as_str())),
+            SimEvent::UncoordinatedEmergency { callsign, to, .. } => Some((callsign.as_str(), to.as_str())),
             _ => None,
         })
         .collect()

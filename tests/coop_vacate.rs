@@ -184,3 +184,49 @@ fn a_shift_with_a_drop_replays_the_same() {
     assert_eq!(again.checksum(), world.checksum());
     assert_eq!(again.staffing(), world.staffing());
 }
+
+#[test]
+fn a_coop_replay_taken_over_alone_plays_back() {
+    let mut world = busy(split());
+    let start = world.clone();
+    let mut step = 0;
+    run(&mut world, &[A, B], 6 * MINUTE, &mut step);
+    // B has dropped when the replay's taken over: their positions come back.
+    assert!(world.act(A, 0, Action::Vacate(B)));
+    run(&mut world, &[A], 2 * MINUTE, &mut step);
+    assert!(!world.staffing().local);
+    assert!(world.act(A, 0, Action::Solo));
+    assert_eq!(world.staffing(), Staffing::ALL);
+    assert!(!world.seated().is_coop());
+    assert!(!world.act(A, 0, Action::Solo), "once is enough");
+    // One player works the lot from here.
+    run(&mut world, &[A], 6 * MINUTE, &mut step);
+    assert!(world.aircraft.iter().filter(|a| a.frequency() == Position::Ground).all(|a| world.is_seats(A, a)));
+    // The saved commands rebuild it, Solo and all.
+    let mut again = start.clone();
+    again.run_to(world.ticks(), world.commands());
+    assert_eq!(again.checksum(), world.checksum());
+    assert_eq!(again.staffing(), Staffing::ALL);
+}
+
+#[test]
+fn solo_is_only_for_coop() {
+    let mut world = busy(Staffing::ALL);
+    assert!(!world.act(0, 0, Action::Solo));
+}
+
+#[test]
+fn the_team_score_is_split_between_the_players_positions() {
+    let mut world = busy(split());
+    let mut step = 0;
+    run(&mut world, &[A, B], 8 * MINUTE, &mut step);
+    // B drops: what happens on their positions is still put down to them.
+    assert!(world.act(A, 0, Action::Vacate(B)));
+    run(&mut world, &[A], 8 * MINUTE, &mut step);
+    let score = &world.score;
+    assert_eq!(score.by_position.iter().sum::<i32>(), score.points);
+    assert!(score.by_position[0] != 0 && score.by_position[1..].iter().any(|&p| p != 0), "{:?}", score.by_position);
+    for incident in &score.incidents {
+        assert!(world.seated().works(incident.position), "{incident:?}");
+    }
+}

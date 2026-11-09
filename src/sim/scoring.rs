@@ -1,7 +1,10 @@
 //! Turns sim events into a score, an incident list and a shift rating.
+//!
+//! In co-op the score is the team's, and each event is also put down to the
+//! position whose work it was, so the debrief can split it.
 
 use super::emergency::EmergencyKind;
-use super::positions::Staffing;
+use super::positions::{Position, Staffing};
 
 pub const POINTS_LANDED: i32 = 100;
 pub const POINTS_EXITED: i32 = 80;
@@ -112,7 +115,7 @@ pub enum SimEvent {
     GroundConflict { a: String, b: String },
     /// Two aircraft nose to nose with nowhere to go.
     TaxiDeadlock { a: String, b: String },
-    MissedHandoff { callsign: String, to: &'static str },
+    MissedHandoff { callsign: String, to: &'static str, from: Position },
     /// A VFR departure left without being told it could change frequency.
     NoFrequencyChange { callsign: String },
     Parked { callsign: String },
@@ -150,8 +153,9 @@ pub enum SimEvent {
     CoordinationRequest { callsign: String },
     /// The player, on Ground, crossed a runway without Local's approval.
     UncoordinatedCrossing { callsign: String },
-    /// A landline request to the player went unanswered too long.
-    CoordinationLate { callsign: String },
+    /// A landline request to the player went unanswered too long. `to` is
+    /// the position that was asked.
+    CoordinationLate { callsign: String, to: Position },
     /// The player, on Local, cleared a departure for takeoff without the
     /// release Approach asked for.
     UnreleasedDeparture { callsign: String },
@@ -163,7 +167,93 @@ pub enum SimEvent {
     UncoordinatedGoAround { callsign: String },
     /// The player handed an aircraft in an emergency to an automated
     /// position without telling it first.
-    UncoordinatedEmergency { callsign: String, to: String },
+    UncoordinatedEmergency { callsign: String, to: String, from: Position },
+}
+
+/// The positions a score is split between, in order.
+pub const TEAM: [Position; 4] = [Position::Approach, Position::Local, Position::Ground, Position::Delivery];
+
+/// Where a position comes in `TEAM` and `Score::by_position`.
+pub fn slot(position: Position) -> Option<usize> {
+    TEAM.iter().position(|&p| p == position)
+}
+
+/// The position an event's points go to, when `primary` isn't worked by a
+/// player: the nearest one that is. With nobody on any of them, `primary`.
+pub fn credited_to(primary: Position, staffing: Staffing) -> Position {
+    use Position::*;
+    let order: [Position; 4] = match primary {
+        Approach => [Approach, Local, Ground, Delivery],
+        Local => [Local, Approach, Ground, Delivery],
+        Ground => [Ground, Local, Delivery, Approach],
+        Delivery => [Delivery, Ground, Local, Approach],
+        Center => [Approach, Local, Ground, Delivery],
+        Ramp => [Ground, Local, Delivery, Approach],
+    };
+    order.into_iter().find(|&p| staffing.works(p)).unwrap_or(order[0])
+}
+
+impl SimEvent {
+    /// The position whose work this was. `on` says which position an
+    /// aircraft is talking to now, if it's still about.
+    pub fn position(&self, on: impl Fn(&str) -> Option<Position>) -> Position {
+        use Position::*;
+        // The facility position it's talking to, if it's on one.
+        let freq = |callsign: &str| on(callsign).filter(|&p| slot(p).is_some());
+        let freq_or = |callsign: &str, otherwise: Position| freq(callsign).unwrap_or(otherwise);
+        match self {
+            SimEvent::Landed { .. }
+            | SimEvent::TouchAndGo { .. }
+            | SimEvent::EmergencyLanded { .. }
+            | SimEvent::EmergencyGoAround { .. }
+            | SimEvent::WakeDeparture { .. }
+            | SimEvent::RunwaySeparation { .. }
+            | SimEvent::NoFrequencyChange { .. }
+            | SimEvent::UnreleasedDeparture { .. }
+            | SimEvent::LineUpAndWait { .. }
+            | SimEvent::LongLineUp { .. }
+            | SimEvent::UncoordinatedGoAround { .. } => Local,
+            SimEvent::GoAround { reason, .. } => match reason {
+                GoAroundReason::LateHandoff | GoAroundReason::WakeSpacing | GoAroundReason::Unstable => Approach,
+                _ => Local,
+            },
+            SimEvent::Exited { .. }
+            | SimEvent::Msaw { .. }
+            | SimEvent::SectorBust { .. }
+            | SimEvent::WrongExit { .. }
+            | SimEvent::LowExit { .. }
+            | SimEvent::LateAccept { .. }
+            | SimEvent::LateHandoff { .. }
+            | SimEvent::MissedEfc { .. }
+            | SimEvent::EmergencyDiverted { .. }
+            | SimEvent::HandoffOffered { .. }
+            | SimEvent::ShiftEnded { .. } => Approach,
+            SimEvent::Parked { .. }
+            | SimEvent::EmergencyParked { .. }
+            | SimEvent::UncoordinatedCrossing { .. } => Ground,
+            SimEvent::Cleared { .. }
+            | SimEvent::PlanCaught { .. }
+            | SimEvent::PlanMissed { .. }
+            | SimEvent::ReadbackMissed { .. } => Delivery,
+            SimEvent::LossOfSeparation { a, b }
+            | SimEvent::NearCollision { a, b }
+            | SimEvent::ConflictAlert { a, b } => freq(a).or_else(|| freq(b)).unwrap_or(Approach),
+            SimEvent::GroundConflict { a, b } | SimEvent::TaxiDeadlock { a, b } => {
+                freq(a).or_else(|| freq(b)).unwrap_or(Ground)
+            }
+            SimEvent::WakeViolation { follower, .. } => freq_or(follower, Approach),
+            SimEvent::RunwayIncursion { callsign } => freq_or(callsign, Ground),
+            SimEvent::EmergencyDeclared { callsign, .. }
+            | SimEvent::SlipCaught { callsign, .. }
+            | SimEvent::SlipMissed { callsign, .. }
+            | SimEvent::PilotDeviation { callsign, .. }
+            | SimEvent::Diverted { callsign }
+            | SimEvent::DeviationIgnored { callsign }
+            | SimEvent::CoordinationRequest { callsign } => freq_or(callsign, Approach),
+            SimEvent::MissedHandoff { from, .. } | SimEvent::UncoordinatedEmergency { from, .. } => *from,
+            SimEvent::CoordinationLate { to, .. } => *to,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,6 +270,8 @@ pub struct Incident {
     pub time: f32,
     pub text: String,
     pub points: i32,
+    /// The position it's put down to.
+    pub position: Position,
 }
 
 /// Which completed flights earn the player points: only the work their own
@@ -225,6 +317,9 @@ pub struct Score {
     pub touch_and_goes: u32,
     /// IFR clearances settled.
     pub cleared: u32,
+    /// The points each position earned, in `TEAM` order. They add up to
+    /// `points`.
+    pub by_position: [i32; 4],
     pub incidents: Vec<Incident>,
     /// Every emergency declared this shift and how it ended, whoever worked it.
     pub emergencies: Vec<EmergencyRecord>,
@@ -311,7 +406,24 @@ impl Score {
         }
     }
 
+    /// Score an event, put down to the position it names on its own.
     pub fn apply(&mut self, time: f32, event: &SimEvent) {
+        self.apply_as(time, event, event.position(|_| None));
+    }
+
+    /// Score an event, put down to `position`.
+    pub fn apply_as(&mut self, time: f32, event: &SimEvent, position: Position) {
+        let (points, incidents) = (self.points, self.incidents.len());
+        self.tally(time, event);
+        if let Some(slot) = slot(position) {
+            self.by_position[slot] += self.points - points;
+        }
+        for incident in &mut self.incidents[incidents..] {
+            incident.position = position;
+        }
+    }
+
+    fn tally(&mut self, time: f32, event: &SimEvent) {
         self.record_emergency(time, event);
         match event {
             SimEvent::Landed { minutes, .. } => {
@@ -470,7 +582,7 @@ impl Score {
                     PENALTY_LONG_LINE_UP,
                 );
             }
-            SimEvent::UncoordinatedEmergency { callsign, to } => {
+            SimEvent::UncoordinatedEmergency { callsign, to, .. } => {
                 self.incident(
                     time,
                     format!("{callsign} handed to {to} without coordinating the emergency"),
@@ -484,7 +596,7 @@ impl Score {
                     PENALTY_UNCOORDINATED_GO_AROUND,
                 );
             }
-            SimEvent::CoordinationLate { callsign } => {
+            SimEvent::CoordinationLate { callsign, .. } => {
                 self.incident(
                     time,
                     format!("Kept another controller waiting about {callsign}"),
@@ -498,7 +610,7 @@ impl Score {
                     PENALTY_DEADLOCK,
                 );
             }
-            SimEvent::MissedHandoff { callsign, to } => {
+            SimEvent::MissedHandoff { callsign, to, .. } => {
                 self.incident(
                     time,
                     format!("{callsign} not handed to {to}"),
@@ -594,7 +706,8 @@ impl Score {
 
     fn incident(&mut self, time: f32, text: String, points: i32) {
         self.points += points;
-        self.incidents.push(Incident { time, text, points });
+        // `apply_as` says whose it was.
+        self.incidents.push(Incident { time, text, points, position: Position::Approach });
     }
 
     pub fn completed(&self) -> u32 {
@@ -692,6 +805,39 @@ mod tests {
         assert!(s.rating(ShiftEnd::Decertified).starts_with('F'));
         s.apply(0.0, &SimEvent::Msaw { callsign: "A".into() });
         assert!(s.rating(ShiftEnd::Completed).starts_with('E'));
+    }
+
+    #[test]
+    fn the_score_is_split_by_position() {
+        let mut s = Score::default();
+        s.apply_as(0.0, &landed(5.0), Position::Local);
+        s.apply_as(1.0, &SimEvent::Msaw { callsign: "A".into() }, Position::Approach);
+        s.apply_as(2.0, &SimEvent::Parked { callsign: "A".into() }, Position::Ground);
+        assert_eq!(s.by_position, [PENALTY_MSAW, POINTS_LANDED, POINTS_PARKED, 0]);
+        assert_eq!(s.by_position.iter().sum::<i32>(), s.points);
+        assert_eq!(s.incidents[0].position, Position::Approach);
+    }
+
+    #[test]
+    fn events_name_the_position_whose_work_they_were() {
+        let on = |callsign: &str| match callsign {
+            "TWR" => Some(Position::Local),
+            "GND" => Some(Position::Ground),
+            "CTR" => Some(Position::Center),
+            _ => None,
+        };
+        let pair = |a: &str, b: &str| SimEvent::LossOfSeparation { a: a.into(), b: b.into() };
+        assert_eq!(pair("TWR", "X").position(on), Position::Local);
+        assert_eq!(pair("CTR", "GND").position(on), Position::Ground, "Center isn't one of ours");
+        assert_eq!(pair("X", "Y").position(on), Position::Approach);
+        let missed = SimEvent::MissedHandoff { callsign: "GND".into(), to: "Ground", from: Position::Delivery };
+        assert_eq!(missed.position(on), Position::Delivery);
+        assert_eq!(SimEvent::Cleared { callsign: "X".into(), waited_minutes: 1.0 }.position(on), Position::Delivery);
+        // Nobody on Local: Approach takes its landings.
+        let approach = Staffing::APPROACH;
+        assert_eq!(credited_to(Position::Local, approach), Position::Approach);
+        assert_eq!(credited_to(Position::Delivery, Staffing::LOCAL_GROUND), Position::Ground);
+        assert_eq!(credited_to(Position::Ground, Staffing::NONE), Position::Ground);
     }
 
     #[test]

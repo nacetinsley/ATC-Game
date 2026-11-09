@@ -319,7 +319,7 @@ impl World {
             .is_some_and(|e| self.airport.runways[e].far_end().distance(ac.pos) > DEPARTURE_HANDOFF_NM);
         if far {
             let callsign = ac.callsign.clone();
-            self.emit(SimEvent::MissedHandoff { callsign, to: "Departure" });
+            self.emit(SimEvent::MissedHandoff { callsign, to: "Departure", from: Position::Local });
             self.hand_to_approach(index);
         }
     }
@@ -924,7 +924,7 @@ impl World {
                 ac.freq_since = now;
                 ac.waiting_since = None;
                 let callsign = ac.callsign.clone();
-                self.emit(SimEvent::MissedHandoff { callsign, to });
+                self.emit(SimEvent::MissedHandoff { callsign, to, from: freq });
             }
         }
     }

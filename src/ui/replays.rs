@@ -1,8 +1,12 @@
 //! Replay files: each shift's code, clock and commands, saved when it ends,
 //! next to the settings file in a `replays` folder. Only the newest are kept.
+//!
+//! A co-op shift's file also holds who worked what, and the players' names.
+//! Every player saves their own.
 
 use super::settings::Settings;
 use crate::sim::World;
+use crate::sim::positions::{MAX_SEATS, Seat, Staffing};
 use crate::sim::replay::{Command, ShiftCode, Summary};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -19,34 +23,79 @@ pub struct ReplayFile {
     /// UTC at the shift's start, seconds since 1970: the clock on the strips
     /// and the radio, and when it was played.
     pub clock_start: f64,
+    /// Co-op: each seat's player's name, "" where nobody sat.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub players: Vec<String>,
+    /// Co-op: the seat of the player who saved it, to watch from.
+    #[serde(default)]
+    pub seat: Seat,
     /// How the shift came out, to check a rebuild against.
     pub summary: Summary,
+    /// Co-op: who worked what at the start. The code's staffing is then the
+    /// single-player version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seats: Option<Staffing>,
     #[serde(default)]
     pub command: Vec<Command>,
 }
 
 impl ReplayFile {
-    pub fn new(code: &ShiftCode, world: &World) -> ReplayFile {
+    /// The file for a shift that started as `start` and got to `end`, saved
+    /// by the player in `seat`.
+    pub fn new(code: &ShiftCode, start: &World, end: &World, names: &[Option<String>; MAX_SEATS], seat: Seat) -> ReplayFile {
+        let seats = start.seated();
+        let coop = seats.is_coop();
         ReplayFile {
             version: env!("CARGO_PKG_VERSION").to_string(),
             code: code.text(),
-            clock_start: world.clock_start(),
-            summary: world.summary(),
-            command: world.commands().to_vec(),
+            clock_start: end.clock_start(),
+            // Hot seat has no names.
+            players: if coop && names.iter().any(Option::is_some) {
+                names.iter().map(|n| n.clone().unwrap_or_default()).collect()
+            } else {
+                Vec::new()
+            },
+            seat: if coop { seat } else { 0 },
+            summary: end.summary(),
+            seats: coop.then_some(seats),
+            command: end.commands().to_vec(),
         }
     }
 
-    /// "06 Nov 2026 14:20Z  KSUS  Local + Ground  45 min  score 312".
+    /// The players' names, by seat.
+    pub fn names(&self) -> [Option<String>; MAX_SEATS] {
+        let mut names: [Option<String>; MAX_SEATS] = Default::default();
+        for (slot, name) in names.iter_mut().zip(&self.players) {
+            *slot = (!name.is_empty()).then(|| name.clone());
+        }
+        names
+    }
+
+    /// "06 Nov 2026 14:20Z  KSUS  Local + Ground  45 min  score 312", or
+    /// "Co-op: Sam, Alex" in place of the positions.
     pub fn label(&self) -> String {
         let when = date_label(self.clock_start);
         match ShiftCode::parse(&self.code) {
-            Ok(code) => format!(
-                "{when}  {}  {}  {}  score {}",
-                code.airport,
-                code.staffing.label(),
-                super::shift::label(code.minutes),
-                self.summary.points
-            ),
+            Ok(code) => {
+                let who = match self.seats {
+                    Some(seats) => {
+                        let names = self.names();
+                        let players: Vec<String> = seats
+                            .players()
+                            .iter()
+                            .map(|s| names[s as usize].clone().unwrap_or_else(|| format!("seat {}", s + 1)))
+                            .collect();
+                        format!("Co-op: {}", players.join(", "))
+                    }
+                    None => code.staffing.label().to_string(),
+                };
+                format!(
+                    "{when}  {}  {who}  {}  score {}",
+                    code.airport,
+                    super::shift::label(code.minutes),
+                    self.summary.points
+                )
+            }
             Err(_) => format!("{when}  {}", self.code),
         }
     }
@@ -155,10 +204,28 @@ mod tests {
             version: "0.1.0".into(),
             code: "KSUS-0000-0000-00000".into(),
             clock_start: 1_793_974_805.25,
+            players: Vec::new(),
+            seat: 0,
             summary: Summary { ticks: 4800, points: -12, incidents: 3 },
+            seats: None,
             command: vec![Command { tick: 3, id: 9, action: Action::Transmit(vec![Clearance::ClearedIls(2)]), seat: 0 }],
         };
         let text = toml::to_string(&file).unwrap();
         assert_eq!(toml::from_str::<ReplayFile>(&text).unwrap(), file, "{text}");
+        assert!(!text.contains("seats") && !text.contains("players"), "a single-player file is as before: {text}");
+        // A co-op one keeps the split and the names.
+        use crate::sim::positions::Position;
+        let split = Staffing::NONE.with_seat(Position::Approach, 0).with_seat(Position::Local, 1);
+        let coop = ReplayFile {
+            players: vec!["Sam".into(), "Alex".into()],
+            seat: 1,
+            seats: Some(split),
+            command: vec![Command { tick: 5, id: 0, action: Action::Solo, seat: 0 }],
+            ..file
+        };
+        let text = toml::to_string(&coop).unwrap();
+        let back = toml::from_str::<ReplayFile>(&text).unwrap();
+        assert_eq!(back, coop, "{text}");
+        assert_eq!(back.names(), [Some("Sam".into()), Some("Alex".into()), None, None]);
     }
 }

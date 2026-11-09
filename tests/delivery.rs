@@ -565,7 +565,7 @@ fn play_delivery_shift(airport: &Airport, config: WorldConfig, bot: Bot) -> Shif
                 SimEvent::PlanCaught { .. } => stats.caught += 1,
                 SimEvent::PlanMissed { .. } => stats.missed_plans += 1,
                 SimEvent::ReadbackMissed { .. } => stats.missed_readbacks += 1,
-                SimEvent::MissedHandoff { callsign, to } => {
+                SimEvent::MissedHandoff { callsign, to, .. } => {
                     stats.problems.push(format!("missed handoff of {callsign} to {to}"))
                 }
                 SimEvent::NearCollision { .. } | SimEvent::GroundConflict { .. } | SimEvent::RunwayIncursion { .. } => {

@@ -18,9 +18,9 @@ pub mod tutorial;
 pub mod voice;
 
 use crate::sim::airspace::{Airport, CATALOG};
-use crate::sim::positions::{Position, Staffing};
+use crate::sim::positions::{MAX_SEATS, Position, SOLO, Seat, Staffing};
 use crate::net::session::{HOST, Notice, ShiftSetup, staffing_of};
-use crate::sim::replay::{Recording, ShiftCode};
+use crate::sim::replay::{Action, Recording, ShiftCode};
 use crate::sim::scoring::ShiftEnd;
 use crate::sim::traffic::Busyness;
 use crate::sim::tutorial::{LessonKind, Tutorial};
@@ -270,6 +270,15 @@ pub struct App {
     relay: String,
     /// Co-op notices on screen.
     banner: coop::Banner,
+    /// Co-op: each seat's player's name, as last heard, for the debrief and
+    /// the replay. Someone who dropped keeps theirs.
+    names: [Option<String>; MAX_SEATS],
+}
+
+/// "Tower + Ground": the positions in a staffing, by name.
+pub fn positions_label(staffing: Staffing) -> String {
+    let names: Vec<&str> = crate::sim::scoring::TEAM.iter().filter(|&&p| staffing.works(p)).map(|p| p.name()).collect();
+    if names.is_empty() { "nothing".to_string() } else { names.join(" + ") }
 }
 
 /// Hot-seat play's split: Approach in seat 0, the tower cab in seat 1.
@@ -384,6 +393,7 @@ impl App {
             coop_name,
             relay,
             banner: coop::Banner::default(),
+            names: Default::default(),
             sounds,
             accumulator: 0.0,
             airports,
@@ -506,10 +516,9 @@ impl App {
         // The sim's clock, for EFC times, reads the same as the strips'.
         self.world.set_clock_start(self.ui.clock_start);
         self.banner.clear();
-        // Shift codes and replays don't hold a co-op split yet.
-        let solo = !self.hot_seat;
-        self.code = solo.then(|| ShiftCode::of(&config, &airport.code));
-        self.recording = solo.then(|| Recording::new(&self.world));
+        self.names = Default::default();
+        self.code = Some(ShiftCode::of(&config, &airport.code));
+        self.recording = Some(Recording::new(&self.world));
         self.replay_path = None;
         self.note = None;
         self.sounds.reset(&self.world);
@@ -603,8 +612,11 @@ impl App {
         let setup = ShiftSetup::new(&config, &airport.code, config.staffing, miniquad::date::now());
         let config = setup.config().expect("a code just made reads back");
         self.world = World::new(airport.clone(), config);
+        let code = ShiftCode::parse(&setup.code).ok();
         host.start(setup, &self.world);
         self.begin_coop_shift(&airport, config.staffing, config.clock_start, HOST);
+        self.code = code;
+        self.recording = Some(Recording::new(&self.world));
         self.session = Some(coop::Session::Host { host, label });
     }
 
@@ -615,6 +627,9 @@ impl App {
         let airport = (*world.airport).clone();
         self.world = world;
         self.begin_coop_shift(&airport, setup.staffing, setup.clock_start, seat);
+        // The replay starts where the shift did, however late this player came.
+        self.code = ShiftCode::parse(&setup.code).ok();
+        self.recording = setup.world(&self.airports).ok().map(|start| Recording::from_start(start, Vec::new()));
         self.session = Some(coop::Session::Client(client));
     }
 
@@ -633,6 +648,7 @@ impl App {
         self.tutorial = None;
         self.accumulator = 0.0;
         self.banner.clear();
+        self.names = Default::default();
         self.coop_flow = None;
         self.screen = Screen::Playing;
     }
@@ -640,11 +656,7 @@ impl App {
     /// The shift is over: keep its replay and show the debrief.
     fn finish_shift(&mut self, end: ShiftEnd) {
         self.end_session("the shift is over");
-        if let (Some(recording), Some(code)) = (&mut self.recording, &self.code) {
-            recording.finish(&self.world);
-            let file = replays::ReplayFile::new(code, &self.world);
-            self.replay_path = replays::save(&file).map(|p| p.display().to_string());
-        }
+        self.save_replay();
         self.screen = Screen::Debrief { end, choice: None, scroll: 0 };
     }
 
@@ -655,9 +667,14 @@ impl App {
             return;
         }
         self.world.leave_shift();
+        self.save_replay();
+    }
+
+    /// Save the shift as played, if it's being recorded.
+    fn save_replay(&mut self) {
         if let (Some(recording), Some(code)) = (&mut self.recording, &self.code) {
             recording.finish(&self.world);
-            let file = replays::ReplayFile::new(code, &self.world);
+            let file = replays::ReplayFile::new(code, recording.first(), &self.world, &self.names, self.ui.seat);
             self.replay_path = replays::save(&file).map(|p| p.display().to_string());
         }
     }
@@ -675,6 +692,7 @@ impl App {
             saved: self.replay_path.as_deref(),
             note: self.note,
             can_replay: self.recording.is_some(),
+            names: &self.names,
         };
         let action = debrief::frame(self.final_world(), end, &mut choice, &mut scroll, info);
         self.screen = Screen::Debrief { end, choice, scroll };
@@ -733,6 +751,9 @@ impl App {
             self.take_over();
             return;
         }
+        if is_key_pressed(KeyCode::F9) {
+            self.watch_next_seat();
+        }
         let Some(recording) = &self.recording else { return };
         let now = self.world.time;
         let step = if is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift) { 60.0 } else { 10.0 };
@@ -764,16 +785,52 @@ impl App {
         draw_views(&self.world, &mut self.ui);
         panels::draw(&mut self.world, &mut self.ui);
         let bar = debrief::draw_bar(&self.world, recording.last(), self.ui.rate, self.ui.paused, self.note);
+        if self.world.seated().is_coop() {
+            let who = self.names[self.ui.seat as usize].clone().unwrap_or_else(|| format!("seat {}", self.ui.seat + 1));
+            let text = format!("WATCHING {who}: {}. F9 for the next player", positions_label(self.world.seated().of_seat(self.ui.seat)));
+            draw_text(&text, 16.0, screen_height() - debrief::BAR_HEIGHT - 30.0, 18.0, YELLOW);
+        }
         // Dragging along the bar seeks only when it moves the replay.
         if let Some(t) = seek.or(bar.seek.filter(|t| (t - now).abs() >= TICK)) {
             self.seek(t);
         }
     }
 
+    /// In a co-op replay, watch from the next player's seat.
+    fn watch_next_seat(&mut self) {
+        let seated = self.world.seated();
+        let seats: Vec<Seat> = seated.players().iter().collect();
+        if seats.len() < 2 {
+            return;
+        }
+        let next = seats.iter().copied().find(|&s| s > self.ui.seat).unwrap_or(seats[0]);
+        let scale = gfx::effective_scale(self.ui_scale, gfx::GAME_ROOM);
+        let mut ui = gfx::laid_out_at(scale, || UiState::for_seat(&self.world.airport, seated, next));
+        ui.replay = true;
+        ui.paused = self.ui.paused;
+        ui.rate = self.ui.rate;
+        ui.clock_start = self.ui.clock_start;
+        ui.selected = self.ui.selected;
+        ui.names = self.names.clone();
+        self.ui = ui;
+    }
+
     /// Play on from here, live: the shift from now on is whatever happens next.
+    /// A co-op shift goes on as single player, with every position the
+    /// players had.
     fn take_over(&mut self) {
         if let Some(recording) = &mut self.recording {
             recording.take_over(&self.world);
+        }
+        if self.world.seated().is_coop() {
+            self.world.act(SOLO, 0, Action::Solo);
+            let scale = gfx::effective_scale(self.ui_scale, gfx::GAME_ROOM);
+            let mut ui = gfx::laid_out_at(scale, || UiState::for_seat(&self.world.airport, self.world.staffing(), SOLO));
+            ui.clock_start = self.ui.clock_start;
+            ui.selected = self.ui.selected;
+            self.ui = ui;
+            // Hot seat's other screens too: it's one player now.
+            self.other_seats.clear();
         }
         self.world.note_take_over();
         self.ui.replay = false;
@@ -794,11 +851,15 @@ impl App {
             .iter()
             .position(|a| a.code == code.airport)
             .ok_or_else(|| format!("This version has no airport {}", code.airport))?;
-        let mut world = World::new(self.airports[index].clone(), code.config());
+        let staffing = file.seats.unwrap_or(code.staffing);
+        let mut world = World::new(self.airports[index].clone(), WorldConfig { staffing, ..code.config() });
         world.set_clock_start(file.clock_start);
         let scale = gfx::effective_scale(self.ui_scale, gfx::GAME_ROOM);
-        self.ui = gfx::laid_out_at(scale, || UiState::new(&self.airports[index], code.staffing));
+        let seat = if staffing.players().has(file.seat) { file.seat } else { SOLO };
+        self.ui = gfx::laid_out_at(scale, || UiState::for_seat(&self.airports[index], staffing, seat));
         self.other_seats.clear();
+        self.names = file.names();
+        self.ui.names = self.names.clone();
         self.ui.clock_start = file.clock_start;
         self.recording = Some(Recording::from_start(world, file.command.clone()));
         self.code = Some(code);
@@ -1313,7 +1374,12 @@ impl App {
             // The session keeps the time: real time, for everyone.
             self.ui.paused = false;
             self.ui.rate = 1.0;
-            self.ui.names = session.names();
+            for (slot, name) in self.names.iter_mut().zip(session.names()) {
+                if name.is_some() {
+                    *slot = name;
+                }
+            }
+            self.ui.names = self.names.clone();
             self.run_session();
         } else if !self.ui.paused {
             self.accumulator += get_frame_time().min(MAX_FRAME_SECONDS) * self.ui.rate;

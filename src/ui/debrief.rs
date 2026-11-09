@@ -3,7 +3,8 @@
 
 use super::{BACKGROUND, BAD, DIM, TEXT, TITLE};
 use crate::sim::World;
-use crate::sim::scoring::ShiftEnd;
+use crate::sim::positions::MAX_SEATS;
+use crate::sim::scoring::{ShiftEnd, TEAM};
 use macroquad::prelude::*;
 use super::gfx::{clear_background, draw_line, draw_rectangle, draw_rectangle_lines, draw_text, draw_triangle, measure_text, mouse_position, screen_height, screen_width};
 
@@ -38,8 +39,10 @@ impl Mark {
     }
 }
 
-/// The shift's incidents and emergencies, in time order.
+/// The shift's incidents and emergencies, in time order. In co-op each
+/// incident names the position it's put down to.
 pub fn marks(world: &World) -> Vec<Mark> {
+    let coop = world.seated().is_coop();
     let mut marks: Vec<Mark> = world
         .score
         .incidents
@@ -47,7 +50,11 @@ pub fn marks(world: &World) -> Vec<Mark> {
         .map(|i| Mark {
             time: i.time,
             kind: if i.points < 0 { MarkKind::Penalty } else { MarkKind::Credit },
-            text: format!("{}  {:+}  {}", clock(i.time), i.points, i.text),
+            text: if coop {
+                format!("{}  {:+}  {}  {}", clock(i.time), i.points, i.position.name(), i.text)
+            } else {
+                format!("{}  {:+}  {}", clock(i.time), i.points, i.text)
+            },
         })
         .chain(world.score.emergencies.iter().map(|e| Mark {
             time: e.declared_at,
@@ -160,6 +167,28 @@ pub struct Info<'a> {
     pub note: Option<&'a str>,
     /// Whether there's a replay to open.
     pub can_replay: bool,
+    /// Co-op: each seat's player's name.
+    pub names: &'a [Option<String>; MAX_SEATS],
+}
+
+/// Co-op: each player, the positions they were given, and the points those
+/// earned. "Sam  Approach  +420".
+pub fn split(world: &World, names: &[Option<String>; MAX_SEATS]) -> Vec<String> {
+    let seated = world.seated();
+    if !seated.is_coop() {
+        return Vec::new();
+    }
+    seated
+        .players()
+        .iter()
+        .map(|seat| {
+            let theirs = seated.of_seat(seat);
+            let points: i32 =
+                TEAM.iter().zip(world.score.by_position).filter(|&(&p, _)| theirs.works(p)).map(|(_, pts)| pts).sum();
+            let who = names[seat as usize].clone().unwrap_or_else(|| format!("Seat {}", seat + 1));
+            format!("{who}  {}  {points:+}", super::positions_label(theirs))
+        })
+        .collect()
 }
 
 /// The debrief, drawn from the world at the end of the shift. `choice` is the
@@ -178,9 +207,11 @@ pub fn frame(world: &World, end: ShiftEnd, choice: &mut Option<usize>, scroll: &
     let color = if matches!(end, ShiftEnd::Completed | ShiftEnd::Left) { TITLE } else { BAD };
     draw_text(headline, x, 80.0, 56.0, color);
     draw_text(format!("Rating: {}", score.rating(end)), x, 118.0, 28.0, TEXT);
+    let split = split(world, info.names);
+    let team = if split.is_empty() { "Score" } else { "Team score" };
     draw_text(
         format!(
-            "Score {}   Landed {}   Parked {}   Handed off {}   Go-arounds {}   Separation losses {}",
+            "{team} {}   Landed {}   Parked {}   Handed off {}   Go-arounds {}   Separation losses {}",
             score.points, score.landed, score.parked, score.exited, score.go_arounds, score.separation_losses
         ),
         x,
@@ -188,12 +219,17 @@ pub fn frame(world: &World, end: ShiftEnd, choice: &mut Option<usize>, scroll: &
         22.0,
         DIM,
     );
+    // Co-op: who earned what.
+    let down = if split.is_empty() { 0.0 } else { 28.0 };
+    if !split.is_empty() {
+        draw_text(split.join("      "), x, 174.0, 20.0, TEXT);
+    }
 
     let marks = marks(world);
     let mut action = Action::Stay;
-    let timeline = Rect::new(x, 196.0, right_edge - x, 40.0);
+    let timeline = Rect::new(x, 196.0 + down, right_edge - x, 40.0);
     if info.can_replay {
-        draw_text("TIMELINE  click a mark to replay it", x, 186.0, 16.0, DIM);
+        draw_text("TIMELINE  click a mark to replay it", x, 186.0 + down, 16.0, DIM);
     }
     let input = draw_timeline(&marks, world.shift_seconds(), world.time, timeline, None);
     if info.can_replay {
@@ -205,7 +241,7 @@ pub fn frame(world: &World, end: ShiftEnd, choice: &mut Option<usize>, scroll: &
     }
 
     // The list: incidents and emergencies in time order.
-    let top = 282.0;
+    let top = 282.0 + down;
     let footer = 96.0;
     draw_text("Incidents", x, top - 12.0, 24.0, TEXT);
     let rows = ((screen_height() - top - footer) / ROW).max(1.0) as usize;
@@ -336,7 +372,11 @@ pub fn draw_bar(world: &World, final_world: &World, rate: f32, paused: bool, not
     };
     let head = format!("REPLAY  {} / {}  {state}", clock(world.time), clock(final_world.time));
     draw_text(&head, 16.0, top + 22.0, 20.0, TITLE);
-    let keys = "SPACE play | 1 2 4 8 speed | Left/Right seek | N/P incident | T take over | ESC back";
+    let keys = if final_world.seated().is_coop() {
+        "SPACE play | 1 2 4 8 speed | Left/Right seek | N/P incident | F9 seat | T take over alone | ESC back"
+    } else {
+        "SPACE play | 1 2 4 8 speed | Left/Right seek | N/P incident | T take over | ESC back"
+    };
     let kw = measure_text(keys, None, 14, 1.0).width;
     draw_text(keys, (w - kw - 16.0).max(16.0 + measure_text(&head, None, 20, 1.0).width + 20.0), top + 21.0, 14.0, DIM);
     if let Some(note) = note {

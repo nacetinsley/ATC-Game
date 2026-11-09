@@ -147,7 +147,7 @@ impl FrameReader {
     }
 
     /// The next whole frame's body, if one has arrived.
-    pub fn next(&mut self) -> Result<Option<Vec<u8>>, String> {
+    pub fn next_frame(&mut self) -> Result<Option<Vec<u8>>, String> {
         if self.buffer.len() < 4 {
             return Ok(None);
         }
@@ -209,10 +209,10 @@ mod tests {
             reader.push(&msg.encode());
         }
         for msg in &all {
-            let body = reader.next().unwrap().unwrap();
+            let body = reader.next_frame().unwrap().unwrap();
             assert_eq!(&RelayMsg::decode(&body).unwrap(), msg);
         }
-        assert_eq!(reader.next(), Ok(None));
+        assert_eq!(reader.next_frame(), Ok(None));
     }
 
     #[test]
@@ -231,6 +231,6 @@ mod tests {
         assert!(RelayMsg::decode(&[3, 1]).is_err());
         let mut reader = FrameReader::default();
         reader.push(&(MAX_FRAME as u32 + 1).to_le_bytes());
-        assert!(reader.next().is_err());
+        assert!(reader.next_frame().is_err());
     }
 }

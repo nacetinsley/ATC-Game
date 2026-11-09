@@ -904,7 +904,7 @@ cargo run --release
 
 ### Hot seat (co-op test)
 
-Co-op isn't networked yet. To try it on one machine:
+To try co-op on one machine:
 
 ```sh
 cargo run --release -- --hot-seat
@@ -912,7 +912,7 @@ cargo run --release -- --hot-seat
 
 Every shift is split between two players: Approach in seat 0, and Local,
 Ground and Delivery in seat 1. Press F9 to hand the screen to the other
-seat. Shift codes and replays are off in hot seat.
+seat. The debrief and replays work as in co-op, below.
 
 ### Co-op
 
@@ -946,7 +946,17 @@ If a player's connection drops, their positions wait 30 seconds for them,
 then go to the automation until they come back with the same name. If the
 host leaves, the shift ends for everyone. If a machine's sim ever drifts from
 the host's, it stops and writes a `desync-<tick>.txt` report next to the
-settings file. Shift codes and replays are off in co-op for now.
+settings file.
+
+The score is the team's. Each point is also put down to the position whose
+work it was, and goes to whoever was given that position at the start, even
+if they dropped later. The debrief shows the team score, each player's share
+by their positions, and which position each incident was put down to.
+
+Every player saves the shift's replay, with the names and who worked what.
+In a co-op replay, **F9** watches from the next player's seat. **T** takes
+over alone: from that moment one player works every position the players
+had. The shift code plays the same traffic again as a single player.
 
 The command line has shortcuts, handy for testing:
 
@@ -1036,7 +1046,8 @@ but not notarized.
 | C | Start menu: play a shift code. Debrief: copy this shift's code |
 | R | Start menu: saved replays. Debrief: replay from the start |
 | Space, 1 2 4 8, Left / Right, N / P | Replay: play or pause, speed, step 10 s, next or previous incident |
-| T | Replay: take over and play on from here |
+| T | Replay: take over and play on from here (a co-op replay alone) |
+| F9 | Hot seat: the next seat's screen. Co-op replay: watch the next player |
 | S | Tutorial: show me |
 | 1 / 2 / 4 | Sim speed |
 | M | Toggle the MVA map |

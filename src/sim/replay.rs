@@ -56,6 +56,9 @@ pub enum Action {
     Vacate(Seat),
     /// Co-op: this seat's player is back, and takes its positions again.
     Take(Seat),
+    /// Taking over a co-op replay: one player works every position the
+    /// players did, from here on.
+    Solo,
 }
 
 impl World {
@@ -95,6 +98,7 @@ impl World {
             Action::Leave => self.leave_shift_as(seat),
             Action::Vacate(gone) => self.vacate(seat, gone),
             Action::Take(back) => self.take(seat, back),
+            Action::Solo => self.play_solo(seat),
         }
     }
 
@@ -217,6 +221,11 @@ impl Recording {
         self.commands.truncate(self.commands.partition_point(|c| c.tick < world.ticks));
     }
 
+    /// The world at the start of the shift.
+    pub fn first(&self) -> &World {
+        self.snapshots.first().expect("a recording starts with a world")
+    }
+
     /// The final world, once the shift has ended.
     pub fn last(&self) -> &World {
         self.snapshots.last().expect("a recording starts with a world")
@@ -264,12 +273,13 @@ fn check(bits: u64, airport: &str) -> u64 {
 }
 
 impl ShiftCode {
-    /// The code for a world's settings.
+    /// The code for a world's settings. A co-op split becomes the positions
+    /// one player would work: a code is for playing the traffic again alone.
     pub fn of(config: &WorldConfig, airport: &str) -> ShiftCode {
         ShiftCode {
             airport: airport.to_string(),
             seed: config.seed as u32,
-            staffing: config.staffing,
+            staffing: config.staffing.solo_choice(),
             busyness: config.busyness,
             emergencies: config.emergencies,
             mistakes: config.mistakes,

@@ -411,7 +411,7 @@ impl World {
                 let c = self.coordination.remove(index);
                 if handed && c.state == CoordState::Owed {
                     let callsign = self.callsign(c.aircraft);
-                    self.emit(SimEvent::UncoordinatedEmergency { callsign, to: c.to.name().to_string() });
+                    self.emit(SimEvent::UncoordinatedEmergency { callsign, to: c.to.name().to_string(), from: c.from });
                 }
                 continue;
             }
@@ -806,7 +806,7 @@ impl World {
                 }
                 CoordState::Pending if !automated_to && !c.late && now - c.asked >= ANSWER_S => {
                     self.coordination[index].late = true;
-                    self.emit(SimEvent::CoordinationLate { callsign });
+                    self.emit(SimEvent::CoordinationLate { callsign, to: c.to });
                 }
                 _ => {}
             }

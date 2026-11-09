@@ -1,7 +1,9 @@
 # The co-op relay. Build from this folder:
 #   docker build -t atc-relay .
 #   docker run -d --restart unless-stopped -p 7341:7341 atc-relay
-FROM rust:1-slim AS build
+# Build on the same Debian as the image it runs in, so the binary's glibc is
+# there.
+FROM rust:1-slim-bookworm AS build
 WORKDIR /relay
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src

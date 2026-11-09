@@ -235,6 +235,23 @@ impl Staffing {
     pub fn is_offered(self) -> bool {
         Staffing::CHOICES.contains(&self)
     }
+
+    /// The same positions worked by one player.
+    pub fn as_solo(self) -> Staffing {
+        Staffing::solo(self.approach, self.local, self.ground, self.delivery)
+    }
+
+    /// The menu choice for one player working these positions: the same
+    /// ones, or all of them when the menu doesn't offer that combination.
+    pub fn solo_choice(self) -> Staffing {
+        let solo = Staffing::solo(self.approach, self.local, self.ground, self.delivery);
+        if solo.is_offered() { solo } else { Staffing::ALL }
+    }
+
+    /// More than one player.
+    pub fn is_coop(self) -> bool {
+        self.players().iter().count() > 1
+    }
 }
 
 #[cfg(test)]
@@ -259,6 +276,17 @@ mod tests {
         assert!(s.same_controller(Position::Approach, Position::Center), "both automated");
         assert_eq!(s.players(), Seats::of(SOLO));
         assert_eq!(s.of_seat(SOLO), s);
+    }
+
+    #[test]
+    fn a_split_has_a_solo_choice() {
+        let split = Staffing::NONE.with_seat(Position::Approach, 0).with_seat(Position::Local, 1).with_seat(Position::Ground, 1);
+        assert!(split.is_coop());
+        assert!(!Staffing::ALL.is_coop());
+        assert_eq!(split.as_solo(), Staffing::solo(true, true, true, false));
+        assert_eq!(split.solo_choice(), Staffing::ALL, "Approach, Local and Ground isn't a menu choice");
+        let tower = Staffing::NONE.with_seat(Position::Local, 0).with_seat(Position::Ground, 1);
+        assert_eq!(tower.solo_choice(), Staffing::LOCAL_GROUND);
     }
 
     #[test]

@@ -77,6 +77,26 @@ impl World {
         true
     }
 
+    /// Taking over a co-op replay: from here one player, in `by`'s seat,
+    /// works every position the players were given. False if it wasn't
+    /// co-op.
+    pub(super) fn play_solo(&mut self, by: Seat) -> bool {
+        if self.ended.is_some() || !self.seated.is_coop() {
+            return false;
+        }
+        self.record(by, 0, super::replay::Action::Solo);
+        let back: Vec<Position> =
+            WORKED.into_iter().filter(|&p| self.seated.works(p) && !self.config.staffing.works(p)).collect();
+        let solo = self.seated.as_solo();
+        let solo = Staffing { seats: [by; 4], ..solo };
+        self.config.staffing = solo;
+        self.seated = solo;
+        if back.contains(&Position::Approach) {
+            self.staff_approach_holds();
+        }
+        true
+    }
+
     /// Approach has just gone automated. Arrivals established on the final
     /// go to Tower; the rest join the automated holds (an emergency goes
     /// straight to the final). Departures it was working are let go.

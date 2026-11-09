@@ -64,7 +64,7 @@ impl RawConn {
                 Err(e) => return Err(e.to_string()),
             }
         };
-        while let Some(body) = self.reader.next()? {
+        while let Some(body) = self.reader.next_frame()? {
             bodies.push(body);
         }
         if closed { Err("the connection closed".into()) } else { Ok(()) }

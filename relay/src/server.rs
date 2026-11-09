@@ -165,6 +165,15 @@ impl Relay {
     }
 }
 
+/// Each connection's threads only shuffle frames: a small stack will do,
+/// and keeps hundreds of connections light.
+const STACK: usize = 256 * 1024;
+
+/// Start a connection's thread. False if the system won't give one.
+fn start(f: impl FnOnce() + Send + 'static) -> bool {
+    thread::Builder::new().stack_size(STACK).spawn(f).is_ok()
+}
+
 /// Serve on `listener` until the process ends.
 pub fn serve(listener: TcpListener, limits: Limits) {
     let relay = Arc::new(Relay::new(limits));
@@ -173,9 +182,20 @@ pub fn serve(listener: TcpListener, limits: Limits) {
         thread::spawn(move || janitor(&relay));
     }
     for stream in listener.incoming() {
-        let Ok(stream) = stream else { continue };
-        let relay = relay.clone();
-        thread::spawn(move || accept(&relay, stream));
+        match stream {
+            Ok(stream) => {
+                let relay = relay.clone();
+                // Without a thread there's no one to serve it: dropping it
+                // closes it.
+                start(move || accept(&relay, stream));
+            }
+            // Out of file handles, or the like: wait rather than spin, as
+            // connections closing free some.
+            Err(e) => {
+                eprintln!("atc-relay: accept failed: {e}");
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
     }
 }
 
@@ -228,8 +248,10 @@ fn accept(relay: &Relay, mut stream: TcpStream) {
         state.conns.insert(id, Conn { ip, out, stream: writer, role: Role::New });
         (id, rx)
     };
+    // Without a writer nothing reaches this connection; the reader below
+    // still notices it going.
     if let Ok(writer) = stream.try_clone() {
-        thread::spawn(move || write_loop(writer, rx));
+        start(move || write_loop(writer, rx));
     }
     let why = read_loop(relay, id, &mut stream);
     if let Some(why) = why {
@@ -311,7 +333,7 @@ fn read_loop(relay: &Relay, id: ConnId, stream: &mut TcpStream) -> Option<String
         }
         reader.push(&buffer[..n]);
         loop {
-            let body = match reader.next() {
+            let body = match reader.next_frame() {
                 Ok(Some(body)) => body,
                 Ok(None) => break,
                 Err(why) => return Some(why),
