@@ -385,3 +385,33 @@ fn the_automated_positions_run_a_clean_shift_at_ksus() {
     }
     assert!(landed > 0 && parked > 0 && exited > 0, "{landed} landed, {parked} parked, {exited} exited");
 }
+
+#[test]
+fn crossing_in_front_of_a_landing_roll_is_an_incursion() {
+    let mut world = harrowgate(Staffing::LOCAL_GROUND);
+    let mut events = Vec::new();
+    let ramp = node_near(&world, 0.3, -0.85);
+    world.add_aircraft(parked_departure(&world, 1, "TRL300", ramp, "27R"));
+    let hold = hold_for(&world, "27R");
+    assert!(world.transmit(1, vec![Clearance::Taxi { to: hold, via: vec![] }]));
+    let south = physical(&world, "27L");
+    run_until(&mut world, 300.0, &mut events, |w| {
+        w.find(1).unwrap().taxi.as_ref().unwrap().holding_short == Some(south)
+    });
+
+    // Just touched down on 27L, short of the crossing and rolling toward it.
+    let mut arrival = final_arrival(&world, 2, "NVA101", 0.0);
+    let rwy = end(&world, "27L");
+    let threshold = world.airport.runways[rwy].threshold();
+    arrival.pos = threshold;
+    arrival.altitude = world.airport.elevation;
+    arrival.on_ground = true;
+    arrival.phase = Phase::Rollout;
+    arrival.ias = 120.0;
+    world.add_aircraft(arrival);
+    assert!(world.airport.runways[rwy].along(world.find(1).unwrap().pos) < 0.0, "the crossing is downfield");
+    assert!(world.transmit(1, vec![Clearance::CrossRunway(south)]));
+    run(&mut world, 10.0, &mut events);
+
+    assert!(events.iter().any(|e| matches!(e, SimEvent::RunwayIncursion { callsign } if callsign == "TRL300")), "{events:?}");
+}

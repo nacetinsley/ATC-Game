@@ -55,7 +55,7 @@ const LOCAL_BRIEFING: [&str; 4] = [
     "LANDING  Clear arrivals to land (L) before 1 NM final, with the runway clear.",
     "TAKEOFF  Line up and wait (W) or cleared for takeoff (K) from the hold line. 90 s between.",
     "CROSSING  Anyone holding short of a runway waits for you to cross them (X).",
-    "INCURSION  Nobody onto a runway with traffic inside 2 NM final or rolling.",
+    "INCURSION  Nobody onto a runway with traffic inside 2 NM final or rolling toward them.",
 ];
 const GROUND_BRIEFING: [&str; 3] = [
     "TAXI     Click an aircraft, then a hold line, gate or intersection. Ctrl-click taxiways",

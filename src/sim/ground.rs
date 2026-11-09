@@ -545,6 +545,9 @@ impl World {
             _ => None,
         };
         let map = self.surface();
+        let entry = ac.pos;
+        // Rolling traffic still coming toward where it enters: traffic
+        // already past is moving away, as when lining up behind a takeoff.
         let rolling = self.aircraft.iter().any(|a| {
             a.id != id
                 && a.on_ground
@@ -553,6 +556,7 @@ impl World {
                     Phase::Rollout => a.approach_runway.is_some_and(|e| map.runway_of_end[e] == zone),
                     _ => false,
                 }
+                && (entry - a.pos).dot(heading_vec(a.heading)) > 0.0
         });
         if let Some((entered, was_conflict)) = deviation {
             // The pilot's doing, not the controller's: logged, and left to

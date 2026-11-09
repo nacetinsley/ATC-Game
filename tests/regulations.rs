@@ -521,3 +521,29 @@ fn ninety_seconds_in_position() {
     assert_eq!(long, ["DAL10"]);
     assert!(said(&world, Speaker::Pilot, "Tower, DAL10, still holding in position runway 27R."), "{:?}", log(&world));
 }
+
+fn incursions(events: &[SimEvent]) -> Vec<&str> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            SimEvent::RunwayIncursion { callsign } => Some(callsign.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 3-9-4: lining up behind a departure already rolling is the point of
+/// line up and wait, not an incursion.
+#[test]
+fn line_up_behind_a_departure_on_its_roll_is_not_an_incursion() {
+    let mut world = harrowgate(Staffing::LOCAL);
+    let mut events = Vec::new();
+    let rwy = end(&world, "27R");
+    world.add_aircraft(ready_departure(&world, 1, "DAL10", "B738"));
+    assert!(world.transmit(1, vec![Clearance::ClearedForTakeoff(rwy)]));
+    run_until(&mut world, 120.0, &mut events, |w| w.find(1).unwrap().phase == Phase::TowerRelease);
+    world.add_aircraft(ready_departure(&world, 2, "DAL20", "A320"));
+    assert!(world.transmit(2, vec![Clearance::LineUpAndWait(rwy)]));
+    run_until(&mut world, 60.0, &mut events, |w| w.find(2).unwrap().phase == Phase::LinedUp);
+    assert!(incursions(&events).is_empty(), "{events:?}");
+}
