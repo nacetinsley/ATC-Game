@@ -432,7 +432,11 @@ The selected aircraft's category shows in the clearance panel (`B738 L CWT F`).
 2,500 ft within 4 miles of a Class C or D airport such as Harrowgate or KSUS
 (14 CFR 91.117). Memphis is Class B, where the 250 kt limit applies. A speed
 assignment inside 5 miles on final is refused, since none may be given inside
-the final approach fix (7110.65 5-7-2).
+the final approach fix (7110.65 5-7-2). An approach clearance cancels the
+assigned speed, and the strip's speed is struck out. The pilot flies 210 kt
+until established, then slows on the approach's own schedule, so an arrival
+held at 170 kt speeds up again. To keep a speed, give it in the same
+transmission as the approach clearance.
 
 **ILS outages:** on Variable or Low IFR weather the landing runway's ILS
 sometimes fails for 20 to 40 minutes. A new ATIS reports it, and the status

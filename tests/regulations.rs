@@ -6,7 +6,9 @@
 use atcgame::sim::aircraft::{Aircraft, Flow, Lateral, Phase, Taxi};
 use atcgame::sim::airspace::Airport;
 use atcgame::sim::approach::{INDEPENDENT_FT, SAME_LANE_FT, dependent_diagonal_nm};
-use atcgame::sim::clearance::{Clearance, MAX_INTERCEPT_DEG, MAX_INTERCEPT_NEAR_GATE_DEG, NO_SPEED_INSIDE_NM, phrase};
+use atcgame::sim::clearance::{
+    Clearance, MAX_INTERCEPT_DEG, MAX_INTERCEPT_NEAR_GATE_DEG, NO_SPEED_INSIDE_NM, OWN_APPROACH_SPEED, phrase,
+};
 use atcgame::sim::conflict::{SEPARATION_FT, SEPARATION_NM};
 use atcgame::sim::holding;
 use atcgame::sim::performance::{Cwt, aircraft_type, wake_advisory, wake_interval_s, wake_required_nm};
@@ -249,6 +251,48 @@ fn a_steep_intercept_near_the_gate_is_refused() {
         run(&mut world, 8.0, &mut events);
         assert_eq!(said(&world, Speaker::Pilot, "intercept angle too steep"), refused, "{cut}: {:?}", log(&world));
     }
+}
+
+/// An arrival on a 20 degree intercept heading, 12 miles out on 27L.
+fn vectored_for_the_ils(world: &World) -> Aircraft {
+    let rwy = end(world, "27L");
+    let runway = &world.airport.runways[rwy];
+    let along = 12.0;
+    let pos = runway.threshold() - heading_vec(runway.heading) * along + Vec2::new(0.0, 1.0) * 1.0;
+    let heading = if runway.cross(pos) > 0.0 { runway.heading - 20.0 } else { runway.heading + 20.0 };
+    let altitude = world.airport.glideslope_altitude(rwy, along) - 300.0;
+    let mut ac = Aircraft::new(1, "NVA101", Flow::Arrival, aircraft_type("B738").unwrap(), pos, heading, altitude, 170.0);
+    ac.lateral = Lateral::Heading(heading);
+    ac.target_altitude = altitude;
+    ac.entered_sector = true;
+    ac
+}
+
+/// 5-7-2: an approach clearance cancels an assigned speed...
+#[test]
+fn an_approach_clearance_cancels_an_assigned_speed() {
+    let mut world = harrowgate(Staffing::APPROACH);
+    let mut events = Vec::new();
+    world.add_aircraft(vectored_for_the_ils(&world));
+    assert!(world.transmit(1, vec![Clearance::Speed(170.0)]));
+    run(&mut world, 8.0, &mut events);
+    assert_eq!(world.find(1).unwrap().target_speed, 170.0);
+    assert!(world.transmit(1, vec![Clearance::ClearedIls(end(&world, "27L"))]));
+    run(&mut world, 8.0, &mut events);
+    assert_eq!(world.find(1).unwrap().phase, Phase::ClearedApproach, "{:?}", log(&world));
+    assert_eq!(world.find(1).unwrap().target_speed, OWN_APPROACH_SPEED);
+}
+
+/// ... unless the clearance restates it.
+#[test]
+fn a_speed_restated_with_the_approach_clearance_stays() {
+    let mut world = harrowgate(Staffing::APPROACH);
+    let mut events = Vec::new();
+    world.add_aircraft(vectored_for_the_ils(&world));
+    assert!(world.transmit(1, vec![Clearance::Speed(170.0), Clearance::ClearedIls(end(&world, "27L"))]));
+    run(&mut world, 8.0, &mut events);
+    assert_eq!(world.find(1).unwrap().phase, Phase::ClearedApproach, "{:?}", log(&world));
+    assert_eq!(world.find(1).unwrap().target_speed, 170.0);
 }
 
 #[test]

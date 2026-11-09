@@ -413,7 +413,8 @@ pub fn marks(
         Form::Departure => world.airport.departure_initial_altitude,
     };
     let mut vectors: Vec<Pen> = Vec::new();
-    let mut speeds: Vec<Pen> = Vec::new();
+    // With when each was given, so an approach clearance can cancel them.
+    let mut speeds: Vec<(Pen, f32)> = Vec::new();
     let mut directs: Vec<Pen> = Vec::new();
     let mut taxi: Vec<Pen> = Vec::new();
     let mut ground: Vec<Pen> = Vec::new();
@@ -425,6 +426,11 @@ pub fn marks(
     let mut route_amended: Option<String> = None;
     let mut altitude_amended: Vec<Pen> = Vec::new();
     for mark in &ac.strip {
+        // 7110.65 5-7-2: an approach clearance cancels the speeds given
+        // before it, but not one given with it.
+        if crate::sim::clearance::is_approach_clearance(&mark.clearance) {
+            speeds.iter_mut().filter(|(_, t)| *t < mark.time).for_each(|(p, _)| p.struck = true);
+        }
         match &mark.clearance {
             Clearance::Altitude(a) => {
                 altitudes.push(Pen::hand(alt_mark(*a, before)));
@@ -437,7 +443,7 @@ pub fn marks(
                 )));
                 directs.iter_mut().for_each(|p| p.struck = true);
             }
-            Clearance::Speed(s) => speeds.push(Pen::hand(format!("S{s:.0}"))),
+            Clearance::Speed(s) => speeds.push((Pen::hand(format!("S{s:.0}")), mark.time)),
             Clearance::DirectFix(f) => {
                 let name = world
                     .airport
@@ -564,6 +570,7 @@ pub fn marks(
     }
     strike_all_but_last(&mut altitudes);
     strike_all_but_last(&mut vectors);
+    let mut speeds: Vec<Pen> = speeds.into_iter().map(|(p, _)| p).collect();
     strike_all_but_last(&mut speeds);
     strike_all_but_last(&mut directs);
     strike_all_but_last(&mut taxi);
@@ -1780,6 +1787,32 @@ mod tests {
         let b9: Vec<(&str, bool)> = m.b9.iter().map(|p| (p.text.as_str(), p.struck)).collect();
         assert_eq!(b9[..3], [("130", true), ("↓050", true), ("↓040", false)]);
         assert_eq!(m.revision, None, "an altitude isn't a route amendment");
+    }
+
+    #[test]
+    fn an_approach_clearance_strikes_the_assigned_speed() {
+        let w = world();
+        let mut ac = arrival(&w);
+        mark(&mut ac, Position::Approach, Clearance::Speed(170.0));
+        mark(&mut ac, Position::Approach, Clearance::ClearedIls(0));
+        let p = print(&w, &ac, 0.0);
+        let m = marks(&w, &ac, &p, &[], 0.0);
+        let speeds: Vec<(&str, bool)> =
+            m.b9a.iter().filter(|p| p.text.starts_with('S')).map(|p| (p.text.as_str(), p.struck)).collect();
+        assert_eq!(speeds, [("S170", true)]);
+    }
+
+    #[test]
+    fn a_speed_given_with_the_approach_clearance_stands() {
+        let w = world();
+        let mut ac = arrival(&w);
+        ac.strip.push(StripMark { time: 60.0, by: Position::Approach, clearance: Clearance::Speed(170.0) });
+        ac.strip.push(StripMark { time: 60.0, by: Position::Approach, clearance: Clearance::ClearedIls(0) });
+        let p = print(&w, &ac, 0.0);
+        let m = marks(&w, &ac, &p, &[], 0.0);
+        let speeds: Vec<(&str, bool)> =
+            m.b9a.iter().filter(|p| p.text.starts_with('S')).map(|p| (p.text.as_str(), p.struck)).collect();
+        assert_eq!(speeds, [("S170", false)]);
     }
 
     #[test]

@@ -22,6 +22,10 @@ pub const MAX_INTERCEPT_DEG: f32 = 30.0;
 pub const MAX_INTERCEPT_NEAR_GATE_DEG: f32 = 20.0;
 /// No speed adjustments inside this distance from the runway (7110.65 5-7-2), NM.
 pub const NO_SPEED_INSIDE_NM: f32 = 5.0;
+/// An approach clearance cancels any assigned speed (7110.65 5-7-2): the
+/// pilot flies this, or slower, until the approach's own schedule takes
+/// over, knots.
+pub const OWN_APPROACH_SPEED: f32 = 210.0;
 /// Pilot response time range, seconds.
 pub(super) const PILOT_DELAY: (f32, f32) = (2.0, 6.0);
 /// Below this distance there is no room left to establish and hand to Tower.
@@ -549,6 +553,12 @@ impl World {
             };
             match result {
                 Ok(()) => {
+                    // 7110.65 5-7-2: an approach clearance cancels an assigned
+                    // speed, unless it restates one.
+                    let restated = call.clearances.iter().any(|(c, _)| matches!(c, Clearance::Speed(_)));
+                    if is_approach_clearance(clearance) && !restated {
+                        ac.target_speed = ac.ty.max_speed.min(OWN_APPROACH_SPEED);
+                    }
                     // The player's instructions can be misheard, or answer a slip.
                     let player = issuer.is_some_and(|p| staffing.works(p));
                     let heard = if player {
@@ -739,6 +749,11 @@ fn clear_vfr_landing(ac: &mut Aircraft, end: usize, kind: Landing, airport: &Air
 }
 
 /// Validate one clearance and carry it out, or explain why not.
+/// An ILS, RNAV or visual approach clearance.
+pub fn is_approach_clearance(clearance: &Clearance) -> bool {
+    matches!(clearance, Clearance::ClearedIls(_) | Clearance::ClearedRnav(_) | Clearance::ClearedVisual { .. })
+}
+
 fn apply(clearance: &Clearance, ac: &mut Aircraft, ctx: &Context) -> Result<(), String> {
     let airport = ctx.airport;
     if let Some(reason) = super::emergency::refusal(ac, clearance, airport.elevation) {
