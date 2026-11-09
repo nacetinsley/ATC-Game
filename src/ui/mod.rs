@@ -151,6 +151,8 @@ enum PauseItem {
     GameCues,
     /// Pilots and controllers speaking their transmissions.
     Voices,
+    /// The player's own transmissions spoken too.
+    OwnVoice,
     UiScale,
     /// The colour-blind palettes.
     Colours,
@@ -161,11 +163,12 @@ enum PauseItem {
     Back,
 }
 
-const PAUSE_ITEMS: [PauseItem; 10] = [
+const PAUSE_ITEMS: [PauseItem; 11] = [
     PauseItem::Resume,
     PauseItem::Restart,
     PauseItem::Sound,
     PauseItem::Voices,
+    PauseItem::OwnVoice,
     PauseItem::GameCues,
     PauseItem::UiScale,
     PauseItem::Colours,
@@ -174,8 +177,15 @@ const PAUSE_ITEMS: [PauseItem; 10] = [
     PauseItem::Quit,
 ];
 /// The settings screen, from the start menu.
-const SETTINGS_ITEMS: [PauseItem; 6] =
-    [PauseItem::Sound, PauseItem::Voices, PauseItem::GameCues, PauseItem::UiScale, PauseItem::Colours, PauseItem::Back];
+const SETTINGS_ITEMS: [PauseItem; 7] = [
+    PauseItem::Sound,
+    PauseItem::Voices,
+    PauseItem::OwnVoice,
+    PauseItem::GameCues,
+    PauseItem::UiScale,
+    PauseItem::Colours,
+    PauseItem::Back,
+];
 const PAUSE_ROW: f32 = 40.0;
 const PAUSE_WIDTH: f32 = 340.0;
 const BRIEFING_VIEW: &str =
@@ -312,6 +322,7 @@ impl App {
         sounds.volume = settings.volume;
         sounds.game_cues = settings.game_cues;
         sounds.voices.enabled = settings.voices;
+        sounds.voices.own = settings.own_voice;
         let choice = airports.iter().position(|a| a.code == settings.airport).unwrap_or(0);
         let position = Staffing::CHOICES.iter().position(|&s| s == settings.staffing).unwrap_or(0);
         App {
@@ -356,6 +367,7 @@ impl App {
             volume: self.sounds.volume,
             game_cues: self.sounds.game_cues,
             voices: self.sounds.voices.enabled,
+            own_voice: self.sounds.voices.own,
             ui_scale: self.ui_scale,
             palette: self.palette,
             airport: self.airports[self.choice].code.clone(),
@@ -378,6 +390,7 @@ impl App {
                 self.sounds.volume = if step < 0 { self.sounds.volume.previous() } else { self.sounds.volume.next() };
             }
             PauseItem::GameCues => self.sounds.game_cues = !self.sounds.game_cues,
+            PauseItem::OwnVoice => self.sounds.voices.own = !self.sounds.voices.own,
             PauseItem::Voices => {
                 self.sounds.voices.enabled = !self.sounds.voices.enabled;
                 if !self.sounds.voices.enabled {
@@ -945,7 +958,12 @@ impl App {
         match PAUSE_ITEMS[choice] {
             PauseItem::Resume => self.resume(),
             PauseItem::Restart => self.restart(),
-            PauseItem::Sound | PauseItem::Voices | PauseItem::GameCues | PauseItem::UiScale | PauseItem::Colours => {
+            PauseItem::Sound
+            | PauseItem::Voices
+            | PauseItem::OwnVoice
+            | PauseItem::GameCues
+            | PauseItem::UiScale
+            | PauseItem::Colours => {
                 self.adjust(item, 0)
             }
             PauseItem::Controls => {
@@ -972,6 +990,9 @@ impl App {
             PauseItem::Sound => format!("Sound: {}", self.sounds.volume.label()),
             PauseItem::GameCues => format!("Game cues: {}", if self.sounds.game_cues { "On" } else { "Off" }),
             PauseItem::Voices => format!("Radio voices: {}", if self.sounds.voices.enabled { "On" } else { "Off" }),
+            PauseItem::OwnVoice => {
+                format!("Speak my transmissions: {}", if self.sounds.voices.own { "On" } else { "Off" })
+            }
             PauseItem::UiScale => {
                 let chosen = percent(self.ui_scale);
                 let fits = gfx::effective_scale(self.ui_scale, gfx::GAME_ROOM);

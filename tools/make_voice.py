@@ -106,11 +106,14 @@ SAY_AS = {
 }
 # A word said on its own trips Piper up: it drags short words out to
 # seconds. Each clip is said inside this sentence instead and cut out of it
-# by the phoneme alignments, which also gives it a phrase's natural pace.
-CARRIER = "Then {}, then."
-# Kept either side of the cut, so no consonant loses its edge.
-LEAD_S = 0.01
-TAIL_S = 0.04
+# by the phoneme alignments. With no comma after it, the word is said as in
+# the middle of a sentence, at running pace: a word before a pause is drawn
+# out, a quarter longer.
+CARRIER = "Then {} then."
+# Kept either side of the cut. Small: the words either side run straight
+# on, so anything more takes in a piece of "then".
+LEAD_S = 0.004
+TAIL_S = 0.006
 PACK_MAGIC = b"ATCV"
 PACK_VERSION = 1
 
@@ -191,12 +194,13 @@ def carried(np, voice, text, config):
     phonemes = [a.phoneme for a in chunk.phoneme_alignments]
     ends = np.cumsum([a.num_samples for a in chunk.phoneme_alignments])
     starts = ends - [a.num_samples for a in chunk.phoneme_alignments]
-    # The clip runs from after the space following "Then" to the comma.
+    # The clip runs from after the space following "Then" to the space
+    # before the last "then".
     first = phonemes.index(" ") + 1
-    comma = phonemes.index(",")
+    last = len(phonemes) - 1 - phonemes[::-1].index(" ")
     rate = chunk.sample_rate
     start = max(int(starts[first]) - int(LEAD_S * rate), 0)
-    end = min(int(starts[comma]) + int(TAIL_S * rate), len(chunk.audio_int16_array))
+    end = min(int(starts[last]) + int(TAIL_S * rate), len(chunk.audio_int16_array))
     return chunk.audio_int16_array[start:end], rate
 
 

@@ -25,6 +25,8 @@ pub struct Settings {
     pub game_cues: bool,
     /// Radio transmissions spoken aloud.
     pub voices: bool,
+    /// The player's own transmissions spoken too.
+    pub own_voice: bool,
     /// One of `gfx::SCALES`.
     pub ui_scale: f32,
     pub palette: Palette,
@@ -42,6 +44,7 @@ impl Default for Settings {
             volume: Volume::default(),
             game_cues: true,
             voices: true,
+            own_voice: true,
             ui_scale: 1.0,
             palette: Palette::Standard,
             airport: String::new(),
@@ -104,6 +107,9 @@ impl Settings {
         if let Some(v) = boolean(&sound, "voices") {
             s.voices = v;
         }
+        if let Some(v) = boolean(&sound, "own_voice") {
+            s.own_voice = v;
+        }
         let scale = display.get("ui_scale").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
         if let Some(v) = scale.and_then(|v| SCALES.iter().copied().find(|s| (*s as f64 - v).abs() < 0.01)) {
             s.ui_scale = v;
@@ -153,6 +159,7 @@ impl Settings {
                 ("volume", name(&self.volume)),
                 ("game_cues", Value::Boolean(self.game_cues)),
                 ("voices", Value::Boolean(self.voices)),
+                ("own_voice", Value::Boolean(self.own_voice)),
             ]),
         );
         table.insert(
@@ -206,6 +213,7 @@ mod tests {
             volume: Volume::High,
             game_cues: false,
             voices: false,
+            own_voice: false,
             ui_scale: 1.25,
             palette: Palette::RedGreen,
             airport: "KSUS".into(),

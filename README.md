@@ -709,7 +709,10 @@ Radio calls are spoken, as they'd sound on the frequency:
   frequency you work. A pilot reading back to an automated Ground isn't
   heard. Each aircraft keeps its own voice: one of three, each pitched three
   ways.
-- **You:** every instruction you send, in the controller's voice.
+- **You:** every instruction you send, in the controller's voice. With
+  "Speak my transmissions" off in the settings, yours aren't said, but the
+  frequency stays busy for as long as they'd take, so pilots don't answer
+  over you.
 - **Landlines:** coordination calls you make or take. The other facility
   has its own voice.
 
@@ -717,6 +720,10 @@ Automated controllers stay silent, so only your frequencies are heard. One
 transmission plays at a time, as on a real frequency. Any that wait more
 than 6 seconds are dropped, so the radio keeps up at x2 and x4. The settings
 turn radio voices off.
+
+Words in a group (digits, letters, "two seven left", "three thousand")
+run together, and other words follow on with only a brief gap, faded
+across.
 
 Each voice is built from word and phrase clips. Callsigns are said with their
 telephony ("Nova one zero one", "November three niner six niner uniform"),
@@ -751,6 +758,17 @@ cargo test --release --test voice -- --ignored write_vocabulary
 python tools/make_voice.py            # the radio voices
 python tools/make_voice.py --asdex    # the ASDE-X words
 ```
+
+To hear a change, render the listening set before and after it and compare:
+
+```sh
+cargo run --release --example radio_samples -- target/radio_samples/before
+cargo run --release --example radio_samples    # into target/radio_samples/current
+```
+
+Each transmission is written as a WAV file, with `busy.wav` holding them
+all in a row, and `report.txt` with each one's length, words a minute and
+longest gap.
 
 ## Settings
 
