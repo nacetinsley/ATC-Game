@@ -9,9 +9,13 @@
 //! - `protocol`: the messages and how they're framed on the wire.
 //! - `link`: the transport, as traits, with an in-memory one for tests.
 //! - `tcp`: a direct TCP connection (tests and LAN play).
-//! - `session`: the host's and a client's side of the lockstep.
+//! - `relay`: through the relay server, by room code (play over the
+//!   internet).
+//! - `session`: the host's and a client's side of the lockstep, and the
+//!   lobby before it.
 
 pub mod link;
 pub mod protocol;
+pub mod relay;
 pub mod session;
 pub mod tcp;

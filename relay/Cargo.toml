@@ -1,0 +1,16 @@
+[package]
+name = "atc-relay"
+version = "0.1.0"
+edition = "2024"
+description = "Relays co-op traffic between Air Traffic Control players. Knows nothing about the game."
+
+# Standard library only, so it builds anywhere, including a small server.
+[dependencies]
+
+[lib]
+name = "atc_relay"
+path = "src/lib.rs"
+
+[[bin]]
+name = "atc-relay"
+path = "src/main.rs"

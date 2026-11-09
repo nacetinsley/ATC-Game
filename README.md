@@ -914,26 +914,48 @@ Every shift is split between two players: Approach in seat 0, and Local,
 Ground and Delivery in seat 1. Press F9 to hand the screen to the other
 seat. Shift codes and replays are off in hot seat.
 
-### Co-op over a network (early)
+### Co-op
 
-Two machines on the same network, both running the same build:
+Two to four players share one shift, each working their own positions.
+Everyone needs the same build of the game. Press **K** on the start menu
+for Co-op:
+
+- **Host through the relay:** for play over the internet. The relay gives
+  the room a six-letter code; tell it to the others.
+- **Host on this network:** for players on the same network. The others join
+  with the address the lobby shows (port 7340).
+- **Join a shift:** type the host's room code, or their address on the
+  network.
+- **Name** is what the other players see, and **Relay** is the relay
+  server's address (`relay.example.com`, or `203.0.113.5:7341`). Both are
+  saved. Joining or hosting through a relay needs a relay set; see
+  [relay/README.md](relay/README.md) to run one.
+
+In the lobby, press 1 to 4 (or click) to take a position or give it up.
+The host can click a position to give it to anyone, and presses Enter to
+start once every player has a position. Positions nobody takes are worked by
+the automation. The shift is the one set up on the start menu: airport,
+length and difficulty.
+
+In the shift, landline calls name the player on the other end, as in
+"Tower (Sam)". Co-op runs in real time: the pause menu has no restart or
+speed controls, and the shift goes on behind it. A player can join after the
+shift has started, and their machine catches up.
+
+If a player's connection drops, their positions wait 30 seconds for them,
+then go to the automation until they come back with the same name. If the
+host leaves, the shift ends for everyone. If a machine's sim ever drifts from
+the host's, it stops and writes a `desync-<tick>.txt` report next to the
+settings file. Shift codes and replays are off in co-op for now.
+
+The command line has shortcuts, handy for testing:
 
 ```sh
-cargo run --release -- --host --name Sam              # start a shift as usual
+cargo run --release -- --host --name Sam            # host on this network
 cargo run --release -- --join 192.168.1.20 --name Alex
+cargo run --release -- --relay relay.example.com --host-relay
+cargo run --release -- --join KMPRTX                # a room code: through the relay
 ```
-
-The host works Approach, and the player who joins works the tower cab. The
-default port is 7340: `--host 9000` and `--join 192.168.1.20:9000` change it.
-A player can join after the shift has started; their machine catches up.
-Co-op runs in real time, with no pause or speed-up.
-
-If a player's connection drops, their seat waits 30 seconds for them, then
-their positions are automated until they come back with the same name. If
-the host leaves, the shift ends for everyone. If a machine's sim ever drifts
-from the host's, it stops and writes a `desync-<tick>.txt` report next to
-the settings file. A lobby, a relay server for play over the internet, and
-co-op replays are still to come.
 
 ### macOS app
 

@@ -105,7 +105,8 @@ fn draw_landline(world: &mut World, ui: &mut UiState, x: f32, top: f32) -> f32 {
                 },
             };
             let pending = c.state == CoordState::Pending;
-            let text = if pending { format!("{}: {what}", c.from.name()) } else { format!("{}: {what} (unable)", c.from.name()) };
+            let from = ui.position_name(world, c.from);
+            let text = if pending { format!("{from}: {what}") } else { format!("{from}: {what} (unable)") };
             (c.aircraft, text, pending)
         })
         .collect();
@@ -121,12 +122,12 @@ fn draw_landline(world: &mut World, ui: &mut UiState, x: f32, top: f32) -> f32 {
             match c.kind {
                 CoordKind::GoAround { end } => Some((
                     c.aircraft,
-                    format!("Call Approach: go-around {callsign} off {}", world.airport.runways[end].id),
+                    format!("Call {}: go-around {callsign} off {}", ui.position_name(world, Position::Approach), world.airport.runways[end].id),
                     false,
                 )),
                 CoordKind::Emergency => {
                     let what = ac.emergency.as_ref().map(|e| e.kind.describe()).unwrap_or("emergency");
-                    Some((c.aircraft, format!("Call {}: emergency {callsign}, {what}", c.to.name()), true))
+                    Some((c.aircraft, format!("Call {}: emergency {callsign}, {what}", ui.position_name(world, c.to)), true))
                 }
                 _ => None,
             }

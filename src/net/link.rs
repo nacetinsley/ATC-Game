@@ -32,12 +32,44 @@ pub trait HostLink {
     fn send(&mut self, to: PeerId, msg: &Msg);
     /// Hang up on a peer. No `Left` follows for it.
     fn close(&mut self, peer: PeerId);
+    /// The link itself has failed (the relay went), and why. Every peer
+    /// has had a `Left` by then.
+    fn failure(&self) -> Option<String> {
+        None
+    }
 }
 
 pub trait ClientLink {
     fn poll(&mut self) -> Vec<ClientEvent>;
     fn send(&mut self, msg: &Msg);
     fn close(&mut self);
+}
+
+impl<T: HostLink + ?Sized> HostLink for Box<T> {
+    fn poll(&mut self) -> Vec<HostEvent> {
+        (**self).poll()
+    }
+    fn send(&mut self, to: PeerId, msg: &Msg) {
+        (**self).send(to, msg)
+    }
+    fn close(&mut self, peer: PeerId) {
+        (**self).close(peer)
+    }
+    fn failure(&self) -> Option<String> {
+        (**self).failure()
+    }
+}
+
+impl<T: ClientLink + ?Sized> ClientLink for Box<T> {
+    fn poll(&mut self) -> Vec<ClientEvent> {
+        (**self).poll()
+    }
+    fn send(&mut self, msg: &Msg) {
+        (**self).send(msg)
+    }
+    fn close(&mut self) {
+        (**self).close()
+    }
 }
 
 /// Frames between the loopback ends; `None` hangs up.
@@ -101,7 +133,7 @@ impl HostLink for LoopHost {
             };
             decoder.push(&bytes);
             loop {
-                match decoder.next() {
+                match decoder.next_msg() {
                     Ok(Some(msg)) => events.push(HostEvent::Message(peer, msg)),
                     Ok(None) => break,
                     Err(e) => {
@@ -149,7 +181,7 @@ impl ClientLink for LoopClient {
             };
             self.decoder.push(&bytes);
             loop {
-                match self.decoder.next() {
+                match self.decoder.next_msg() {
                     Ok(Some(msg)) => events.push(ClientEvent::Message(msg)),
                     Ok(None) => break,
                     Err(e) => {

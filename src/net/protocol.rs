@@ -1,12 +1,16 @@
 //! The messages players' machines send each other, and their framing: a
 //! 4-byte little-endian length, then the message in `postcard`.
 
-use crate::sim::positions::{Seat, Staffing};
+use super::session::Notice;
+use crate::sim::positions::{MAX_SEATS, Seat, Staffing};
 use crate::sim::replay::{Action, Command};
 use serde::{Deserialize, Serialize};
 
 /// Bumped when a message changes shape.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
+
+/// Who has each position in the lobby: Approach, Local, Ground, Delivery.
+pub type Positions = [Option<Seat>; MAX_SEATS];
 
 /// The largest frame either side accepts. A catch-up's commands go in
 /// chunks that fit.
@@ -22,6 +26,18 @@ pub enum Msg {
     Hello { protocol: u32, game: String, name: String },
     /// Host to client: it can't join.
     Refused { reason: String },
+    /// Host to client, before the shift: who's here, who has which
+    /// position, what the shift will be, and the client's own seat. Sent
+    /// again now and then.
+    Lobby { players: Vec<(Seat, String)>, positions: Positions, about: String, you: Seat },
+    /// Client to host, in the lobby: take or give up a position (0
+    /// Approach, 1 Local, 2 Ground, 3 Delivery).
+    Pick { position: u8, take: bool },
+    /// Host to client, in the shift: who's playing, when that changes.
+    Roster { players: Vec<(Seat, String)> },
+    /// Host to client: something to tell the player, such as someone
+    /// dropping.
+    Notice(Notice),
     /// Host to client: the shift, and the client's seat. `code` is the shift
     /// code (its staffing isn't used: `staffing` is the co-op split).
     Start { code: String, staffing: Staffing, clock_start: f64, seat: Seat },
@@ -62,10 +78,24 @@ impl std::fmt::Display for FrameError {
     }
 }
 
-/// A message as a frame for the wire.
-pub fn encode(msg: &Msg) -> Vec<u8> {
+/// A message as a frame's body: what the relay carries.
+pub fn body(msg: &Msg) -> Vec<u8> {
     let body = postcard::to_allocvec(msg).expect("messages serialise");
     assert!(body.len() <= MAX_FRAME, "a {}-byte message: chunk it", body.len());
+    body
+}
+
+/// A frame's body, back into a message.
+pub fn parse(body: &[u8]) -> Result<Msg, FrameError> {
+    if body.len() > MAX_FRAME {
+        return Err(FrameError::TooBig(body.len()));
+    }
+    postcard::from_bytes(body).map_err(|e| FrameError::Garbled(e.to_string()))
+}
+
+/// A message as a frame for the wire.
+pub fn encode(msg: &Msg) -> Vec<u8> {
+    let body = body(msg);
     let mut frame = (body.len() as u32).to_le_bytes().to_vec();
     frame.extend_from_slice(&body);
     frame
@@ -83,7 +113,7 @@ impl Decoder {
     }
 
     /// The next whole message, if one has arrived.
-    pub fn next(&mut self) -> Result<Option<Msg>, FrameError> {
+    pub fn next_msg(&mut self) -> Result<Option<Msg>, FrameError> {
         if self.buffer.len() < 4 {
             return Ok(None);
         }
@@ -129,7 +159,7 @@ mod tests {
             let mut out = Vec::new();
             for chunk in wire.chunks(split) {
                 decoder.push(chunk);
-                while let Some(msg) = decoder.next().unwrap() {
+                while let Some(msg) = decoder.next_msg().unwrap() {
                     out.push(msg);
                 }
             }
@@ -141,6 +171,6 @@ mod tests {
     fn an_oversized_frame_is_refused() {
         let mut decoder = Decoder::default();
         decoder.push(&((MAX_FRAME as u32) + 1).to_le_bytes());
-        assert!(matches!(decoder.next(), Err(FrameError::TooBig(_))));
+        assert!(matches!(decoder.next_msg(), Err(FrameError::TooBig(_))));
     }
 }

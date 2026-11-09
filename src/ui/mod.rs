@@ -19,9 +19,8 @@ pub mod voice;
 
 use crate::sim::airspace::{Airport, CATALOG};
 use crate::sim::positions::{Position, Staffing};
-use crate::net::session::{Joining, Notice, ShiftSetup};
-use crate::net::tcp::TcpClient;
-use crate::sim::replay::{Action, Recording, ShiftCode};
+use crate::net::session::{HOST, Notice, ShiftSetup, staffing_of};
+use crate::sim::replay::{Recording, ShiftCode};
 use crate::sim::scoring::ShiftEnd;
 use crate::sim::traffic::Busyness;
 use crate::sim::tutorial::{LessonKind, Tutorial};
@@ -214,8 +213,8 @@ enum Screen {
     Replays { choice: usize },
     /// Typing a shift code, from the start menu.
     Code,
-    /// Connecting to a co-op host, as `--join` asks.
-    Joining,
+    /// Co-op before the shift: its menu, joining, and the lobby.
+    Coop,
 }
 
 pub struct App {
@@ -262,14 +261,13 @@ pub struct App {
     hot_seat: bool,
     /// In hot-seat play, the other seats' screens, waiting their turn.
     other_seats: Vec<UiState>,
-    /// Co-op over a connection, as the command line asks.
-    coop: coop::CoopArgs,
+    /// Co-op before the shift: where the player is in it.
+    coop_flow: Option<coop::Flow>,
     /// The co-op session behind the shift being played, if it's one.
     session: Option<coop::Session>,
-    /// Joining a host: the connection, until the shift is ready.
-    joining: Option<crate::net::session::Client<TcpClient>>,
-    /// How joining is going, for the joining screen.
-    join_status: String,
+    /// The name other players see, and the relay's address.
+    coop_name: String,
+    relay: String,
     /// Co-op notices on screen.
     banner: coop::Banner,
 }
@@ -354,9 +352,21 @@ impl App {
         sounds.voices.own = settings.own_voice;
         let choice = airports.iter().position(|a| a.code == settings.airport).unwrap_or(0);
         let position = Staffing::CHOICES.iter().position(|&s| s == settings.staffing).unwrap_or(0);
-        let coop = coop::CoopArgs::from_args();
+        let args = coop::CoopArgs::from_args();
+        let coop_name = args.name.clone().unwrap_or_else(|| settings.coop_name.clone());
+        let relay = args.relay.clone().unwrap_or_else(|| settings.relay.clone());
+        // The command line's shortcuts into co-op.
+        let coop_flow = if let Some(what) = &args.join {
+            Some(coop::Flow::join(what, &relay))
+        } else if args.host_relay {
+            Some(coop::Flow::host_relay(&relay))
+        } else if args.host_lan {
+            Some(coop::Flow::host_lan())
+        } else {
+            None
+        };
         App {
-            screen: if coop.join.is_some() { Screen::Joining } else { Screen::Menu },
+            screen: if coop_flow.is_some() { Screen::Coop } else { Screen::Menu },
             world: World::new(
                 airports[0].clone(),
                 shift_config(ShiftChoice {
@@ -369,10 +379,10 @@ impl App {
             ui: UiState::new(&airports[0], Staffing::default()),
             hot_seat: std::env::args().any(|a| a == "--hot-seat"),
             other_seats: Vec::new(),
-            coop,
+            coop_flow,
             session: None,
-            joining: None,
-            join_status: String::new(),
+            coop_name,
+            relay,
             banner: coop::Banner::default(),
             sounds,
             accumulator: 0.0,
@@ -412,6 +422,8 @@ impl App {
             vfr: self.vfr,
             shift_minutes: self.shift_minutes,
             difficulty: self.difficulty,
+            coop_name: self.coop_name.clone(),
+            relay: self.relay.clone(),
         };
         if now != self.saved {
             now.save();
@@ -471,23 +483,13 @@ impl App {
     fn start_world(&mut self, index: usize, mut config: WorldConfig) {
         self.end_session("the host started another shift");
         let airport = &self.airports[index];
-        let hosting = self.coop.host;
-        let mut setup = None;
-        if hosting.is_some() {
-            // Built from what the players are sent, so every world is the same.
-            let shared = ShiftSetup::new(&config, &airport.code, hot_seat_staffing(), miniquad::date::now());
-            config = shared.config().expect("a code just made reads back");
-            setup = Some(shared);
-        } else if self.hot_seat {
+        if self.hot_seat {
             config.staffing = hot_seat_staffing();
         }
         self.world = World::new(airport.clone(), config);
         let scale = gfx::effective_scale(self.ui_scale, gfx::GAME_ROOM);
         self.ui = gfx::laid_out_at(scale, || UiState::for_seat(airport, config.staffing, 0));
-        if hosting.is_some() {
-            self.ui.clock_start = config.clock_start;
-        }
-        self.other_seats = if self.hot_seat && hosting.is_none() {
+        self.other_seats = if self.hot_seat {
             config
                 .staffing
                 .players()
@@ -504,22 +506,8 @@ impl App {
         // The sim's clock, for EFC times, reads the same as the strips'.
         self.world.set_clock_start(self.ui.clock_start);
         self.banner.clear();
-        if let (Some(port), Some(setup)) = (hosting, setup) {
-            match coop::listen(port, setup, &self.coop.name) {
-                Ok(host) => {
-                    self.session = Some(coop::Session::Host { host, port });
-                    self.ui.outbox = Some(Default::default());
-                    self.banner.push(format!("Hosting on port {port}: the other player joins with --join."));
-                }
-                Err(why) => {
-                    // Play it alone: the tower cab goes to the automation.
-                    self.banner.push(why);
-                    self.world.act(0, 0, Action::Vacate(1));
-                }
-            }
-        }
         // Shift codes and replays don't hold a co-op split yet.
-        let solo = !self.hot_seat && hosting.is_none();
+        let solo = !self.hot_seat;
         self.code = solo.then(|| ShiftCode::of(&config, &airport.code));
         self.recording = solo.then(|| Recording::new(&self.world));
         self.replay_path = None;
@@ -564,54 +552,77 @@ impl App {
         }
     }
 
-    /// The joining screen: connect, wait for the shift, and catch up.
-    fn joining_frame(&mut self) {
+    /// What a co-op shift will be, from the start menu's choices.
+    fn coop_about(&self) -> String {
+        let airport = &self.airports[self.choice];
+        let real_data = airport.traffic.is_some();
+        format!(
+            "{} {}, {}, {}",
+            airport.code,
+            airport.name,
+            shift::label(self.shift_minutes),
+            self.difficulty.summary(real_data)
+        )
+    }
+
+    /// Co-op before the shift: the menu, connecting, and the lobby.
+    fn coop_frame(&mut self) {
         self.sounds.silence();
-        let addr = self.coop.join.clone().unwrap_or_default();
-        if is_key_pressed(KeyCode::Escape) {
-            if let Some(mut client) = self.joining.take() {
-                client.leave();
-            }
-            self.join_status.clear();
+        let about = self.coop_about();
+        let Some(flow) = &mut self.coop_flow else {
             self.screen = Screen::Menu;
             return;
-        }
-        if self.joining.is_none() && start_pressed() {
-            self.join_status.clear();
-        }
-        if self.joining.is_none() && self.join_status.is_empty() {
-            // Shown for a frame before connecting, which can take a moment.
-            self.join_status = "Connecting...".into();
-        } else if self.joining.is_none() && self.join_status == "Connecting..." {
-            match coop::connect(&addr, &self.coop.name) {
-                Ok(client) => {
-                    self.joining = Some(client);
-                    self.join_status = "Waiting for the host...".into();
-                }
-                Err(why) => self.join_status = format!("{why}. Enter to try again."),
+        };
+        let ctx = coop::Ctx { name: &mut self.coop_name, relay: &mut self.relay, airports: &self.airports, about };
+        match coop::frame(flow, ctx) {
+            coop::Outcome::Stay => {}
+            coop::Outcome::Menu => {
+                self.coop_flow = None;
+                self.screen = Screen::Menu;
             }
-        } else if let Some(client) = &mut self.joining {
-            match client.join(get_frame_time(), &self.airports) {
-                Joining::Waiting => {}
-                Joining::Ready(world, seat) => return self.begin_joined_shift(*world, seat),
-                Joining::Failed(why) => {
-                    self.joining = None;
-                    self.join_status = format!("Couldn't join: {why}. Enter to try again.");
-                }
-            }
+            coop::Outcome::Save => self.save_settings(),
+            coop::Outcome::Start(host, label) => self.start_hosted_shift(*host, label),
+            coop::Outcome::Joined(client, world, seat) => self.begin_joined_shift(*client, *world, seat),
         }
-        coop::draw_joining(&addr, &self.join_status);
+    }
+
+    /// The host starts the lobby's shift: the start menu's choices, with
+    /// the positions the lobby gave out.
+    fn start_hosted_shift(&mut self, mut host: coop::AnyHost, label: String) {
+        self.save_settings();
+        self.end_session("a new shift");
+        let choice = ShiftChoice {
+            difficulty: self.difficulty,
+            staffing: staffing_of(&host.positions()),
+            vfr: self.vfr,
+            minutes: self.shift_minutes,
+        };
+        let config = shift_config(choice);
+        let airport = self.airports[self.choice].clone();
+        // Built from what the players are sent, so every world is the same.
+        let setup = ShiftSetup::new(&config, &airport.code, config.staffing, miniquad::date::now());
+        let config = setup.config().expect("a code just made reads back");
+        self.world = World::new(airport.clone(), config);
+        host.start(setup, &self.world);
+        self.begin_coop_shift(&airport, config.staffing, config.clock_start, HOST);
+        self.session = Some(coop::Session::Host { host, label });
     }
 
     /// Joined: play the host's shift, from where it has got to.
-    fn begin_joined_shift(&mut self, world: World, seat: crate::sim::positions::Seat) {
-        let client = self.joining.take().expect("joining");
+    fn begin_joined_shift(&mut self, client: coop::AnyClient, world: World, seat: crate::sim::positions::Seat) {
+        self.end_session("a new shift");
         let setup = client.setup().expect("a joined client has the shift").clone();
-        let airport = world.airport.clone();
+        let airport = (*world.airport).clone();
         self.world = world;
+        self.begin_coop_shift(&airport, setup.staffing, setup.clock_start, seat);
+        self.session = Some(coop::Session::Client(client));
+    }
+
+    /// The screen for a co-op shift in `seat`.
+    fn begin_coop_shift(&mut self, airport: &Airport, staffing: Staffing, clock_start: f64, seat: crate::sim::positions::Seat) {
         let scale = gfx::effective_scale(self.ui_scale, gfx::GAME_ROOM);
-        self.ui = gfx::laid_out_at(scale, || UiState::for_seat(&airport, setup.staffing, seat));
-        self.ui.clock_start = setup.clock_start;
+        self.ui = gfx::laid_out_at(scale, || UiState::for_seat(airport, staffing, seat));
+        self.ui.clock_start = clock_start;
         self.ui.outbox = Some(Default::default());
         self.other_seats.clear();
         self.code = None;
@@ -622,8 +633,7 @@ impl App {
         self.tutorial = None;
         self.accumulator = 0.0;
         self.banner.clear();
-        self.session = Some(coop::Session::Client(client));
-        self.join_status.clear();
+        self.coop_flow = None;
         self.screen = Screen::Playing;
     }
 
@@ -1028,6 +1038,13 @@ impl App {
                     self.screen = Screen::Code;
                     return;
                 }
+                if picked.coop || is_key_pressed(KeyCode::K) {
+                    self.save_settings();
+                    self.coop_flow = Some(coop::Flow::Menu { choice: 0 });
+                    while get_char_pressed().is_some() {}
+                    self.screen = Screen::Coop;
+                    return;
+                }
                 if picked.replays || is_key_pressed(KeyCode::R) {
                     self.replay_list = replays::list();
                     self.code_error = None;
@@ -1074,7 +1091,7 @@ impl App {
             Screen::Rebuilding => self.rebuild_frame(),
             Screen::Replays { choice } => self.replays_frame(choice),
             Screen::Code => self.code_frame(),
-            Screen::Joining => self.joining_frame(),
+            Screen::Coop => self.coop_frame(),
         }
     }
 
@@ -1111,21 +1128,22 @@ impl App {
             }
         }
         draw_views(&self.world, &mut self.ui);
-        let count = PAUSE_ITEMS.len();
+        let items = self.pause_items();
+        let count = items.len();
         if is_key_pressed(KeyCode::Up) {
             choice = (choice + count - 1) % count;
         }
         if is_key_pressed(KeyCode::Down) {
             choice = (choice + 1) % count;
         }
-        let labels: Vec<String> = PAUSE_ITEMS.iter().map(|&item| self.item_label(item, show_controls)).collect();
+        let labels: Vec<String> = items.iter().map(|&item| self.item_label(item, show_controls)).collect();
         let (hovered, clicked) = draw_pause(choice, &labels, show_controls, self.ui.staffing);
         if let Some(code) = self.code.as_ref().filter(|_| !show_controls) {
             let text = format!("Shift code  {}", code.text());
             let width = measure_text(&text, None, 18, 1.0).width;
             draw_text(&text, (screen_width() - width) / 2.0, screen_height() - 24.0, 18.0, DIM);
         }
-        let item = PAUSE_ITEMS[choice];
+        let item = items[choice];
         if is_key_pressed(KeyCode::Left) {
             self.adjust(item, -1);
         }
@@ -1147,10 +1165,8 @@ impl App {
         if !activate {
             return;
         }
-        match PAUSE_ITEMS[choice] {
+        match items[choice] {
             PauseItem::Resume => self.resume(),
-            // A co-op shift is everyone's: it isn't restarted from here.
-            PauseItem::Restart if self.session.is_some() => {}
             PauseItem::Restart => self.restart(),
             PauseItem::Sound
             | PauseItem::Voices
@@ -1179,8 +1195,15 @@ impl App {
         }
     }
 
+    /// The pause menu's rows: a co-op shift is everyone's, so it isn't
+    /// restarted from here.
+    fn pause_items(&self) -> Vec<PauseItem> {
+        PAUSE_ITEMS.iter().copied().filter(|&item| !(self.session.is_some() && item == PauseItem::Restart)).collect()
+    }
+
     fn item_label(&self, item: PauseItem, show_controls: bool) -> String {
         match item {
+            PauseItem::Resume if self.session.is_some() => "Back to the shift".into(),
             PauseItem::Resume => "Resume".into(),
             PauseItem::Restart => "Restart shift".into(),
             PauseItem::Sound => format!("Sound: {}", self.sounds.volume.label()),
@@ -1201,6 +1224,7 @@ impl App {
             PauseItem::Colours => format!("Colours: {}", self.palette.label()),
             PauseItem::Controls if show_controls => "Hide controls".into(),
             PauseItem::Controls => "Show controls".into(),
+            PauseItem::MainMenu if self.session.is_some() => "Leave the shift".into(),
             PauseItem::MainMenu => "Quit to main menu".into(),
             PauseItem::Quit => "Quit to desktop".into(),
             PauseItem::Back => "Back".into(),
@@ -1285,10 +1309,11 @@ impl App {
             self.tutorial.as_ref().is_some_and(|t| t.finished() || t.current().is_some_and(|s| s.read));
         self.ui.update(&mut self.world);
 
-        if self.session.is_some() {
+        if let Some(session) = &self.session {
             // The session keeps the time: real time, for everyone.
             self.ui.paused = false;
             self.ui.rate = 1.0;
+            self.ui.names = session.names();
             self.run_session();
         } else if !self.ui.paused {
             self.accumulator += get_frame_time().min(MAX_FRAME_SECONDS) * self.ui.rate;
@@ -1441,6 +1466,8 @@ struct MenuPick {
     code: bool,
     /// The replays button.
     replays: bool,
+    /// The co-op button.
+    coop: bool,
     shift_minutes: Option<u32>,
 }
 
@@ -1573,8 +1600,10 @@ fn draw_menu(airports: &[Airport], choice: usize, state: MenuState) -> MenuPick 
     draw_text("Press ENTER to start your shift", right, ry + 110.0, 30.0, TITLE);
     let (settings, width) = menu_button("O  Settings", right, ry + 132.0, false);
     let (code, code_width) = menu_button("C  Shift code", right + width + 10.0, ry + 132.0, false);
-    let (replays, _) = menu_button("R  Replays", right + width + code_width + 20.0, ry + 132.0, false);
-    (pick.settings, pick.code, pick.replays) = (settings, code, replays);
+    let replays_left = right + width + code_width + 20.0;
+    let (replays, replays_width) = menu_button("R  Replays", replays_left, ry + 132.0, false);
+    let (coop, _) = menu_button("K  Co-op", replays_left + replays_width + 10.0, ry + 132.0, false);
+    (pick.settings, pick.code, pick.replays, pick.coop) = (settings, code, replays, coop);
 
     // The left: the briefing, wrapped clear of the right column, closer
     // together if it's long.

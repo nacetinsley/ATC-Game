@@ -88,6 +88,8 @@ pub struct UiState {
     /// comes back in a tick, so it waits here for the session. `None` when
     /// it's applied at once.
     pub outbox: Option<RefCell<Vec<(u32, Action)>>>,
+    /// Co-op: each seat's player's name, for the landline.
+    pub names: [Option<String>; crate::sim::positions::MAX_SEATS],
 }
 
 impl UiState {
@@ -118,6 +120,7 @@ impl UiState {
             course_hint: true,
             replay: false,
             outbox: None,
+            names: Default::default(),
         };
         ui.frame_views(airport);
         ui
@@ -149,6 +152,16 @@ impl UiState {
                 }
                 ok
             }
+        }
+    }
+
+    /// A position as the landline names it: "Tower (Sam)" when another
+    /// player works it.
+    pub fn position_name(&self, world: &World, position: Position) -> String {
+        let other = world.staffing().seat(position).filter(|&s| s != self.seat);
+        match other.and_then(|s| self.names.get(s as usize)?.as_ref()) {
+            Some(name) => format!("{} ({name})", position.name()),
+            None => position.name().to_string(),
         }
     }
 

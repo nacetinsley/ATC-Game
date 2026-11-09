@@ -36,6 +36,18 @@ pub struct Settings {
     pub vfr: bool,
     pub shift_minutes: u32,
     pub difficulty: Difficulty,
+    /// Co-op: the name other players see.
+    pub coop_name: String,
+    /// Co-op: the relay's address, "host" or "host:port". Empty until one
+    /// is set.
+    pub relay: String,
+}
+
+/// The name to start with: the computer's user, or a stand-in.
+fn default_name() -> String {
+    let user = std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_default();
+    let user: String = user.trim().chars().take(20).collect();
+    if user.is_empty() { "Controller".into() } else { user }
 }
 
 impl Default for Settings {
@@ -52,6 +64,8 @@ impl Default for Settings {
             vfr: true,
             shift_minutes: super::shift::DEFAULT_MINUTES,
             difficulty: Difficulty::STANDARD,
+            coop_name: default_name(),
+            relay: String::new(),
         }
     }
 }
@@ -97,6 +111,7 @@ impl Settings {
         let display = table.get("display").and_then(Value::as_table).cloned().unwrap_or_default();
         let menu = table.get("menu").and_then(Value::as_table).cloned().unwrap_or_default();
         let difficulty = table.get("difficulty").and_then(Value::as_table).cloned().unwrap_or_default();
+        let coop = table.get("coop").and_then(Value::as_table).cloned().unwrap_or_default();
 
         if let Some(v) = named(&Volume::ALL, string(&sound, "volume").as_deref()) {
             s.volume = v;
@@ -144,6 +159,12 @@ impl Settings {
         if let Some(v) = named(&WeatherKind::ALL, string(&difficulty, "weather").as_deref()) {
             d.weather = v;
         }
+        if let Some(v) = string(&coop, "name").filter(|n| !n.trim().is_empty()) {
+            s.coop_name = v.trim().chars().take(20).collect();
+        }
+        if let Some(v) = string(&coop, "relay") {
+            s.relay = v.trim().to_string();
+        }
         s
     }
 
@@ -184,6 +205,10 @@ impl Settings {
                 ("pilot_mistakes", name(&d.mistakes)),
                 ("weather", name(&d.weather)),
             ]),
+        );
+        table.insert(
+            "coop".into(),
+            section(vec![("name", Value::String(self.coop_name.clone())), ("relay", Value::String(self.relay.clone()))]),
         );
         let body = toml::to_string(&table).unwrap_or_default();
         format!("# Air Traffic Control settings. Delete this file to go back to the defaults.\n\n{body}")
@@ -226,6 +251,8 @@ mod tests {
                 mistakes: PilotMistakes::Realistic,
                 weather: WeatherKind::Storms,
             },
+            coop_name: "Sam".into(),
+            relay: "relay.example.com:7341".into(),
         };
         let text = s.to_toml();
         assert!(text.contains("position = \"Local + Ground\""), "{text}");
