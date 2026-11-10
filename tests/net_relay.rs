@@ -1,12 +1,13 @@
 //! Co-op through a real relay on a bad network: every connection goes through
 //! a proxy that holds data back by a varying delay, and can cut it. Players
 //! stay in step, drop, get back by themselves or come back to their own
-//! seats, and hear when the host goes. The players are the game's own
-//! (`ui::coop::Player`), which redials when its connection goes.
+//! seats, and hear when the host goes. The players and the host are the
+//! game's own (`ui::coop::Player` and `Hosting`), which call back when
+//! their connection goes.
 
 use atcgame::net::relay::{RelayClient, RelayHost};
 use atcgame::net::session::{Client, GRACE_S, Host, Joining, Notice, ShiftSetup};
-use atcgame::ui::coop::{self, AnyLink, Dial};
+use atcgame::ui::coop::{self, AnyHostLink, AnyLink, Dial, Reopen};
 use atcgame::sim::airspace::Airport;
 use atcgame::sim::clearance::Clearance;
 use atcgame::sim::positions::{Position, Seat, Staffing};
@@ -126,7 +127,13 @@ fn airports() -> Vec<Airport> {
 /// A relay that lets the sped-up shift through: at `SPEED` the host sends
 /// more frames a second than a real one would.
 fn relay() -> String {
-    let limits = atc_relay::server::Limits { frames_per_s: 5000.0, burst_frames: 10_000.0, ..Default::default() };
+    let limits = atc_relay::server::Limits {
+        frames_per_s: 5000.0,
+        burst_frames: 10_000.0,
+        // A minute of the sim, near enough, at `SPEED`.
+        host_grace: Duration::from_secs(4),
+        ..Default::default()
+    };
     atc_relay::server::spawn("127.0.0.1:0", limits).unwrap().to_string()
 }
 
@@ -174,7 +181,7 @@ struct Player {
 struct Table {
     relay: String,
     code: String,
-    host: Host<RelayHost>,
+    host: coop::Hosting,
     world: World,
     notices: Vec<Notice>,
     players: Vec<Player>,
@@ -190,9 +197,16 @@ impl Table {
         let host_lag = Lag::new(&relay, delay, jitter);
         let link = RelayHost::open(&host_lag.addr, Duration::from_secs(5)).unwrap();
         let code = link.code().to_string();
+        // As the game reopens a room: the same relay, through the host's
+        // network.
+        let (addr, room, key) = (host_lag.addr.clone(), code.clone(), link.key().to_string());
+        let reopen: Reopen = Arc::new(move || {
+            Ok(Box::new(RelayHost::reopen(&addr, &room, &key, Duration::from_secs(5))?) as AnyHostLink)
+        });
         let setup = setup(staffing);
         let world = setup.world(&airports()).unwrap();
-        let host = Host::new(link, setup, "host");
+        let host = Host::new(Box::new(link) as AnyHostLink, setup, "host");
+        let host = coop::Hosting::new(host, format!("room {code}"), Some(reopen));
         Table { relay, code, host, world, notices: Vec::new(), players: Vec::new(), delay, jitter, clock: Instant::now(), host_lag }
     }
 
@@ -415,6 +429,38 @@ fn a_player_whose_connection_drops_gets_back_by_themselves() {
 }
 
 #[test]
+fn the_hosts_connection_drops_and_everyone_gets_back() {
+    let mut table = Table::new(three_way(), Duration::from_millis(20), Duration::from_millis(30));
+    table.join("local");
+    table.join("ground");
+    table.run(MINUTE);
+    table.assert_in_step();
+    // The host's link to the relay goes. The shift goes on on the host's
+    // machine; the host reopens the room, and the players call back.
+    table.host_lag.cut();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let back = table.notices.contains(&Notice::RoomBack)
+            && table.players.iter().all(|p| p.notices.contains(&Notice::CaughtUp));
+        if back {
+            break;
+        }
+        assert!(Instant::now() < deadline, "not everyone got back: {:?} {:?}", table.notices, table.players[0].notices);
+        table.frame(true);
+    }
+    assert!(table.notices.iter().any(|n| matches!(n, Notice::LinkLost { .. })));
+    for p in &mut table.players {
+        assert!(p.notices.iter().any(|n| matches!(n, Notice::LinkLost { .. })), "{}: {:?}", p.name, p.notices);
+        p.notices.clear();
+    }
+    table.run(MINUTE);
+    table.assert_in_step();
+    assert!(table.world.staffing() == three_way(), "everyone back inside the grace: nobody automated");
+    let seats: Vec<Seat> = table.players.iter().map(|p| p.player.client().seat()).collect();
+    assert_eq!(seats, [1, 2]);
+}
+
+#[test]
 fn a_player_joining_late_catches_up_over_a_slow_link() {
     let mut table = Table::new(three_way(), Duration::from_millis(60), Duration::from_millis(60));
     table.join("local");
@@ -432,9 +478,10 @@ fn the_host_vanishing_ends_the_shift_for_everyone() {
     table.join("ground");
     table.run(MINUTE);
     table.assert_in_step();
-    // The host's connection goes, without a goodbye. The players try to
-    // get back, and the relay says the room has gone.
-    table.host_lag.cut();
+    // The host's machine goes, without a goodbye. The players try to get
+    // back, and the relay says the room has gone once it has given up on
+    // the host.
+    table.host_lag.down();
     let deadline = Instant::now() + Duration::from_secs(10);
     while !table.players.iter().all(|p| p.notices.iter().any(|n| matches!(n, Notice::HostGone { .. }))) {
         assert!(Instant::now() < deadline, "the players never heard: {:?}", table.players[0].notices);

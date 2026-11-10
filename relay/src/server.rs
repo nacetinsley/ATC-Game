@@ -4,8 +4,12 @@
 //! Each connection has a thread reading it and a thread writing to it, so
 //! one slow player holds up nobody else. The rooms are in one shared table.
 //! A janitor closes rooms nobody has used for a while.
+//!
+//! When a host's connection goes, its players are hung up on, but the room
+//! waits `host_grace` for the host to reopen it with the room's key. The
+//! players' games call back meanwhile, and get in once it has.
 
-use crate::wire::{CODE_ALPHABET, CODE_LEN, FrameReader, MAX_PAYLOAD, RelayMsg, VERSION};
+use crate::wire::{CODE_ALPHABET, CODE_LEN, FrameReader, KEY_LEN, MAX_PAYLOAD, RelayMsg, VERSION};
 use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{BuildHasher, Hasher};
@@ -29,6 +33,9 @@ pub struct Limits {
     pub players_per_room: usize,
     /// A room nothing has passed through for this long is closed.
     pub idle: Duration,
+    /// A room whose host's connection went waits this long for it to come
+    /// back.
+    pub host_grace: Duration,
     /// A new connection has this long to open or join a room.
     pub hello: Duration,
     /// Bytes a second a connection may send, and in a burst.
@@ -50,6 +57,7 @@ impl Default for Limits {
             rooms_per_ip: 4,
             players_per_room: 4,
             idle: Duration::from_secs(10 * 60),
+            host_grace: Duration::from_secs(60),
             hello: Duration::from_secs(10),
             // A shift's ticks are tiny; catching a late joiner up is the
             // biggest burst, a few hundred kilobytes.
@@ -81,8 +89,15 @@ struct Conn {
 }
 
 struct Room {
-    host: ConnId,
+    /// None while the host's connection is gone, since `orphaned`.
+    host: Option<ConnId>,
+    orphaned: Option<Instant>,
+    /// Where the host is: rooms count against an address.
+    ip: IpAddr,
+    /// The host's secret, to reopen the room.
+    key: String,
     peers: BTreeMap<u32, ConnId>,
+    /// Peer numbers aren't used twice in a room, even across a reopen.
     next_peer: u32,
     last: Instant,
 }
@@ -124,24 +139,39 @@ impl State {
     }
 
     fn rooms_from(&self, ip: IpAddr) -> usize {
-        self.rooms.values().filter(|r| self.conns.get(&r.host).is_some_and(|c| c.ip == ip)).count()
+        self.rooms.values().filter(|r| r.ip == ip).count()
+    }
+
+    /// `len` random letters.
+    fn letters(&mut self, len: usize) -> String {
+        let mut out = String::with_capacity(len);
+        for _ in 0..len {
+            // xorshift64*
+            self.random ^= self.random >> 12;
+            self.random ^= self.random << 25;
+            self.random ^= self.random >> 27;
+            let n = self.random.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 32;
+            out.push(CODE_ALPHABET[(n % CODE_ALPHABET.len() as u64) as usize] as char);
+        }
+        out
     }
 
     /// A code no open room has.
     fn new_code(&mut self) -> String {
         loop {
-            let mut code = String::with_capacity(CODE_LEN);
-            for _ in 0..CODE_LEN {
-                // xorshift64*
-                self.random ^= self.random >> 12;
-                self.random ^= self.random << 25;
-                self.random ^= self.random >> 27;
-                let n = self.random.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 32;
-                code.push(CODE_ALPHABET[(n % CODE_ALPHABET.len() as u64) as usize] as char);
-            }
+            let code = self.letters(CODE_LEN);
             if !self.rooms.contains_key(&code) {
                 return code;
             }
+        }
+    }
+
+    /// Close a room: tell everyone in it why, and hang up.
+    fn close_room(&mut self, code: &str, reason: &str) {
+        let Some(room) = self.rooms.remove(code) else { return };
+        for id in room.host.into_iter().chain(room.peers.into_values()) {
+            self.send(id, &RelayMsg::Error { reason: reason.into() });
+            self.close(id);
         }
     }
 }
@@ -208,17 +238,26 @@ pub fn spawn(addr: impl ToSocketAddrs, limits: Limits) -> io::Result<SocketAddr>
     Ok(local)
 }
 
-/// Close rooms that have gone idle.
+/// Close rooms that have gone idle, and rooms whose host never came back.
 fn janitor(relay: &Relay) {
-    let every = (relay.limits.idle / 4).clamp(Duration::from_millis(20), Duration::from_secs(15));
+    let limits = &relay.limits;
+    let every = (limits.idle.min(limits.host_grace) / 4).clamp(Duration::from_millis(20), Duration::from_secs(15));
     loop {
         thread::sleep(every);
-        let state = relay.lock();
-        for room in state.rooms.values() {
-            if room.last.elapsed() >= relay.limits.idle {
-                state.send(room.host, &RelayMsg::Error { reason: "the room was idle too long".into() });
-                state.close(room.host);
-            }
+        let mut state = relay.lock();
+        let idle: Vec<String> =
+            state.rooms.iter().filter(|(_, r)| r.last.elapsed() >= limits.idle).map(|(c, _)| c.clone()).collect();
+        for code in idle {
+            state.close_room(&code, "the room was idle too long");
+        }
+        let orphans: Vec<String> = state
+            .rooms
+            .iter()
+            .filter(|(_, r)| r.orphaned.is_some_and(|since| since.elapsed() >= limits.host_grace))
+            .map(|(c, _)| c.clone())
+            .collect();
+        for code in orphans {
+            state.rooms.remove(&code);
         }
     }
 }
@@ -374,9 +413,39 @@ fn act(relay: &Relay, id: ConnId, msg: RelayMsg) -> Result<(), String> {
                 return Err("too many rooms open from your address".into());
             }
             let code = state.new_code();
-            state.rooms.insert(code.clone(), Room { host: id, peers: BTreeMap::new(), next_peer: 1, last: Instant::now() });
+            let key = state.letters(KEY_LEN);
+            let room = Room {
+                host: Some(id),
+                orphaned: None,
+                ip,
+                key: key.clone(),
+                peers: BTreeMap::new(),
+                next_peer: 1,
+                last: Instant::now(),
+            };
+            state.rooms.insert(code.clone(), room);
             state.conns.get_mut(&id).expect("checked").role = Role::Host(code.clone());
-            state.send(id, &RelayMsg::Opened { code });
+            state.send(id, &RelayMsg::Opened { code, key });
+        }
+        (Role::New, RelayMsg::Reopen { version, code, key }) => {
+            if version != VERSION {
+                return Err("the relay is a different version".into());
+            }
+            let Some(room) = state.rooms.get_mut(&code) else {
+                return Err(format!("there's no room {code}"));
+            };
+            if room.key != key {
+                return Err("that isn't this room's key".into());
+            }
+            if room.host.is_some() {
+                return Err("the room has a host".into());
+            }
+            room.host = Some(id);
+            room.orphaned = None;
+            room.ip = ip;
+            room.last = Instant::now();
+            state.conns.get_mut(&id).expect("checked").role = Role::Host(code.clone());
+            state.send(id, &RelayMsg::Opened { code, key });
         }
         (Role::New, RelayMsg::Join { version, code }) => {
             if version != VERSION {
@@ -385,6 +454,10 @@ fn act(relay: &Relay, id: ConnId, msg: RelayMsg) -> Result<(), String> {
             let Some(room) = state.rooms.get_mut(&code) else {
                 return Err(format!("there's no room {code}"));
             };
+            // Their game tries again, and gets in once the host is back.
+            let Some(host) = room.host else {
+                return Err("the host is reconnecting".into());
+            };
             if room.peers.len() + 1 >= limits.players_per_room {
                 return Err("the room is full".into());
             }
@@ -392,7 +465,6 @@ fn act(relay: &Relay, id: ConnId, msg: RelayMsg) -> Result<(), String> {
             room.next_peer += 1;
             room.peers.insert(peer, id);
             room.last = Instant::now();
-            let host = room.host;
             state.conns.get_mut(&id).expect("checked").role = Role::Peer { code, peer };
             state.send(id, &RelayMsg::Joined);
             state.send(host, &RelayMsg::PeerJoined { peer });
@@ -419,8 +491,9 @@ fn act(relay: &Relay, id: ConnId, msg: RelayMsg) -> Result<(), String> {
             }
             let room = state.rooms.get_mut(&code).ok_or("the room has closed")?;
             room.last = Instant::now();
-            let host = room.host;
-            state.send(host, &RelayMsg::PeerData { peer, payload });
+            if let Some(host) = room.host {
+                state.send(host, &RelayMsg::PeerData { peer, payload });
+            }
         }
         _ => return Err("that message isn't allowed here".into()),
     }
@@ -434,10 +507,21 @@ fn cleanup(relay: &Relay, id: ConnId) {
     match conn.role.clone() {
         Role::New => {}
         Role::Host(code) => {
-            if let Some(room) = state.rooms.remove(&code) {
-                for &peer in room.peers.values() {
-                    state.send(peer, &RelayMsg::Error { reason: "the host has left".into() });
-                    state.close(peer);
+            // The room waits for its host; the players' games call back.
+            let grace = !relay.limits.host_grace.is_zero();
+            if let Some(room) = state.rooms.get_mut(&code)
+                && room.host == Some(id)
+            {
+                if grace {
+                    room.host = None;
+                    room.orphaned = Some(Instant::now());
+                    let peers: Vec<ConnId> = std::mem::take(&mut room.peers).into_values().collect();
+                    for peer in peers {
+                        state.send(peer, &RelayMsg::Error { reason: "the host's connection went".into() });
+                        state.close(peer);
+                    }
+                } else {
+                    state.close_room(&code, "the host has left");
                 }
             }
         }
@@ -446,8 +530,9 @@ fn cleanup(relay: &Relay, id: ConnId) {
                 && room.peers.get(&peer) == Some(&id)
             {
                 room.peers.remove(&peer);
-                let host = room.host;
-                state.send(host, &RelayMsg::PeerLeft { peer });
+                if let Some(host) = room.host {
+                    state.send(host, &RelayMsg::PeerLeft { peer });
+                }
             }
         }
     }

@@ -946,7 +946,10 @@ If a player's connection drops, their game keeps trying to get back to the
 same room or address for a minute, and carries on where the shift has got to.
 Their positions wait 30 seconds for them, then go to the automation until
 they're back. A player whose game closed can join again with the same name to
-get their seat back. If the host leaves, the shift ends for everyone. If a
+get their seat back. If the host's connection to the relay drops, the shift
+goes on on the host's machine while it reopens the room, and the players'
+games call back and catch up. If the host leaves, the shift ends for
+everyone. If a
 machine's sim ever drifts from the host's, it writes a `desync-<tick>.txt`
 report next to the settings file, and the host sends it the shift again.
 

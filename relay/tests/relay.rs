@@ -38,12 +38,25 @@ impl Client {
     }
 
     fn open(addr: SocketAddr) -> (Client, String) {
+        let (host, code, _) = Client::open_keyed(addr);
+        (host, code)
+    }
+
+    /// A room, and its key.
+    fn open_keyed(addr: SocketAddr) -> (Client, String, String) {
         let mut host = Client::connect(addr);
         host.send(RelayMsg::Open { version: VERSION });
         match host.recv() {
-            RelayMsg::Opened { code } => (host, code),
+            RelayMsg::Opened { code, key } => (host, code, key),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// Try for a room, and get the relay's answer.
+    fn ask(addr: SocketAddr, msg: RelayMsg) -> RelayMsg {
+        let mut client = Client::connect(addr);
+        client.send(msg);
+        client.recv()
     }
 
     fn join(addr: SocketAddr, code: &str) -> Client {
@@ -78,8 +91,48 @@ fn frames_pass_between_host_and_players() {
 }
 
 #[test]
-fn the_host_leaving_closes_the_room() {
+fn a_room_waits_for_its_host_to_come_back() {
     let addr = relay(Limits::default());
+    let (host, code, key) = Client::open_keyed(addr);
+    assert_eq!(key.len(), atc_relay::wire::KEY_LEN);
+    let mut a = Client::join(addr, &code);
+    drop(host);
+    // The players are hung up on; their games call back.
+    assert_eq!(a.recv(), RelayMsg::Error { reason: "the host's connection went".into() });
+    assert!(a.closed());
+    let join = || RelayMsg::Join { version: VERSION, code: code.clone() };
+    assert!(matches!(Client::ask(addr, join()), RelayMsg::Error { reason } if reason.contains("reconnecting")));
+    // Only the key reopens it.
+    let wrong = RelayMsg::Reopen { version: VERSION, code: code.clone(), key: "ACDEFHJKMNPRTUVW".into() };
+    assert!(matches!(Client::ask(addr, wrong), RelayMsg::Error { reason } if reason.contains("key")));
+    let mut host = Client::connect(addr);
+    host.send(RelayMsg::Reopen { version: VERSION, code: code.clone(), key: key.clone() });
+    assert_eq!(host.recv(), RelayMsg::Opened { code: code.clone(), key: key.clone() });
+    // A second host can't take it.
+    let again = RelayMsg::Reopen { version: VERSION, code: code.clone(), key };
+    assert!(matches!(Client::ask(addr, again), RelayMsg::Error { reason } if reason.contains("has a host")));
+    // The player gets back in, under a new number.
+    let mut a = Client::join(addr, &code);
+    assert_eq!(host.recv(), RelayMsg::PeerJoined { peer: 2 });
+    a.send(RelayMsg::Data { payload: b"back".to_vec() });
+    assert_eq!(host.recv(), RelayMsg::PeerData { peer: 2, payload: b"back".to_vec() });
+}
+
+#[test]
+fn a_room_whose_host_never_comes_back_closes() {
+    let addr = relay(Limits { host_grace: Duration::from_millis(200), ..Limits::default() });
+    let (host, code, key) = Client::open_keyed(addr);
+    drop(host);
+    std::thread::sleep(Duration::from_millis(700));
+    let join = RelayMsg::Join { version: VERSION, code: code.clone() };
+    assert!(matches!(Client::ask(addr, join), RelayMsg::Error { reason } if reason.contains("no room")));
+    let reopen = RelayMsg::Reopen { version: VERSION, code, key };
+    assert!(matches!(Client::ask(addr, reopen), RelayMsg::Error { reason } if reason.contains("no room")));
+}
+
+#[test]
+fn with_no_grace_the_host_leaving_closes_the_room() {
+    let addr = relay(Limits { host_grace: Duration::ZERO, ..Limits::default() });
     let (host, code) = Client::open(addr);
     let mut a = Client::join(addr, &code);
     drop(host);
@@ -157,7 +210,10 @@ fn an_idle_room_is_closed() {
     assert!(matches!(host.recv(), RelayMsg::PeerJoined { .. }));
     assert_eq!(host.recv(), RelayMsg::Error { reason: "the room was idle too long".into() });
     assert!(host.closed());
-    assert_eq!(a.recv(), RelayMsg::Error { reason: "the host has left".into() });
+    assert_eq!(a.recv(), RelayMsg::Error { reason: "the room was idle too long".into() });
+    // Gone for good, not waiting for its host.
+    let join = RelayMsg::Join { version: VERSION, code };
+    assert!(matches!(Client::ask(addr, join), RelayMsg::Error { reason } if reason.contains("no room")));
 }
 
 #[test]

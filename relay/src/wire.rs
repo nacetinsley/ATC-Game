@@ -5,7 +5,7 @@
 use std::io::{self, Read};
 
 /// Bumped when a relay message changes shape.
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 /// The largest payload: one game message.
 pub const MAX_PAYLOAD: usize = 64 * 1024;
 /// The largest frame: a payload and its header.
@@ -15,6 +15,8 @@ pub const CODE_LEN: usize = 6;
 /// ...in letters that can't be taken for each other or for digits: no B
 /// (8), G (6), I or L (1), O or Q (0), S (5), Z (2).
 pub const CODE_ALPHABET: &[u8] = b"ACDEFHJKMNPRTUVWXY";
+/// A room's key is this long, in the same letters: only its host has it.
+pub const KEY_LEN: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelayMsg {
@@ -29,10 +31,13 @@ pub enum RelayMsg {
     Data { payload: Vec<u8> },
     /// The host hangs up on a peer.
     Kick { peer: u32 },
+    /// A host whose connection went, back for its room, with the room's key.
+    Reopen { version: u8, code: String, key: String },
 
     // The relay to a client.
-    /// The room is open: tell the others this code.
-    Opened { code: String },
+    /// The room is open: tell the others this code. Keep the key, to
+    /// reopen the room if the connection goes.
+    Opened { code: String, key: String },
     /// In the room.
     Joined,
     /// To the host: someone came in.
@@ -68,9 +73,15 @@ impl RelayMsg {
                 body.push(5);
                 body.extend(peer.to_le_bytes());
             }
-            RelayMsg::Opened { code } => {
-                body.push(10);
+            RelayMsg::Reopen { version, code, key } => {
+                body.extend([6, *version, code.len() as u8]);
                 body.extend(code.as_bytes());
+                body.extend(key.as_bytes());
+            }
+            RelayMsg::Opened { code, key } => {
+                body.extend([10, code.len() as u8]);
+                body.extend(code.as_bytes());
+                body.extend(key.as_bytes());
             }
             RelayMsg::Joined => body.push(11),
             RelayMsg::PeerJoined { peer } => {
@@ -105,6 +116,15 @@ impl RelayMsg {
         };
         let text = |rest: &[u8]| String::from_utf8(rest.to_vec()).map_err(|_| "text that isn't UTF-8".to_string());
         let byte = |rest: &[u8]| rest.first().copied().ok_or_else(|| "a message too short".to_string());
+        // A code with its length first, then a key.
+        let code_key = |rest: &[u8]| -> Result<(String, String), String> {
+            let (&len, rest) = rest.split_first().ok_or("a message too short")?;
+            if rest.len() < len as usize {
+                return Err("a message too short".into());
+            }
+            let (code, key) = rest.split_at(len as usize);
+            Ok((text(code)?, text(key)?))
+        };
         Ok(match kind {
             1 => RelayMsg::Open { version: byte(rest)? },
             2 => RelayMsg::Join { version: byte(rest)?, code: text(&rest[1..])? },
@@ -114,7 +134,15 @@ impl RelayMsg {
             }
             4 => RelayMsg::Data { payload: rest.to_vec() },
             5 => RelayMsg::Kick { peer: u32_then(rest)?.0 },
-            10 => RelayMsg::Opened { code: text(rest)? },
+            6 => {
+                let version = byte(rest)?;
+                let (code, key) = code_key(&rest[1..])?;
+                RelayMsg::Reopen { version, code, key }
+            }
+            10 => {
+                let (code, key) = code_key(rest)?;
+                RelayMsg::Opened { code, key }
+            }
             11 => RelayMsg::Joined,
             12 => RelayMsg::PeerJoined { peer: u32_then(rest)?.0 },
             13 => {
@@ -197,7 +225,8 @@ mod tests {
             RelayMsg::Send { to: 3, payload: vec![1, 2, 3] },
             RelayMsg::Data { payload: vec![] },
             RelayMsg::Kick { peer: 9 },
-            RelayMsg::Opened { code: "XYWVUT".into() },
+            RelayMsg::Reopen { version: VERSION, code: "ACDEFH".into(), key: "KEYKEYKEYKEYKEYK".into() },
+            RelayMsg::Opened { code: "XYWVUT".into(), key: "ACDEFHJKMNPRTUVW".into() },
             RelayMsg::Joined,
             RelayMsg::PeerJoined { peer: 1 },
             RelayMsg::PeerData { peer: 2, payload: vec![9; 100] },
@@ -229,6 +258,7 @@ mod tests {
         assert!(RelayMsg::decode(&[]).is_err());
         assert!(RelayMsg::decode(&[99]).is_err());
         assert!(RelayMsg::decode(&[3, 1]).is_err());
+        assert!(RelayMsg::decode(&[10, 6, b'A']).is_err());
         let mut reader = FrameReader::default();
         reader.push(&(MAX_FRAME as u32 + 1).to_le_bytes());
         assert!(reader.next_frame().is_err());

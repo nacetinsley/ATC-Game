@@ -12,6 +12,16 @@ use std::time::Duration;
 /// The relay's port, when an address doesn't give one.
 pub const DEFAULT_RELAY_PORT: u16 = 7341;
 
+/// The relay players use when they haven't set one under Co-op, Relay.
+/// Empty: there's no public relay yet, so each player sets one.
+pub const DEFAULT_RELAY: &str = "";
+
+/// The relay to use: the player's own, or else the default. Empty if
+/// neither is set.
+pub fn relay_or_default(set: &str) -> &str {
+    if set.trim().is_empty() { DEFAULT_RELAY } else { set.trim() }
+}
+
 /// "relay.example.com" with the default port added; "host:port" as it is.
 pub fn with_port(addr: &str) -> String {
     let addr = addr.trim();
@@ -42,6 +52,8 @@ fn handshake(addr: &str, hello: RelayMsg, timeout: Duration) -> Result<(RawConn,
 pub struct RelayHost {
     conn: Option<RawConn>,
     code: String,
+    /// The room's secret, to reopen it.
+    key: String,
     peers: BTreeSet<PeerId>,
     failure: Option<String>,
 }
@@ -49,9 +61,20 @@ pub struct RelayHost {
 impl RelayHost {
     /// Open a room on the relay at `addr`. Blocks for up to `timeout`.
     pub fn open(addr: &str, timeout: Duration) -> Result<RelayHost, String> {
-        match handshake(addr, RelayMsg::Open { version: VERSION }, timeout)? {
-            (conn, RelayMsg::Opened { code }) => {
-                Ok(RelayHost { conn: Some(conn), code, peers: BTreeSet::new(), failure: None })
+        RelayHost::opened(handshake(addr, RelayMsg::Open { version: VERSION }, timeout)?)
+    }
+
+    /// Back to the room after the connection went, with its key. The relay
+    /// keeps it a while (and its players call back).
+    pub fn reopen(addr: &str, code: &str, key: &str, timeout: Duration) -> Result<RelayHost, String> {
+        let hello = RelayMsg::Reopen { version: VERSION, code: code.into(), key: key.into() };
+        RelayHost::opened(handshake(addr, hello, timeout)?)
+    }
+
+    fn opened(answer: (RawConn, RelayMsg)) -> Result<RelayHost, String> {
+        match answer {
+            (conn, RelayMsg::Opened { code, key }) => {
+                Ok(RelayHost { conn: Some(conn), code, key, peers: BTreeSet::new(), failure: None })
             }
             (_, other) => Err(format!("the relay answered {other:?}")),
         }
@@ -60,6 +83,11 @@ impl RelayHost {
     /// The room's code, for the others to join with.
     pub fn code(&self) -> &str {
         &self.code
+    }
+
+    /// The room's key, to reopen it. Only the host has it.
+    pub fn key(&self) -> &str {
+        &self.key
     }
 
     fn fail(&mut self, why: String, events: &mut Vec<HostEvent>) {

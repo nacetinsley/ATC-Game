@@ -4,7 +4,9 @@ The co-op relay. It lets players reach each other over the internet without
 anyone opening ports on their router. The host opens a room and gets a
 six-letter code. Players join with the code, and the relay passes the
 game's messages between them. It knows nothing about the game itself: it
-only forwards frames, so a new game version never needs a new relay.
+only forwards frames, so a new game version doesn't need a new relay unless
+the relay's own protocol changes (`VERSION` in `src/wire.rs`; a relay and a
+game that differ say so).
 
 It's meant to run on a Linux server. It uses only the Rust standard
 library, with no system libraries beyond libc, and very little memory and
@@ -25,7 +27,14 @@ These are built in, and set in `Limits` in `src/server.rs`:
 | Traffic from one connection | 256 KB/s, with bursts up to 4 MB |
 | Messages from one connection | 200/s, with bursts up to 1000 |
 | A room with no traffic closes after | 10 minutes |
+| A room whose host's connection went waits | 60 seconds |
 | A connection must say hello within | 10 seconds |
+
+If a host's connection goes, the relay hangs up on its players but keeps
+the room for a minute. Opening a room gives the host a secret key as well
+as the code, and only that key reopens it. The players' games keep calling
+back meanwhile (they're told "the host is reconnecting"), and get in once
+it's open again. A room nobody reopens is gone after the minute.
 
 A connection that breaks a limit is told why and closed. Room codes use
 only letters that can't be mistaken for each other (no O and 0, no I and

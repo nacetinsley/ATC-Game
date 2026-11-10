@@ -23,7 +23,7 @@ use super::gfx::{clear_background, draw_rectangle, draw_text, measure_text, mous
 use super::{BACKGROUND, DIM, TEXT, TITLE};
 use crate::net::link::{ClientLink, HostLink};
 use crate::net::protocol::Positions;
-use crate::net::relay::{RelayClient, RelayHost};
+use crate::net::relay::{DEFAULT_RELAY, RelayClient, RelayHost, relay_or_default};
 use crate::net::session::{Client, HOST, Host, Joining, Notice, POSITIONS, SeatStatus, ShiftSetup};
 use crate::net::tcp::{TcpClient, TcpHost};
 use crate::sim::World;
@@ -51,10 +51,13 @@ const RETRY_S: f32 = 2.0;
 pub type AnyHost = Host<Box<dyn HostLink + Send>>;
 pub type AnyClient = Client<Box<dyn ClientLink + Send>>;
 pub type AnyLink = Box<dyn ClientLink + Send>;
+pub type AnyHostLink = Box<dyn HostLink + Send>;
 
 /// How to reach the host again: the same room on the relay, or the same
 /// address. It blocks, so it runs off the main thread.
 pub type Dial = Arc<dyn Fn() -> Result<AnyLink, String> + Send + Sync>;
+/// How a host gets its room on the relay back, with the room's key.
+pub type Reopen = Arc<dyn Fn() -> Result<AnyHostLink, String> + Send + Sync>;
 
 /// The command line's shortcuts.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -107,17 +110,77 @@ fn local_ip() -> Option<std::net::IpAddr> {
 
 /// A connection made, off the main thread.
 pub enum Connected {
-    /// A host's link, and what to tell the others to join with.
-    Host(Box<dyn HostLink + Send>, String),
+    /// A host's link, what to tell the others to join with, and how to
+    /// reopen the room if the link goes (through the relay only).
+    Host(AnyHostLink, String, Option<Reopen>),
     /// A player's link, and how to make another like it.
     Client(AnyLink, Dial),
 }
 
 /// The session behind a co-op shift.
 pub enum Session {
-    /// `label` says how the others reach it.
-    Host { host: AnyHost, label: String },
+    Host(Hosting),
     Client(Player),
+}
+
+/// Calling back after a connection went: every `RETRY_S`, off the main
+/// thread, for up to `RECONNECT_S`.
+struct Redial<T> {
+    elapsed: f32,
+    next: f32,
+    /// Why it went, or why the last try failed.
+    last: String,
+    answer: Option<Receiver<Result<T, String>>>,
+}
+
+enum Step<T> {
+    Waiting,
+    Connected(T),
+    GiveUp(String),
+}
+
+impl<T: Send + 'static> Redial<T> {
+    fn new(why: String) -> Redial<T> {
+        Redial { elapsed: 0.0, next: 0.0, last: why, answer: None }
+    }
+
+    fn left(&self) -> f32 {
+        (RECONNECT_S - self.elapsed).max(0.0)
+    }
+
+    fn step(&mut self, dt: f32, dial: &Arc<dyn Fn() -> Result<T, String> + Send + Sync>) -> Step<T> {
+        self.elapsed += dt;
+        if let Some(answer) = &self.answer {
+            match answer.try_recv() {
+                Err(TryRecvError::Empty) => return Step::Waiting,
+                Ok(Ok(link)) => {
+                    self.answer = None;
+                    return Step::Connected(link);
+                }
+                Ok(Err(why)) => self.last = why,
+                Err(TryRecvError::Disconnected) => self.last = "the connection attempt failed".into(),
+            }
+            self.answer = None;
+            // The relay saying the room has gone, or isn't this host's, is
+            // final.
+            if self.last.contains("no room") || self.last.contains("key") {
+                return Step::GiveUp(self.last.clone());
+            }
+        }
+        if self.elapsed >= RECONNECT_S {
+            return Step::GiveUp(self.last.clone());
+        }
+        if self.elapsed >= self.next {
+            self.next = self.elapsed + RETRY_S;
+            let (tx, answer) = channel();
+            let dial = dial.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(dial());
+            });
+            self.answer = Some(answer);
+        }
+        Step::Waiting
+    }
 }
 
 /// A player's side of the session: the client, and getting back to the
@@ -125,17 +188,7 @@ pub enum Session {
 pub struct Player {
     client: AnyClient,
     dial: Dial,
-    redial: Option<Redial>,
-}
-
-/// Trying to get back to the host.
-#[derive(Default)]
-struct Redial {
-    elapsed: f32,
-    next: f32,
-    /// Why the last try failed.
-    last: String,
-    answer: Option<Receiver<Result<AnyLink, String>>>,
+    redial: Option<Redial<AnyLink>>,
 }
 
 impl Player {
@@ -169,11 +222,16 @@ impl Player {
                 notices.push(Notice::HostGone { reason });
                 return notices;
             }
-            if let Some(why) = self.redial(dt, reason) {
-                self.client.leave();
-                self.redial = None;
-                notices.push(Notice::HostGone { reason: format!("couldn't get back ({why})") });
-                return notices;
+            let redial = self.redial.get_or_insert_with(|| Redial::new(reason));
+            match redial.step(dt, &self.dial) {
+                Step::Waiting => {}
+                Step::Connected(link) => self.client.reconnect(link),
+                Step::GiveUp(why) => {
+                    self.client.leave();
+                    self.redial = None;
+                    notices.push(Notice::HostGone { reason: format!("couldn't get back ({why})") });
+                    return notices;
+                }
             }
         }
         if self.client.rejoining() {
@@ -190,48 +248,11 @@ impl Player {
         notices
     }
 
-    /// Dial the host again now and then. Gives the reason when it's time to
-    /// stop trying.
-    fn redial(&mut self, dt: f32, reason: String) -> Option<String> {
-        let r = self.redial.get_or_insert_with(|| Redial { last: reason, ..Default::default() });
-        r.elapsed += dt;
-        if let Some(answer) = &r.answer {
-            match answer.try_recv() {
-                Err(TryRecvError::Empty) => return None,
-                Ok(Ok(link)) => {
-                    r.answer = None;
-                    self.client.reconnect(link);
-                    return None;
-                }
-                Ok(Err(why)) => r.last = why,
-                Err(TryRecvError::Disconnected) => r.last = "the connection attempt failed".into(),
-            }
-            r.answer = None;
-            // The relay saying the room has gone is final.
-            if r.last.contains("no room") {
-                return Some(r.last.clone());
-            }
-        }
-        if r.elapsed >= RECONNECT_S {
-            return Some(r.last.clone());
-        }
-        if r.elapsed >= r.next {
-            r.next = r.elapsed + RETRY_S;
-            let (tx, answer) = channel();
-            let dial = self.dial.clone();
-            std::thread::spawn(move || {
-                let _ = tx.send(dial());
-            });
-            r.answer = Some(answer);
-        }
-        None
-    }
-
     pub fn status(&self, mine: &str) -> String {
         if self.client.playing() {
             format!("CO-OP. You: {mine}")
         } else if let Some(r) = self.redial.as_ref().filter(|_| self.client.lost().is_some()) {
-            format!("CO-OP: connection lost, trying to get back ({:.0}s)", (RECONNECT_S - r.elapsed).max(0.0))
+            format!("CO-OP: connection lost, trying to get back ({:.0}s)", r.left())
         } else if self.client.rejoining() {
             "CO-OP: catching up with the host".into()
         } else {
@@ -240,11 +261,85 @@ impl Player {
     }
 }
 
+/// The host's side of the session: the host, and reopening the room on the
+/// relay when the link to it goes. The shift goes on meanwhile; the
+/// players' games call back once the room is open again.
+pub struct Hosting {
+    host: AnyHost,
+    /// How the others reach it.
+    label: String,
+    reopen: Option<Reopen>,
+    redial: Option<Redial<AnyHostLink>>,
+}
+
+impl Hosting {
+    pub fn new(host: AnyHost, label: String, reopen: Option<Reopen>) -> Hosting {
+        Hosting { host, label, reopen, redial: None }
+    }
+
+    pub fn host(&self) -> &AnyHost {
+        &self.host
+    }
+
+    pub fn command(&mut self, id: u32, action: Action) {
+        self.host.command(id, action);
+    }
+
+    pub fn update(&mut self, dt: f32, world: &mut World) -> Vec<Notice> {
+        let mut notices = self.host.update(dt, world);
+        if self.redial.is_none()
+            && self.reopen.is_some()
+            && let Some(Notice::LinkLost { reason }) = notices.iter().find(|n| matches!(n, Notice::LinkLost { .. }))
+        {
+            self.redial = Some(Redial::new(reason.clone()));
+        }
+        if let (Some(redial), Some(reopen)) = (&mut self.redial, &self.reopen) {
+            match redial.step(dt, reopen) {
+                Step::Waiting => {}
+                Step::Connected(link) => {
+                    self.host.relink(link);
+                    self.redial = None;
+                    notices.push(Notice::RoomBack);
+                }
+                Step::GiveUp(why) => {
+                    self.redial = None;
+                    self.reopen = None;
+                    let reason = format!("couldn't reopen the room ({why}), so the shift goes on without the others");
+                    notices.push(Notice::LinkLost { reason });
+                }
+            }
+        }
+        notices
+    }
+
+    fn status(&self, world: &World, mine: &str) -> String {
+        if let Some(redial) = &self.redial {
+            return format!("CO-OP host: lost the relay, reopening the room ({:.0}s). You: {mine}", redial.left());
+        }
+        let others: Vec<String> = self
+            .host
+            .seats()
+            .into_iter()
+            .filter(|s| s.status != SeatStatus::Host)
+            .map(|s| {
+                let who = s.name.unwrap_or_else(|| format!("seat {}", s.seat));
+                let positions = world.seated().of_seat(s.seat).label();
+                match s.status {
+                    SeatStatus::Playing => format!("{who} on {positions}"),
+                    SeatStatus::Waiting(left) => format!("{positions}: waiting {left:.0}s"),
+                    SeatStatus::Automated | SeatStatus::Host => format!("{positions} automated"),
+                }
+            })
+            .collect();
+        format!("CO-OP host ({}). You: {mine}. {}", self.label, others.join(", "))
+    }
+}
+
 impl Session {
     pub fn command(&mut self, id: u32, action: Action) {
         match self {
-            Session::Host { host, .. } => host.command(id, action),
-            Session::Client(player) => player.client.command(id, action),
+            Session::Host(hosting) => hosting.command(id, action),
+            Session::Client(player) => player.command(id, action),
         }
     }
 
@@ -253,7 +348,7 @@ impl Session {
     /// (`Notice::CaughtUp`).
     pub fn update(&mut self, dt: f32, world: &mut World, airports: &[Airport]) -> Vec<Notice> {
         match self {
-            Session::Host { host, .. } => host.update(dt, world),
+            Session::Host(hosting) => hosting.update(dt, world),
             Session::Client(player) => player.update(dt, world, airports),
         }
     }
@@ -261,14 +356,14 @@ impl Session {
     /// Leave: a host ends the session for everyone.
     pub fn leave(&mut self, why: &str) {
         match self {
-            Session::Host { host, .. } => host.close(why),
+            Session::Host(hosting) => hosting.host.close(why),
             Session::Client(player) => player.client.leave(),
         }
     }
 
     pub fn setup(&self) -> Option<&ShiftSetup> {
         match self {
-            Session::Host { host, .. } => host.setup(),
+            Session::Host(hosting) => hosting.host.setup(),
             Session::Client(player) => player.client.setup(),
         }
     }
@@ -276,7 +371,7 @@ impl Session {
     /// Each seat's player's name.
     pub fn names(&self) -> [Option<String>; MAX_SEATS] {
         let players = match self {
-            Session::Host { host, .. } => host.players(),
+            Session::Host(hosting) => hosting.host.players(),
             Session::Client(player) => player.client.players().to_vec(),
         };
         let mut names: [Option<String>; MAX_SEATS] = Default::default();
@@ -292,23 +387,7 @@ impl Session {
     pub fn status(&self, world: &World, seat: Seat) -> String {
         let mine = world.seated().of_seat(seat).label();
         match self {
-            Session::Host { host, label } => {
-                let others: Vec<String> = host
-                    .seats()
-                    .into_iter()
-                    .filter(|s| s.status != SeatStatus::Host)
-                    .map(|s| {
-                        let who = s.name.unwrap_or_else(|| format!("seat {}", s.seat));
-                        let positions = world.seated().of_seat(s.seat).label();
-                        match s.status {
-                            SeatStatus::Playing => format!("{who} on {positions}"),
-                            SeatStatus::Waiting(left) => format!("{positions}: waiting {left:.0}s"),
-                            SeatStatus::Automated | SeatStatus::Host => format!("{positions} automated"),
-                        }
-                    })
-                    .collect();
-                format!("CO-OP host ({label}). You: {mine}. {}", others.join(", "))
-            }
+            Session::Host(hosting) => hosting.status(world, mine),
             Session::Client(player) => player.status(mine),
         }
     }
@@ -330,6 +409,7 @@ pub fn notice_text(notice: &Notice, world: &World) -> String {
         Notice::HostGone { reason } => format!("The host's shift is gone: {reason}."),
         Notice::LinkLost { reason } => format!("Lost the connection: {reason}."),
         Notice::CaughtUp => "Back in step with the host.".into(),
+        Notice::RoomBack => "The room is open again: the others are on their way back.".into(),
     }
 }
 
@@ -388,7 +468,7 @@ pub enum Flow {
     Menu { choice: usize },
     Typing { field: Field, text: String },
     Connecting { what: String, answer: Receiver<Result<Connected, String>> },
-    HostLobby { host: Box<AnyHost>, label: String },
+    HostLobby { host: Box<AnyHost>, label: String, reopen: Option<Reopen> },
     PlayerLobby { client: Box<AnyClient>, dial: Dial },
     Failed(String),
 }
@@ -401,7 +481,7 @@ pub enum Outcome {
     /// The name or relay changed: save the settings.
     Save,
     /// The host started the shift: build it and play.
-    Start(Box<AnyHost>, String),
+    Start(Box<AnyHost>, String, Option<Reopen>),
     /// The host started the shift, and this player has caught up.
     Joined(Box<AnyClient>, Box<World>, Seat, Dial),
 }
@@ -429,14 +509,18 @@ impl Flow {
 
     /// Host through the relay at `relay`.
     pub fn host_relay(relay: &str) -> Flow {
-        if relay.trim().is_empty() {
+        let relay = relay_or_default(relay);
+        if relay.is_empty() {
             return Flow::Failed("Set the relay's address first, on the co-op menu.".into());
         }
         let relay = relay.to_string();
         Flow::connect(format!("Opening a room on the relay at {relay}"), move || {
             let host = RelayHost::open(&relay, CONNECT_TIMEOUT)?;
             let label = format!("room {}", host.code());
-            Ok(Connected::Host(Box::new(host), label))
+            let (code, key) = (host.code().to_string(), host.key().to_string());
+            let reopen: Reopen =
+                Arc::new(move || Ok(Box::new(RelayHost::reopen(&relay, &code, &key, CONNECT_TIMEOUT)?) as AnyHostLink));
+            Ok(Connected::Host(Box::new(host), label, Some(reopen)))
         })
     }
 
@@ -446,14 +530,15 @@ impl Flow {
             let host = TcpHost::listen(("0.0.0.0", LAN_PORT))
                 .map_err(|e| format!("couldn't listen on port {LAN_PORT}: {e}"))?;
             let at = local_ip().map(|ip| ip.to_string()).unwrap_or_else(|| "this computer's address".into());
-            Ok(Connected::Host(Box::new(host), at))
+            Ok(Connected::Host(Box::new(host), at, None))
         })
     }
 
     /// Join with a room code, through the relay, or an address on the network.
     pub fn join(what: &str, relay: &str) -> Flow {
         if let Some(code) = normalise_code(what) {
-            if relay.trim().is_empty() {
+            let relay = relay_or_default(relay);
+            if relay.is_empty() {
                 return Flow::Failed("Set the relay's address first, on the co-op menu.".into());
             }
             let relay = relay.to_string();
@@ -489,7 +574,11 @@ pub fn frame(flow: &mut Flow, ctx: Ctx) -> Outcome {
             if is_key_pressed(KeyCode::Down) {
                 *choice = (*choice + 1) % count;
             }
-            let relay_shown = if ctx.relay.is_empty() { "not set".to_string() } else { ctx.relay.clone() };
+            let relay_shown = match (ctx.relay.is_empty(), DEFAULT_RELAY.is_empty()) {
+                (false, _) => ctx.relay.clone(),
+                (true, false) => format!("{DEFAULT_RELAY} (the default)"),
+                (true, true) => "not set".to_string(),
+            };
             let labels: Vec<String> = MENU
                 .iter()
                 .map(|&item| match item {
@@ -532,7 +621,10 @@ pub fn frame(flow: &mut Flow, ctx: Ctx) -> Outcome {
             }
             let (title, hint) = match field {
                 Field::Name => ("YOUR NAME", "The name the other players see"),
-                Field::Relay => ("RELAY", "The relay server's address, such as relay.example.com or 203.0.113.5:7341"),
+                Field::Relay => (
+                    "RELAY",
+                    "The relay server's address, such as relay.example.com or 203.0.113.5:7341. Empty for the default.",
+                ),
                 Field::Join => ("JOIN A SHIFT", "A room code from the host, or the host's address on your network"),
             };
             draw_typing(title, text, hint);
@@ -573,8 +665,8 @@ pub fn frame(flow: &mut Flow, ctx: Ctx) -> Outcome {
                 Err(TryRecvError::Empty) => return Outcome::Stay,
                 Err(TryRecvError::Disconnected) => Flow::Failed("The connection attempt failed.".into()),
                 Ok(Err(why)) => Flow::Failed(capitalise(&why)),
-                Ok(Ok(Connected::Host(link, label))) => {
-                    Flow::HostLobby { host: Box::new(Host::lobby(link, ctx.name, &ctx.about)), label }
+                Ok(Ok(Connected::Host(link, label, reopen))) => {
+                    Flow::HostLobby { host: Box::new(Host::lobby(link, ctx.name, &ctx.about)), label, reopen }
                 }
                 Ok(Ok(Connected::Client(link, dial))) => {
                     Flow::PlayerLobby { client: Box::new(Client::new(link, ctx.name)), dial }
@@ -582,7 +674,7 @@ pub fn frame(flow: &mut Flow, ctx: Ctx) -> Outcome {
             };
             Outcome::Stay
         }
-        Flow::HostLobby { host, label } => {
+        Flow::HostLobby { host, label, .. } => {
             for notice in host.lobby_update(dt) {
                 if let Notice::LinkLost { reason } = notice {
                     *flow = Flow::Failed(format!("The room closed: {reason}."));
@@ -623,10 +715,10 @@ pub fn frame(flow: &mut Flow, ctx: Ctx) -> Outcome {
                 return Outcome::Stay;
             }
             if enter && ready.is_ok() {
-                let Flow::HostLobby { host, label } = std::mem::replace(flow, Flow::Menu { choice: 0 }) else {
+                let Flow::HostLobby { host, label, reopen } = std::mem::replace(flow, Flow::Menu { choice: 0 }) else {
                     unreachable!()
                 };
-                return Outcome::Start(host, label);
+                return Outcome::Start(host, label, reopen);
             }
             Outcome::Stay
         }

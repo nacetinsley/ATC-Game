@@ -599,14 +599,14 @@ impl App {
                 self.screen = Screen::Menu;
             }
             coop::Outcome::Save => self.save_settings(),
-            coop::Outcome::Start(host, label) => self.start_hosted_shift(*host, label),
+            coop::Outcome::Start(host, label, reopen) => self.start_hosted_shift(*host, label, reopen),
             coop::Outcome::Joined(client, world, seat, dial) => self.begin_joined_shift(*client, *world, seat, dial),
         }
     }
 
     /// The host starts the lobby's shift: the start menu's choices, with
     /// the positions the lobby gave out.
-    fn start_hosted_shift(&mut self, mut host: coop::AnyHost, label: String) {
+    fn start_hosted_shift(&mut self, mut host: coop::AnyHost, label: String, reopen: Option<coop::Reopen>) {
         self.save_settings();
         self.end_session("a new shift");
         let choice = ShiftChoice {
@@ -626,7 +626,7 @@ impl App {
         self.begin_coop_shift(&airport, config.staffing, config.clock_start, HOST);
         self.code = code;
         self.recording = Some(Recording::new(&self.world));
-        self.session = Some(coop::Session::Host { host, label });
+        self.session = Some(coop::Session::Host(coop::Hosting::new(host, label, reopen)));
     }
 
     /// Joined: play the host's shift, from where it has got to.

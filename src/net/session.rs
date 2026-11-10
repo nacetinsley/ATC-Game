@@ -101,6 +101,8 @@ pub enum Notice {
     /// On a player's machine: back in step with the host, after a
     /// reconnect or a desync.
     CaughtUp,
+    /// On the host's machine: the room is open again after the link went.
+    RoomBack,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -203,6 +205,17 @@ impl<L: HostLink> Host<L> {
 
     pub fn link(&self) -> &L {
         &self.link
+    }
+
+    /// A new link, after the old one failed: the room reopened on the
+    /// relay. Everyone on the old one has dropped already; their seats wait
+    /// for them, and they come back with `Rejoin`.
+    pub fn relink(&mut self, link: L) {
+        for peer in self.peers.keys().copied().collect::<Vec<_>>() {
+            self.gone(peer, false);
+        }
+        self.link = link;
+        self.link_failed = false;
     }
 
     /// The shift, once it has started.
