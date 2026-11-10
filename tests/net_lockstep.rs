@@ -2,7 +2,7 @@
 //! lockstep, players join late, drop and come back, and a sim that goes out
 //! of step is caught.
 
-use atcgame::net::link::{ClientLink, LoopClient, LoopConnector, LoopHost};
+use atcgame::net::link::{ClientEvent, ClientLink, LoopClient, LoopConnector, LoopHost};
 use atcgame::net::protocol::{Msg, PROTOCOL};
 use atcgame::net::session::{CHECKSUM_TICKS, Client, GRACE_S, Host, Joining, Notice, SILENCE_S, ShiftSetup};
 use atcgame::net::tcp::{TcpClient, TcpHost};
@@ -13,6 +13,8 @@ use atcgame::sim::positions::{Position, Seat, Staffing};
 use atcgame::sim::replay::Action;
 use atcgame::sim::traffic::Busyness;
 use atcgame::sim::{World, WorldConfig};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 const MINUTE: u32 = 240;
@@ -61,8 +63,55 @@ fn says(world: &World, seat: Seat, step: u32) -> Vec<(u32, Action)> {
         .collect()
 }
 
+/// A loopback link that can be cut from the player's side. `half` leaves
+/// the host's end open, as when a connection dies without either end
+/// saying so: the player notices first, and the host still thinks they're
+/// there.
+struct Cuttable {
+    link: LoopClient,
+    cut: Arc<AtomicBool>,
+    half: Arc<AtomicBool>,
+    told: bool,
+}
+
+impl ClientLink for Cuttable {
+    fn poll(&mut self) -> Vec<ClientEvent> {
+        if self.cut.load(Ordering::Relaxed) {
+            if !self.half.load(Ordering::Relaxed) {
+                self.link.close();
+            }
+            if !self.told {
+                self.told = true;
+                return vec![ClientEvent::Closed("cut".into())];
+            }
+            return Vec::new();
+        }
+        self.link.poll()
+    }
+
+    fn send(&mut self, msg: &Msg) {
+        if !self.cut.load(Ordering::Relaxed) {
+            self.link.send(msg);
+        }
+    }
+
+    fn close(&mut self) {
+        if !self.half.load(Ordering::Relaxed) {
+            self.link.close();
+        }
+    }
+}
+
+fn cuttable(link: LoopClient) -> (Cuttable, Arc<AtomicBool>, Arc<AtomicBool>) {
+    let (cut, half) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+    (Cuttable { link, cut: cut.clone(), half: half.clone(), told: false }, cut, half)
+}
+
 struct Player {
-    client: Client<LoopClient>,
+    client: Client<Cuttable>,
+    /// Cut the connection; `half` first to leave the host's end open.
+    cut: Arc<AtomicBool>,
+    half: Arc<AtomicBool>,
     world: World,
     notices: Vec<Notice>,
 }
@@ -89,14 +138,14 @@ impl Table {
 
     /// A new player connects, and joins.
     fn join(&mut self, name: &str) -> usize {
-        let link = self.connector.connect();
+        let (link, cut, half) = cuttable(self.connector.connect());
         let mut client = Client::new(link, name);
         for _ in 0..20 {
             self.notices.extend(self.host.update(0.0, &mut self.world));
             match client.join(0.0, &airports()) {
                 Joining::Waiting => {}
                 Joining::Ready(world, _) => {
-                    self.players.push(Player { client, world: *world, notices: Vec::new() });
+                    self.players.push(Player { client, cut, half, world: *world, notices: Vec::new() });
                     return self.players.len() - 1;
                 }
                 Joining::Failed(why) => panic!("{name} couldn't join: {why}"),
@@ -124,6 +173,13 @@ impl Table {
         for p in &mut self.players {
             p.notices.extend(p.client.update(TICK, &mut p.world));
             p.world.drain_events();
+            // After a desync or a reconnect, the shift comes again.
+            if p.client.rejoining()
+                && let Joining::Ready(world, _) = p.client.join(TICK, &airports())
+            {
+                p.world = *world;
+                p.notices.push(Notice::CaughtUp);
+            }
         }
         self.step += 1;
     }
@@ -203,7 +259,8 @@ fn ticks_that_come_with_the_catch_up_are_kept() {
     // the next ticks reach them in one go.
     let mut table = Table::new(three_way());
     table.run(MINUTE);
-    let mut client = Client::new(table.connector.connect(), "local");
+    let (link, cut, half) = cuttable(table.connector.connect());
+    let mut client = Client::new(link, "local");
     let mut joined = None;
     for _ in 0..20 {
         table.step(true);
@@ -215,7 +272,7 @@ fn ticks_that_come_with_the_catch_up_are_kept() {
     }
     let world = joined.expect("joined");
     assert!(world.ticks() < table.world.ticks(), "ticks were waiting behind the catch-up");
-    table.players.push(Player { client, world, notices: Vec::new() });
+    table.players.push(Player { client, cut, half, world, notices: Vec::new() });
     table.run(MINUTE);
     let p = &table.players[0];
     assert!(p.client.playing(), "{:?}", p.notices);
@@ -290,7 +347,7 @@ fn a_silent_player_is_dropped() {
 }
 
 #[test]
-fn a_sim_out_of_step_is_caught() {
+fn a_sim_out_of_step_is_caught_and_caught_up() {
     let mut table = Table::new(three_way());
     table.join("local");
     table.run(2 * MINUTE);
@@ -298,9 +355,90 @@ fn a_sim_out_of_step_is_caught() {
     let ac = table.players[0].world.aircraft.first_mut().expect("traffic");
     ac.altitude += 100.0;
     table.run(CHECKSUM_TICKS + 1);
-    let notices = &table.players[0].notices;
+    let notices = std::mem::take(&mut table.players[0].notices);
     assert!(notices.iter().any(|n| matches!(n, Notice::Desync { .. })), "{notices:?}");
-    assert!(!table.players[0].client.playing());
+    // The host sends the shift again, and the player carries on.
+    assert!(notices.contains(&Notice::CaughtUp) || table.players[0].client.rejoining(), "{notices:?}");
+    table.run(4);
+    assert!(table.players[0].client.playing());
+    table.run(MINUTE);
+    table.assert_in_step();
+    assert!(table.world.staffing().seat_works(1, Position::Local), "the player kept Local");
+}
+
+/// The player's connection goes, and they come back on a new one.
+fn reconnect(table: &mut Table, i: usize) {
+    assert!(table.players[i].client.lost().is_some(), "{:?}", table.players[i].notices);
+    let (link, cut, half) = cuttable(table.connector.connect());
+    let p = &mut table.players[i];
+    p.client.reconnect(link);
+    (p.cut, p.half) = (cut, half);
+    for _ in 0..10 {
+        table.step(true);
+        if table.players[i].client.playing() {
+            return;
+        }
+    }
+    panic!("never got back: {:?}", table.players[i].notices);
+}
+
+#[test]
+fn a_player_whose_connection_dies_gets_back_in() {
+    let mut table = Table::new(three_way());
+    table.join("local");
+    table.join("ground");
+    table.run(MINUTE);
+    // Ground's connection dies, and only Ground notices.
+    let ground = &table.players[1];
+    ground.half.store(true, Ordering::Relaxed);
+    ground.cut.store(true, Ordering::Relaxed);
+    table.run(8);
+    assert!(table.players[1].notices.iter().any(|n| matches!(n, Notice::LinkLost { .. })));
+    assert!(!table.notices.iter().any(|n| matches!(n, Notice::Dropped { .. })), "the host hasn't noticed");
+    // Their token gets them their seat, though the host still has the old
+    // connection in it.
+    reconnect(&mut table, 1);
+    assert_eq!(table.players[1].client.seat(), 2);
+    assert!(table.players[1].notices.contains(&Notice::CaughtUp));
+    table.players[1].notices.clear();
+    table.run(MINUTE);
+    table.assert_in_step();
+    assert!(table.world.staffing() == three_way(), "Ground never went to the automation");
+    assert_eq!(table.host.players().len(), 3);
+}
+
+#[test]
+fn a_player_back_after_the_grace_takes_their_seat_back() {
+    let mut table = Table::new(three_way());
+    table.join("local");
+    table.run(MINUTE);
+    table.players[0].cut.store(true, Ordering::Relaxed);
+    table.run((GRACE_S / TICK) as u32 + 8);
+    assert!(table.notices.contains(&Notice::Vacated { seat: 1 }), "{:?}", table.notices);
+    assert!(!table.world.staffing().local);
+    reconnect(&mut table, 0);
+    table.players[0].notices.clear();
+    table.run(4);
+    assert!(table.world.staffing().seat_works(1, Position::Local), "Local taken back");
+    table.run(MINUTE);
+    table.assert_in_step();
+}
+
+#[test]
+fn someone_elses_seat_is_refused() {
+    let mut table = Table::new(three_way());
+    table.join("local");
+    table.run(10);
+    let mut link = table.connector.connect();
+    link.send(&Msg::Rejoin { protocol: PROTOCOL, game: atcgame::net::protocol::game_version(), seat: 1, token: 12345 });
+    table.run(2);
+    let got = link.poll();
+    assert!(
+        got.iter().any(|e| matches!(e, ClientEvent::Message(Msg::Refused { reason }) if reason.contains("isn't yours"))),
+        "{got:?}"
+    );
+    assert!(table.players[0].client.playing(), "the real player keeps the seat");
+    table.assert_in_step();
 }
 
 #[test]

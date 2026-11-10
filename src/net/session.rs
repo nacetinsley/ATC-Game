@@ -95,8 +95,12 @@ pub enum Notice {
     Desync { tick: u32 },
     /// The host is gone, or ended the session.
     HostGone { reason: String },
-    /// The host's link failed: the relay went, and the players with it.
+    /// The host's link failed: the relay went, and the players with it. On
+    /// a player's machine: the connection to the host went.
     LinkLost { reason: String },
+    /// On a player's machine: back in step with the host, after a
+    /// reconnect or a desync.
+    CaughtUp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -146,6 +150,9 @@ pub struct Host<L: HostLink> {
     seats: [SeatState; MAX_SEATS],
     /// Who last sat in each seat, so a player who drops gets theirs back.
     names: [Option<String>; MAX_SEATS],
+    /// Each seat's secret: a player who reconnects shows it to get their
+    /// seat back, even before the host has noticed the old connection go.
+    tokens: [u64; MAX_SEATS],
     peers: BTreeMap<PeerId, Peer>,
     /// Commands for the next tick: seat, aircraft, action.
     pending: Vec<(Seat, u32, Action)>,
@@ -166,6 +173,8 @@ impl<L: HostLink> Host<L> {
             phase,
             seats,
             names,
+            // Not the sim's random numbers: these never reach the world.
+            tokens: std::array::from_fn(|_| fastrand::u64(..)),
             peers: BTreeMap::new(),
             pending: Vec::new(),
             clock: 0.0,
@@ -349,6 +358,16 @@ impl<L: HostLink> Host<L> {
                     Msg::Hello { protocol, game, name } if seat.is_none() => {
                         self.hello(peer, protocol, game, name, world)
                     }
+                    Msg::Rejoin { protocol, game, seat: wanted, token } if seat.is_none() => {
+                        self.rejoin(peer, protocol, game, wanted, token, world)
+                    }
+                    Msg::Resync => {
+                        if let (Some(seat), Some(world)) = (seat, world)
+                            && !self.in_lobby()
+                        {
+                            self.send_start(peer, seat, world);
+                        }
+                    }
                     Msg::Command { id, action } => {
                         let Some(seat) = seat else { return };
                         if self.in_lobby() {
@@ -437,6 +456,44 @@ impl<L: HostLink> Host<L> {
         self.notices.push(notice);
     }
 
+    /// A player back after their connection went, with their seat's token.
+    fn rejoin(&mut self, peer: PeerId, protocol: u32, game: String, seat: Seat, token: u64, world: Option<&World>) {
+        let index = seat as usize;
+        let name = self.names.get(index).cloned().flatten().unwrap_or_else(|| format!("seat {seat}"));
+        if protocol != PROTOCOL || game != game_version() {
+            let reason = format!("the host has version {}, and you have {game}", game_version());
+            return self.refuse(peer, name, &reason);
+        }
+        let Some(world) = world.filter(|_| !self.in_lobby()) else {
+            return self.refuse(peer, name, "the shift isn't on");
+        };
+        if world.ended.is_some() {
+            return self.refuse(peer, name, "the shift is over");
+        }
+        if seat == HOST || index >= MAX_SEATS || self.tokens[index] != token || self.seats[index] == SeatState::Unused {
+            return self.refuse(peer, name, "that seat isn't yours");
+        }
+        match self.seats[index] {
+            // The old connection hasn't been noticed going: it has now.
+            SeatState::Playing { peer: old } if old != peer => {
+                self.peers.remove(&old);
+                self.link.close(old);
+            }
+            SeatState::Vacated => self.pending.push((HOST, 0, Action::Take(seat))),
+            _ => {}
+        }
+        self.seats[index] = SeatState::Playing { peer };
+        if let Some(p) = self.peers.get_mut(&peer) {
+            p.name = name.clone();
+            p.seat = Some(seat);
+        }
+        self.send_start(peer, seat, world);
+        self.send_roster();
+        let notice = Notice::Joined { seat, name };
+        self.tell_others(seat, &notice);
+        self.notices.push(notice);
+    }
+
     /// The shift, and everything said so far, to a player taking a seat.
     fn send_start(&mut self, peer: PeerId, seat: Seat, world: &World) {
         let Phase::Playing { setup } = &self.phase else { return };
@@ -445,6 +502,7 @@ impl<L: HostLink> Host<L> {
             staffing: setup.staffing,
             clock_start: setup.clock_start,
             seat,
+            token: self.tokens[seat as usize],
         };
         self.link.send(peer, &start);
         for chunk in world.commands().chunks(CATCHUP_CHUNK) {
@@ -616,6 +674,8 @@ enum ClientState {
     /// Taking in the commands so far.
     Catching { setup: ShiftSetup, seat: Seat, commands: Vec<Command> },
     Playing,
+    /// The connection went in the shift: waiting for `reconnect`.
+    Lost { reason: String },
     Over,
 }
 
@@ -623,12 +683,14 @@ enum ClientState {
 pub struct Client<L: ClientLink> {
     link: L,
     state: ClientState,
-    /// Messages that came after the catch-up, before play began.
-    backlog: VecDeque<Msg>,
+    /// What came after the catch-up, before play began.
+    backlog: VecDeque<ClientEvent>,
     clock: f32,
     heard: f32,
     acked: f32,
     seat: Seat,
+    /// The seat's secret, from the host, to get it back after a drop.
+    token: u64,
     setup: Option<ShiftSetup>,
     lobby: Option<LobbyView>,
     players: Vec<(Seat, String)>,
@@ -646,6 +708,7 @@ impl<L: ClientLink> Client<L> {
             heard: 0.0,
             acked: 0.0,
             seat: 0,
+            token: 0,
             setup: None,
             lobby: None,
             players: Vec::new(),
@@ -678,10 +741,18 @@ impl<L: ClientLink> Client<L> {
     }
 
     /// Wait for the shift (in the lobby), then build it and catch up.
+    ///
+    /// After a reconnect or a desync, the same: the shift comes again, and
+    /// `Ready` has the world to carry on with.
     pub fn join(&mut self, dt: f32, airports: &[Airport]) -> Joining {
+        match self.state {
+            ClientState::Hello | ClientState::Catching { .. } => {}
+            ClientState::Over => return Joining::Failed("the session is over".into()),
+            ClientState::Playing | ClientState::Lost { .. } => return Joining::Waiting,
+        }
         self.clock += dt;
         if self.clock - self.heard > SILENCE_S {
-            return self.fail("the host didn't answer".into());
+            return self.fail_or_lose("the host didn't answer".into());
         }
         if self.clock - self.acked >= ACK_S {
             self.acked = self.clock;
@@ -692,14 +763,15 @@ impl<L: ClientLink> Client<L> {
             self.heard = self.clock;
             let msg = match event {
                 ClientEvent::Message(msg) => msg,
-                ClientEvent::Closed(why) => return self.fail(format!("the connection closed: {why}")),
+                ClientEvent::Closed(why) => return self.fail_or_lose(format!("the connection closed: {why}")),
             };
             match (&mut self.state, msg) {
                 (ClientState::Hello, Msg::Lobby { players, positions, about, you }) => {
                     self.players = players.clone();
                     self.lobby = Some(LobbyView { players, positions, about, seat: you });
                 }
-                (ClientState::Hello, Msg::Start { code, staffing, clock_start, seat }) => {
+                (ClientState::Hello, Msg::Start { code, staffing, clock_start, seat, token }) => {
+                    self.token = token;
                     let setup = ShiftSetup { code, staffing, clock_start };
                     self.state = ClientState::Catching { setup, seat, commands: Vec::new() };
                 }
@@ -725,15 +797,9 @@ impl<L: ClientLink> Client<L> {
                     self.setup = Some(setup);
                     // The rest of this poll is the shift going on, often its
                     // next ticks: keep it for `update`.
-                    for event in events {
-                        self.backlog.push_back(match event {
-                            ClientEvent::Message(msg) => msg,
-                            ClientEvent::Closed(why) => Msg::Bye { reason: format!("the connection closed: {why}") },
-                        });
-                    }
+                    self.backlog.extend(events);
                     return Joining::Ready(Box::new(world), seat);
                 }
-                (ClientState::Playing, msg) => self.backlog.push_back(msg),
                 _ => {}
             }
         }
@@ -744,6 +810,58 @@ impl<L: ClientLink> Client<L> {
         self.state = ClientState::Over;
         self.link.close();
         Joining::Failed(why)
+    }
+
+    /// Before the shift, a lost connection is the end. In it, the player can
+    /// reconnect.
+    fn fail_or_lose(&mut self, why: String) -> Joining {
+        if self.setup.is_none() {
+            return self.fail(why);
+        }
+        self.lose(why);
+        Joining::Waiting
+    }
+
+    fn lose(&mut self, reason: String) {
+        self.link.close();
+        self.backlog.clear();
+        self.state = ClientState::Lost { reason };
+    }
+
+    /// The connection went in the shift, and why: `reconnect` with a new
+    /// one.
+    pub fn lost(&self) -> Option<&str> {
+        match &self.state {
+            ClientState::Lost { reason } => Some(reason),
+            _ => None,
+        }
+    }
+
+    /// Waiting for the shift again, after a reconnect or a desync: `join`
+    /// until it's `Ready`.
+    pub fn rejoining(&self) -> bool {
+        self.setup.is_some() && matches!(self.state, ClientState::Hello | ClientState::Catching { .. })
+    }
+
+    /// Back to the host on a new connection, for this player's own seat.
+    pub fn reconnect(&mut self, mut link: L) {
+        if self.lost().is_none() {
+            return;
+        }
+        link.send(&Msg::Rejoin { protocol: PROTOCOL, game: game_version(), seat: self.seat, token: self.token });
+        self.link = link;
+        self.state = ClientState::Hello;
+        self.heard = self.clock;
+        self.acked = self.clock;
+    }
+
+    /// Out of step: ask the host for the shift again, on the same
+    /// connection.
+    fn resync(&mut self) {
+        self.link.send(&Msg::Resync);
+        self.backlog.clear();
+        self.state = ClientState::Hello;
+        self.heard = self.clock;
     }
 
     /// Something this player said: it comes back in a tick.
@@ -769,22 +887,27 @@ impl<L: ClientLink> Client<L> {
         }
         self.clock += dt;
         let mut notices = Vec::new();
-        let mut msgs: VecDeque<Msg> = std::mem::take(&mut self.backlog);
-        for event in self.link.poll() {
+        let mut events: VecDeque<ClientEvent> = std::mem::take(&mut self.backlog);
+        let fresh = self.link.poll();
+        if !fresh.is_empty() {
             self.heard = self.clock;
-            match event {
-                ClientEvent::Message(msg) => msgs.push_back(msg),
-                ClientEvent::Closed(why) => {
-                    msgs.push_back(Msg::Bye { reason: format!("the connection closed: {why}") });
-                }
-            }
         }
-        for msg in msgs {
+        events.extend(fresh);
+        for event in events {
+            let msg = match event {
+                ClientEvent::Message(msg) => msg,
+                ClientEvent::Closed(why) => {
+                    let reason = format!("the connection closed: {why}");
+                    notices.push(Notice::LinkLost { reason: reason.clone() });
+                    self.lose(reason);
+                    break;
+                }
+            };
             match msg {
                 Msg::Tick { n, commands } => {
                     if n != world.ticks() {
                         notices.push(Notice::Desync { tick: world.ticks() });
-                        self.end();
+                        self.resync();
                         break;
                     }
                     apply_tick(world, &commands);
@@ -792,7 +915,7 @@ impl<L: ClientLink> Client<L> {
                 Msg::Checksum { tick, sum } => {
                     if world.ticks() == tick && world.checksum() != sum {
                         notices.push(Notice::Desync { tick });
-                        self.end();
+                        self.resync();
                         break;
                     }
                 }
@@ -808,8 +931,9 @@ impl<L: ClientLink> Client<L> {
         }
         if matches!(self.state, ClientState::Playing) {
             if self.clock - self.heard > SILENCE_S {
-                notices.push(Notice::HostGone { reason: "the host stopped answering".into() });
-                self.end();
+                let reason = "the host stopped answering".to_string();
+                notices.push(Notice::LinkLost { reason: reason.clone() });
+                self.lose(reason);
             } else if self.clock - self.acked >= ACK_S {
                 self.acked = self.clock;
                 self.link.send(&Msg::Ack { tick: world.ticks() });

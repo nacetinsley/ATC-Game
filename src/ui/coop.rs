@@ -33,6 +33,7 @@ use crate::sim::replay::Action;
 use atc_relay::wire::normalise_code;
 use macroquad::prelude::{Color, KeyCode, MouseButton, Rect, Vec2, YELLOW, get_char_pressed, get_frame_time, get_time, is_key_pressed, is_mouse_button_pressed};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::time::Duration;
 
@@ -42,9 +43,18 @@ pub const LAN_PORT: u16 = 7340;
 const NOTICE_S: f64 = 8.0;
 /// How long to wait for the relay or a host to answer.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
+/// How long a player whose connection went keeps trying to get back, and
+/// how often.
+const RECONNECT_S: f32 = 60.0;
+const RETRY_S: f32 = 2.0;
 
 pub type AnyHost = Host<Box<dyn HostLink + Send>>;
 pub type AnyClient = Client<Box<dyn ClientLink + Send>>;
+pub type AnyLink = Box<dyn ClientLink + Send>;
+
+/// How to reach the host again: the same room on the relay, or the same
+/// address. It blocks, so it runs off the main thread.
+pub type Dial = Arc<dyn Fn() -> Result<AnyLink, String> + Send + Sync>;
 
 /// The command line's shortcuts.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -99,29 +109,152 @@ fn local_ip() -> Option<std::net::IpAddr> {
 pub enum Connected {
     /// A host's link, and what to tell the others to join with.
     Host(Box<dyn HostLink + Send>, String),
-    Client(Box<dyn ClientLink + Send>),
+    /// A player's link, and how to make another like it.
+    Client(AnyLink, Dial),
 }
 
 /// The session behind a co-op shift.
 pub enum Session {
     /// `label` says how the others reach it.
     Host { host: AnyHost, label: String },
-    Client(AnyClient),
+    Client(Player),
+}
+
+/// A player's side of the session: the client, and getting back to the
+/// host when the connection goes.
+pub struct Player {
+    client: AnyClient,
+    dial: Dial,
+    redial: Option<Redial>,
+}
+
+/// Trying to get back to the host.
+#[derive(Default)]
+struct Redial {
+    elapsed: f32,
+    next: f32,
+    /// Why the last try failed.
+    last: String,
+    answer: Option<Receiver<Result<AnyLink, String>>>,
+}
+
+impl Player {
+    pub fn new(client: AnyClient, dial: Dial) -> Player {
+        Player { client, dial, redial: None }
+    }
+
+    pub fn client(&self) -> &AnyClient {
+        &self.client
+    }
+
+    pub fn command(&mut self, id: u32, action: Action) {
+        self.client.command(id, action);
+    }
+
+    /// Follow the host; when the connection goes, keep trying to get back,
+    /// and after a reconnect or a desync, catch up. `world` is replaced by
+    /// the host's once it has come again.
+    pub fn update(&mut self, dt: f32, world: &mut World, airports: &[Airport]) -> Vec<Notice> {
+        let mut notices = Vec::new();
+        if self.client.playing() {
+            notices.extend(self.client.update(dt, world));
+            // The desync report is of this world: catch up from next frame.
+            if notices.iter().any(|n| matches!(n, Notice::Desync { .. })) {
+                return notices;
+            }
+        }
+        if let Some(reason) = self.client.lost().map(str::to_string) {
+            if world.ended.is_some() {
+                self.client.leave();
+                notices.push(Notice::HostGone { reason });
+                return notices;
+            }
+            if let Some(why) = self.redial(dt, reason) {
+                self.client.leave();
+                self.redial = None;
+                notices.push(Notice::HostGone { reason: format!("couldn't get back ({why})") });
+                return notices;
+            }
+        }
+        if self.client.rejoining() {
+            match self.client.join(dt, airports) {
+                Joining::Waiting => {}
+                Joining::Ready(caught_up, _) => {
+                    *world = *caught_up;
+                    self.redial = None;
+                    notices.push(Notice::CaughtUp);
+                }
+                Joining::Failed(why) => notices.push(Notice::HostGone { reason: why }),
+            }
+        }
+        notices
+    }
+
+    /// Dial the host again now and then. Gives the reason when it's time to
+    /// stop trying.
+    fn redial(&mut self, dt: f32, reason: String) -> Option<String> {
+        let r = self.redial.get_or_insert_with(|| Redial { last: reason, ..Default::default() });
+        r.elapsed += dt;
+        if let Some(answer) = &r.answer {
+            match answer.try_recv() {
+                Err(TryRecvError::Empty) => return None,
+                Ok(Ok(link)) => {
+                    r.answer = None;
+                    self.client.reconnect(link);
+                    return None;
+                }
+                Ok(Err(why)) => r.last = why,
+                Err(TryRecvError::Disconnected) => r.last = "the connection attempt failed".into(),
+            }
+            r.answer = None;
+            // The relay saying the room has gone is final.
+            if r.last.contains("no room") {
+                return Some(r.last.clone());
+            }
+        }
+        if r.elapsed >= RECONNECT_S {
+            return Some(r.last.clone());
+        }
+        if r.elapsed >= r.next {
+            r.next = r.elapsed + RETRY_S;
+            let (tx, answer) = channel();
+            let dial = self.dial.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(dial());
+            });
+            r.answer = Some(answer);
+        }
+        None
+    }
+
+    pub fn status(&self, mine: &str) -> String {
+        if self.client.playing() {
+            format!("CO-OP. You: {mine}")
+        } else if let Some(r) = self.redial.as_ref().filter(|_| self.client.lost().is_some()) {
+            format!("CO-OP: connection lost, trying to get back ({:.0}s)", (RECONNECT_S - r.elapsed).max(0.0))
+        } else if self.client.rejoining() {
+            "CO-OP: catching up with the host".into()
+        } else {
+            "CO-OP: disconnected".into()
+        }
+    }
 }
 
 impl Session {
     pub fn command(&mut self, id: u32, action: Action) {
         match self {
             Session::Host { host, .. } => host.command(id, action),
-            Session::Client(client) => client.command(id, action),
+            Session::Client(player) => player.client.command(id, action),
         }
     }
 
-    /// Hear from the others and run the ticks that are due.
-    pub fn update(&mut self, dt: f32, world: &mut World) -> Vec<Notice> {
+    /// Hear from the others and run the ticks that are due. A player's
+    /// `world` may be replaced, after a reconnect or a desync
+    /// (`Notice::CaughtUp`).
+    pub fn update(&mut self, dt: f32, world: &mut World, airports: &[Airport]) -> Vec<Notice> {
         match self {
             Session::Host { host, .. } => host.update(dt, world),
-            Session::Client(client) => client.update(dt, world),
+            Session::Client(player) => player.update(dt, world, airports),
         }
     }
 
@@ -129,14 +262,14 @@ impl Session {
     pub fn leave(&mut self, why: &str) {
         match self {
             Session::Host { host, .. } => host.close(why),
-            Session::Client(client) => client.leave(),
+            Session::Client(player) => player.client.leave(),
         }
     }
 
     pub fn setup(&self) -> Option<&ShiftSetup> {
         match self {
             Session::Host { host, .. } => host.setup(),
-            Session::Client(client) => client.setup(),
+            Session::Client(player) => player.client.setup(),
         }
     }
 
@@ -144,7 +277,7 @@ impl Session {
     pub fn names(&self) -> [Option<String>; MAX_SEATS] {
         let players = match self {
             Session::Host { host, .. } => host.players(),
-            Session::Client(client) => client.players().to_vec(),
+            Session::Client(player) => player.client.players().to_vec(),
         };
         let mut names: [Option<String>; MAX_SEATS] = Default::default();
         for (seat, name) in players {
@@ -176,8 +309,7 @@ impl Session {
                     .collect();
                 format!("CO-OP host ({label}). You: {mine}. {}", others.join(", "))
             }
-            Session::Client(client) if client.playing() => format!("CO-OP. You: {mine}"),
-            Session::Client(_) => "CO-OP: disconnected".into(),
+            Session::Client(player) => player.status(mine),
         }
     }
 }
@@ -192,9 +324,12 @@ pub fn notice_text(notice: &Notice, world: &World) -> String {
         }
         Notice::Vacated { seat } => format!("{} is automated now.", positions(*seat)),
         Notice::Refused { name, reason } => format!("{name} couldn't join: {reason}."),
-        Notice::Desync { tick } => format!("This shift went out of step with the host's at tick {tick}."),
+        Notice::Desync { tick } => {
+            format!("This shift went out of step with the host's at tick {tick}. Catching up again.")
+        }
         Notice::HostGone { reason } => format!("The host's shift is gone: {reason}."),
-        Notice::LinkLost { reason } => format!("Lost the connection to the others: {reason}."),
+        Notice::LinkLost { reason } => format!("Lost the connection: {reason}."),
+        Notice::CaughtUp => "Back in step with the host.".into(),
     }
 }
 
@@ -254,7 +389,7 @@ pub enum Flow {
     Typing { field: Field, text: String },
     Connecting { what: String, answer: Receiver<Result<Connected, String>> },
     HostLobby { host: Box<AnyHost>, label: String },
-    PlayerLobby { client: Box<AnyClient> },
+    PlayerLobby { client: Box<AnyClient>, dial: Dial },
     Failed(String),
 }
 
@@ -268,7 +403,7 @@ pub enum Outcome {
     /// The host started the shift: build it and play.
     Start(Box<AnyHost>, String),
     /// The host started the shift, and this player has caught up.
-    Joined(Box<AnyClient>, Box<World>, Seat),
+    Joined(Box<AnyClient>, Box<World>, Seat, Dial),
 }
 
 /// What a co-op frame works with.
@@ -322,18 +457,20 @@ impl Flow {
                 return Flow::Failed("Set the relay's address first, on the co-op menu.".into());
             }
             let relay = relay.to_string();
-            return Flow::connect(format!("Joining room {code}"), move || {
-                Ok(Connected::Client(Box::new(RelayClient::join(&relay, &code, CONNECT_TIMEOUT)?)))
-            });
+            let what = format!("Joining room {code}");
+            let dial: Dial = Arc::new(move || Ok(Box::new(RelayClient::join(&relay, &code, CONNECT_TIMEOUT)?) as AnyLink));
+            return Flow::connect(what, move || Ok(Connected::Client(dial()?, dial)));
         }
         if what.trim().is_empty() {
             return Flow::Failed("Type a room code, or the host's address.".into());
         }
         let addr = lan_address(what);
-        Flow::connect(format!("Connecting to {addr}"), move || {
+        let what = format!("Connecting to {addr}");
+        let dial: Dial = Arc::new(move || {
             let link = TcpClient::connect(&addr, CONNECT_TIMEOUT).map_err(|e| format!("couldn't reach {addr}: {e}"))?;
-            Ok(Connected::Client(Box::new(link)))
-        })
+            Ok(Box::new(link) as AnyLink)
+        });
+        Flow::connect(what, move || Ok(Connected::Client(dial()?, dial)))
     }
 }
 
@@ -439,7 +576,9 @@ pub fn frame(flow: &mut Flow, ctx: Ctx) -> Outcome {
                 Ok(Ok(Connected::Host(link, label))) => {
                     Flow::HostLobby { host: Box::new(Host::lobby(link, ctx.name, &ctx.about)), label }
                 }
-                Ok(Ok(Connected::Client(link))) => Flow::PlayerLobby { client: Box::new(Client::new(link, ctx.name)) },
+                Ok(Ok(Connected::Client(link, dial))) => {
+                    Flow::PlayerLobby { client: Box::new(Client::new(link, ctx.name)), dial }
+                }
             };
             Outcome::Stay
         }
@@ -491,14 +630,14 @@ pub fn frame(flow: &mut Flow, ctx: Ctx) -> Outcome {
             }
             Outcome::Stay
         }
-        Flow::PlayerLobby { client } => {
+        Flow::PlayerLobby { client, .. } => {
             match client.join(dt, ctx.airports) {
                 Joining::Waiting => {}
                 Joining::Ready(world, seat) => {
-                    let Flow::PlayerLobby { client } = std::mem::replace(flow, Flow::Menu { choice: 0 }) else {
+                    let Flow::PlayerLobby { client, dial } = std::mem::replace(flow, Flow::Menu { choice: 0 }) else {
                         unreachable!()
                     };
-                    return Outcome::Joined(client, world, seat);
+                    return Outcome::Joined(client, world, seat, dial);
                 }
                 Joining::Failed(why) => {
                     *flow = Flow::Failed(capitalise(&format!("{why}.")));

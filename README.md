@@ -942,11 +942,13 @@ In the shift, landline calls name the player on the other end, as in
 speed controls, and the shift goes on behind it. A player can join after the
 shift has started, and their machine catches up.
 
-If a player's connection drops, their positions wait 30 seconds for them,
-then go to the automation until they come back with the same name. If the
-host leaves, the shift ends for everyone. If a machine's sim ever drifts from
-the host's, it stops and writes a `desync-<tick>.txt` report next to the
-settings file.
+If a player's connection drops, their game keeps trying to get back to the
+same room or address for a minute, and carries on where the shift has got to.
+Their positions wait 30 seconds for them, then go to the automation until
+they're back. A player whose game closed can join again with the same name to
+get their seat back. If the host leaves, the shift ends for everyone. If a
+machine's sim ever drifts from the host's, it writes a `desync-<tick>.txt`
+report next to the settings file, and the host sends it the shift again.
 
 The score is the team's. Each point is also put down to the position whose
 work it was, and goes to whoever was given that position at the start, even

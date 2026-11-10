@@ -542,14 +542,23 @@ impl App {
             session.command(id, action);
         }
         let mut lost = false;
-        for notice in session.update(get_frame_time(), &mut self.world) {
+        for notice in session.update(get_frame_time(), &mut self.world, &self.airports) {
             self.banner.push(coop::notice_text(&notice, &self.world));
             match notice {
+                // The player carries on: the host sends the shift again.
                 Notice::Desync { tick } => {
-                    lost = true;
                     if let Some(path) = coop::save_desync_report(&self.world, session.setup(), tick) {
                         self.banner.push(format!("Saved {} for a bug report.", path.display()));
                     }
+                }
+                // The world is the host's again. Snapshots taken since the
+                // drop or the desync may be wrong: the replay keeps only the
+                // start, and takes them again from here.
+                Notice::CaughtUp => {
+                    if let Some(recording) = &self.recording {
+                        self.recording = Some(Recording::from_start(recording.first().clone(), Vec::new()));
+                    }
+                    self.sounds.reset(&self.world);
                 }
                 Notice::HostGone { .. } => lost = true,
                 _ => {}
@@ -591,7 +600,7 @@ impl App {
             }
             coop::Outcome::Save => self.save_settings(),
             coop::Outcome::Start(host, label) => self.start_hosted_shift(*host, label),
-            coop::Outcome::Joined(client, world, seat) => self.begin_joined_shift(*client, *world, seat),
+            coop::Outcome::Joined(client, world, seat, dial) => self.begin_joined_shift(*client, *world, seat, dial),
         }
     }
 
@@ -621,7 +630,13 @@ impl App {
     }
 
     /// Joined: play the host's shift, from where it has got to.
-    fn begin_joined_shift(&mut self, client: coop::AnyClient, world: World, seat: crate::sim::positions::Seat) {
+    fn begin_joined_shift(
+        &mut self,
+        client: coop::AnyClient,
+        world: World,
+        seat: crate::sim::positions::Seat,
+        dial: coop::Dial,
+    ) {
         self.end_session("a new shift");
         let setup = client.setup().expect("a joined client has the shift").clone();
         let airport = (*world.airport).clone();
@@ -630,7 +645,7 @@ impl App {
         // The replay starts where the shift did, however late this player came.
         self.code = ShiftCode::parse(&setup.code).ok();
         self.recording = setup.world(&self.airports).ok().map(|start| Recording::from_start(start, Vec::new()));
-        self.session = Some(coop::Session::Client(client));
+        self.session = Some(coop::Session::Client(coop::Player::new(client, dial)));
     }
 
     /// The screen for a co-op shift in `seat`.

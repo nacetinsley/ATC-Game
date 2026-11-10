@@ -7,7 +7,7 @@ use crate::sim::replay::{Action, Command};
 use serde::{Deserialize, Serialize};
 
 /// Bumped when a message changes shape.
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 
 /// Who has each position in the lobby: Approach, Local, Ground, Delivery.
 pub type Positions = [Option<Seat>; MAX_SEATS];
@@ -40,7 +40,8 @@ pub enum Msg {
     Notice(Notice),
     /// Host to client: the shift, and the client's seat. `code` is the shift
     /// code (its staffing isn't used: `staffing` is the co-op split).
-    Start { code: String, staffing: Staffing, clock_start: f64, seat: Seat },
+    /// `token` is the seat's secret, for `Rejoin`.
+    Start { code: String, staffing: Staffing, clock_start: f64, seat: Seat, token: u64 },
     /// Host to client: commands so far, in order, in chunks.
     Catchup { commands: Vec<Command> },
     /// Host to client: the catch-up is complete. Run the shift to `tick` with
@@ -56,6 +57,12 @@ pub enum Msg {
     Ack { tick: u32 },
     /// Either way: leaving, and why.
     Bye { reason: String },
+    /// Client to host, first, instead of `Hello`: a player whose connection
+    /// went, back for their seat. The host sends `Start` and a catch-up.
+    Rejoin { protocol: u32, game: String, seat: Seat, token: u64 },
+    /// Client to host: this machine went out of step. The host sends `Start`
+    /// and a catch-up again.
+    Resync,
 }
 
 /// The version string a build sends in `Hello`.
@@ -139,7 +146,7 @@ mod tests {
     fn messages_round_trip_through_frames_split_anywhere() {
         let msgs = vec![
             Msg::Hello { protocol: PROTOCOL, game: game_version(), name: "Sam".into() },
-            Msg::Start { code: "XHGT-0000-0000-00000".into(), staffing: Staffing::ALL, clock_start: 1234.5, seat: 1 },
+            Msg::Start { code: "XHGT-0000-0000-00000".into(), staffing: Staffing::ALL, clock_start: 1234.5, seat: 1, token: 7 },
             Msg::Tick {
                 n: 7,
                 commands: vec![Command {
